@@ -1,7 +1,6 @@
 # TODO: Notes for potential extensions and future improvements:
-# 1. Allow tools that aren't search specific tools
-# 2. Use user provided custom prompts
-# 3. Save the plan for replay
+# 1. Use user provided custom prompts
+# 2. Save the plan for replay
 
 import time
 from collections.abc import Callable
@@ -20,6 +19,9 @@ from onyx.chat.models import (
 )
 from onyx.chat.prompt_utils import build_language_section, with_language_section
 from onyx.configs.chat_configs import (
+    DR_FORCE_REPORT_S,
+    DR_MAX_ORCHESTRATOR_CYCLES,
+    DR_MAX_ORCHESTRATOR_CYCLES_REASONING,
     DR_REPORT_LLM_TIMEOUT_S,
     SKIP_DEEP_RESEARCH_CLARIFICATION,
 )
@@ -69,9 +71,7 @@ from onyx.server.query_and_chat.streaming_models import (
 from onyx.tools.fake_tools.research_agent import run_research_agent_calls
 from onyx.tools.interface import Tool
 from onyx.tools.models import ToolCallInfo, ToolCallKickoff
-from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
-from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
 from onyx.tracing.framework.create import ChatTraceMetadata, function_span, trace
 from onyx.utils.logger import setup_logger
 from onyx.utils.timing import log_function_time
@@ -80,11 +80,6 @@ logger = setup_logger()
 
 MAX_USER_MESSAGES_FOR_CONTEXT = 5
 MAX_FINAL_REPORT_TOKENS = 20000
-
-# 30 minute timeout before forcing final report generation
-# NOTE: The overall execution may be much longer still because it could run a research cycle at minute 29
-# and that runs for another nearly 30 minutes.
-DEEP_RESEARCH_FORCE_REPORT_SECONDS = 30 * 60
 
 # Might be something like (this gives a lot of leeway for change but typically the models don't do this):
 # 0. Research topics 1-3
@@ -96,10 +91,6 @@ DEEP_RESEARCH_FORCE_REPORT_SECONDS = 30 * 60
 # 6. Research, possibly something new or different from the plan
 # 7. Think
 # 8. Generate report
-MAX_ORCHESTRATOR_CYCLES = 8
-
-# Similar but without the 4 thinking tool calls
-MAX_ORCHESTRATOR_CYCLES_REASONING = 4
 
 
 def generate_final_report(
@@ -253,10 +244,12 @@ def run_deep_research_llm_loop(
 
         llm_step_result: LlmStepResult | None = None
 
-        # Filter tools to only allow web search, internal search, and open URL
-        allowed_tool_names = {SearchTool.NAME, WebSearchTool.NAME, OpenURLTool.NAME}
-        allowed_tools = [tool for tool in tools if tool.name in allowed_tool_names]
-        include_internal_search_tunings = SearchTool.NAME in allowed_tool_names
+        # Research agents get every tool available to this chat: built-in tools,
+        # custom (OpenAPI) tools, and MCP tools. The orchestrator itself only
+        # calls research_agent / think / generate_report.
+        include_internal_search_tunings = any(
+            tool.name == SearchTool.NAME for tool in tools
+        )
         orchestrator_start_turn_index = 1
 
         #########################################################
@@ -429,9 +422,9 @@ def run_deep_research_llm_loop(
             )
 
             max_orchestrator_cycles = (
-                MAX_ORCHESTRATOR_CYCLES
+                DR_MAX_ORCHESTRATOR_CYCLES
                 if not is_reasoning_model
-                else MAX_ORCHESTRATOR_CYCLES_REASONING
+                else DR_MAX_ORCHESTRATOR_CYCLES_REASONING
             )
 
             orchestrator_prompt_template = (
@@ -462,14 +455,14 @@ def run_deep_research_llm_loop(
                 # Check if we've exceeded the time limit or reached the last cycle
                 # - if so, skip LLM and generate final report
                 elapsed_seconds = time.monotonic() - processing_start_time
-                timed_out = elapsed_seconds > DEEP_RESEARCH_FORCE_REPORT_SECONDS
+                timed_out = elapsed_seconds > DR_FORCE_REPORT_S
                 is_last_cycle = cycle == max_orchestrator_cycles - 1
 
                 if timed_out or is_last_cycle:
                     if timed_out:
                         logger.info(
                             "Deep research exceeded %ss (elapsed: %ss), forcing final report generation",
-                            DEEP_RESEARCH_FORCE_REPORT_SECONDS,
+                            DR_FORCE_REPORT_S,
                             format(elapsed_seconds, ".1f"),
                         )
                     report_turn_index = (
@@ -723,7 +716,7 @@ def run_deep_research_llm_loop(
                         parent_tool_call_ids=[
                             tool_call.tool_call_id for tool_call in tool_calls
                         ],
-                        tools=allowed_tools,
+                        tools=tools,
                         emitter=emitter,
                         state_container=state_container,
                         llm=llm,
