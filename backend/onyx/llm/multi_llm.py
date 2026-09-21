@@ -199,9 +199,13 @@ def _consume_stream_with_timeout(stream: Any, total_timeout: float | None) -> li
     """Drain a litellm stream, capping total wall-clock time when set.
 
     The socket read timeout only bounds the gap between packets, so keepalive
-    pings defeat it; this caps the whole call. On breach we raise — never close,
-    since litellm 1.93.0 exposes only async ``aclose`` — which frees the thread;
-    GC releases the connection.
+    pings defeat it; this caps the whole call. On breach we raise without
+    consuming the rest of the stream — litellm 1.93.0 exposes only async
+    ``aclose`` on the wrapper, so it cannot be closed from here. Instead,
+    callers that pass a total timeout must create the per-call ``HTTPHandler``
+    (see invoke()) so the ``finally`` block force-closes the underlying HTTP
+    connection. Without that, generation servers like Ollama never learn the
+    client is gone and keep generating server-side.
     """
     if total_timeout is None:
         return list(stream)
@@ -275,7 +279,8 @@ def _strip_tool_content_from_messages(
     current request, we must convert any tool-related history into plain text
     to avoid the "toolConfig field must be defined" error.
 
-    This is the same approach used by _OllamaHistoryMessageFormatter.
+    This is the same text serialization the chat loop's fallback extractor
+    (`extract_tool_calls_from_response_text`) knows how to parse.
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
@@ -743,8 +748,10 @@ class LitellmLLM(LLM):
         # Downgrade tool_choice=required to AUTO for models that mishandle it:
         # Claude skips reasoning when it's set, Qwen thinking models reject it
         # with a 400, and Z.AI rejects any GLM tool_choice other than auto
-        # ("Tool choice must be auto"). The chat loop's fallback tool-call
-        # extraction still enforces the forced tool. Matched by model name
+        # ("Tool choice must be auto"). The downgrade is deliberate but not
+        # silent: it is logged per call, and the chat loop's per-cycle fallback
+        # tool-call extraction backstops the forced tool when the model
+        # answers in prose instead of calling one. Matched by model name
         # rather than `is_reasoning` because the litellm/local registry lags
         # behind new Qwen/GLM releases (e.g. qwen3.7-plus, glm-5.3).
         # A NamedToolChoice is deliberately NOT downgraded: legacy Claude
@@ -754,6 +761,12 @@ class LitellmLLM(LLM):
         if (is_claude_model or is_qwen_model or is_glm_model) and (
             tool_choice == ToolChoiceOptions.REQUIRED
         ):
+            logger.info(
+                "tool_choice=required downgraded to auto for %s/%s: the model "
+                "rejects or degrades required tool choice",
+                self.config.model_provider,
+                self.config.model_name,
+            )
             tool_choice = ToolChoiceOptions.AUTO
 
         # If no tools are provided, tool_choice should be None
@@ -1270,7 +1283,15 @@ class LitellmLLM(LLM):
             read_timeout = min(read_timeout, max(1, int(total_timeout_override)))
 
         client = None
-        if self._uses_isolated_client():
+        # Ollama keeps generating for as long as the client connection stays
+        # open, and litellm routes ollama_chat over its shared module-level
+        # client. A per-call HTTPHandler lets the finally below force-close the
+        # connection when we abandon a stream (total-timeout breach, error), so
+        # the server sees the disconnect and cancels generation.
+        if (
+            self._uses_isolated_client()
+            or self.config.model_provider == LlmProviderNames.OLLAMA_CHAT
+        ):
             client = HTTPHandler(timeout=read_timeout)
 
         try:
@@ -1354,7 +1375,8 @@ class LitellmLLM(LLM):
         # See invoke() method for full explanation. Key points for streaming:
         #
         # 1. SAME RESTRICTIONS APPLY:
-        #    - HTTPHandler only for providers in _uses_isolated_client()
+        #    - HTTPHandler only for providers in _uses_isolated_client(), plus
+        #      ollama_chat (connection-closure guarantee, see below)
         #    - OpenAI-compatible providers will fail with AttributeError on api_key
         #
         # 2. STREAMING-SPECIFIC CONCERNS:
@@ -1380,7 +1402,14 @@ class LitellmLLM(LLM):
         #    - Per-request HTTPHandler eliminates cross-thread interference
         for attempt in range(max_attempts):
             client = None
-            if self._uses_isolated_client():
+            # ollama_chat is included so abandoned streams (early exit, error,
+            # timeout) get their connection force-closed in the finally below;
+            # Ollama keeps generating otherwise. litellm 1.93.0 accepts the
+            # HTTPHandler for ollama_chat (llm_http_handler.make_sync_call).
+            if (
+                self._uses_isolated_client()
+                or self.config.model_provider == LlmProviderNames.OLLAMA_CHAT
+            ):
                 client = HTTPHandler(timeout=timeout_override or self._timeout)
 
             try:
