@@ -5403,6 +5403,12 @@
               "label": "推理"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "自动",
+              "tooltip": "最大输入 token 数。对于 Ollama 模型，该值会作为 num_ctx 发送。留空则使用提供商的默认值。"
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "默认"
@@ -10031,6 +10037,12 @@
           "executingCode": {
             "label": "正在执行代码"
           },
+          "downloadingFile": {
+            "label": "正在下载文件"
+          },
+          "analyzingImage": {
+            "label": "正在分析图片"
+          },
           "executingNamedTool": {
             "label": "正在执行 {toolName}"
           },
@@ -10187,6 +10199,8 @@
           "codeInterpreter": "代码解释器",
           "codingAgent": "编码智能体",
           "customTool": "自定义工具",
+          "downloadFile": "下载文件",
+          "analyzeImage": "分析图片",
           "generateImage": "生成图片",
           "generatePlan": "生成计划",
           "internalSearch": "内部搜索",

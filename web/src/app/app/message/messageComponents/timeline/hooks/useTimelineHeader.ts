@@ -91,6 +91,22 @@ export function useTimelineHeader(
       return { headerText: t("header.reading.label"), hasPackets, userStopped };
     }
 
+    if (packetType === PacketType.DOWNLOAD_TOOL_START) {
+      return {
+        headerText: t("header.downloadingFile.label"),
+        hasPackets,
+        userStopped,
+      };
+    }
+
+    if (packetType === PacketType.ANALYZE_IMAGE_START) {
+      return {
+        headerText: t("header.analyzingImage.label"),
+        hasPackets,
+        userStopped,
+      };
+    }
+
     if (packetType === PacketType.PYTHON_TOOL_START) {
       return {
         headerText: t("header.executingCode.label"),

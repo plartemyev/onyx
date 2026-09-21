@@ -5403,6 +5403,12 @@
               "label": "raciocínio"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Tokens máximos de entrada. Para modelos do Ollama, o valor é enviado como num_ctx. Deixe vazio para usar o padrão do provedor."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Padrão"
@@ -10031,6 +10037,12 @@
           "executingCode": {
             "label": "Executando código"
           },
+          "downloadingFile": {
+            "label": "Baixando arquivo"
+          },
+          "analyzingImage": {
+            "label": "Analisando imagem"
+          },
           "executingNamedTool": {
             "label": "Executando {toolName}"
           },
@@ -10187,6 +10199,8 @@
           "codeInterpreter": "Interpretador de código",
           "codingAgent": "Agente de código",
           "customTool": "Ferramenta personalizada",
+          "downloadFile": "Baixar arquivo",
+          "analyzeImage": "Analisar imagem",
           "generateImage": "Gerar imagem",
           "generatePlan": "Gerar plano",
           "internalSearch": "Pesquisa interna",

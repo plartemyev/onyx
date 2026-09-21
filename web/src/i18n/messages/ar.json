@@ -5403,6 +5403,12 @@
               "label": "استدلال"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "تلقائي",
+              "tooltip": "الحد الأقصى لرموز الإدخال. بالنسبة لنماذج Ollama، تُرسَل هذه القيمة كـ num_ctx. اتركه فارغًا لاستخدام الافتراضي من المزوّد."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "الافتراضي"
@@ -10031,6 +10037,12 @@
           "executingCode": {
             "label": "جارٍ تنفيذ الكود"
           },
+          "downloadingFile": {
+            "label": "جارٍ تنزيل الملف"
+          },
+          "analyzingImage": {
+            "label": "جارٍ تحليل الصورة"
+          },
           "executingNamedTool": {
             "label": "جارٍ تنفيذ {toolName}"
           },
@@ -10187,6 +10199,8 @@
           "codeInterpreter": "مفسر الأكواد",
           "codingAgent": "وكيل البرمجة",
           "customTool": "أداة مخصصة",
+          "downloadFile": "تنزيل الملف",
+          "analyzeImage": "تحليل الصورة",
           "generateImage": "توليد صورة",
           "generatePlan": "توليد خطة",
           "internalSearch": "بحث داخلي",

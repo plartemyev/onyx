@@ -12,6 +12,8 @@ import {
 export const COLLAPSED_STREAMING_PACKET_TYPES = new Set<PacketType>([
   PacketType.SEARCH_TOOL_START,
   PacketType.FETCH_TOOL_START,
+  PacketType.DOWNLOAD_TOOL_START,
+  PacketType.ANALYZE_IMAGE_START,
   PacketType.PYTHON_TOOL_START,
   PacketType.CUSTOM_TOOL_START,
   PacketType.RESEARCH_AGENT_START,
@@ -50,6 +52,14 @@ export const isPythonToolPackets = (packets: Packet[]): boolean =>
       (p.obj.type === PacketType.TOOL_CALL_ARGUMENT_DELTA &&
         isCodeInterpreterToolType((p.obj as ToolCallArgumentDelta).tool_type))
   );
+
+// Check if packets belong to the download tool
+export const isDownloadToolPackets = (packets: Packet[]): boolean =>
+  packets.some((p) => p.obj.type === PacketType.DOWNLOAD_TOOL_START);
+
+// Check if packets belong to the analyze image tool
+export const isAnalyzeImagePackets = (packets: Packet[]): boolean =>
+  packets.some((p) => p.obj.type === PacketType.ANALYZE_IMAGE_START);
 
 // Check if packets belong to reasoning
 export const isReasoningPackets = (packets: Packet[]): boolean =>
@@ -91,6 +101,22 @@ export const stepHasCollapsedStreamingContent = (
     packetTypes.has(PacketType.FETCH_TOOL_START) ||
     packetTypes.has(PacketType.FETCH_TOOL_URLS) ||
     packetTypes.has(PacketType.FETCH_TOOL_DOCUMENTS)
+  ) {
+    return true;
+  }
+
+  // Download tool shows a loading indicator once started
+  if (
+    packetTypes.has(PacketType.DOWNLOAD_TOOL_START) ||
+    packetTypes.has(PacketType.DOWNLOAD_TOOL_FINAL)
+  ) {
+    return true;
+  }
+
+  // Analyze image tool shows a loading indicator once started
+  if (
+    packetTypes.has(PacketType.ANALYZE_IMAGE_START) ||
+    packetTypes.has(PacketType.ANALYZE_IMAGE_FINAL)
   ) {
     return true;
   }

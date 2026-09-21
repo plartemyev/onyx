@@ -5403,6 +5403,12 @@
               "label": "raisonnement"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Nombre maximal de jetons d'entrée. Pour les modèles Ollama, cette valeur est envoyée sous forme de num_ctx. Laissez vide pour utiliser la valeur par défaut du fournisseur."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Par défaut"
@@ -10031,6 +10037,12 @@
           "executingCode": {
             "label": "Exécution du code"
           },
+          "downloadingFile": {
+            "label": "Téléchargement du fichier"
+          },
+          "analyzingImage": {
+            "label": "Analyse de l'image"
+          },
           "executingNamedTool": {
             "label": "Exécution de {toolName}"
           },
@@ -10187,6 +10199,8 @@
           "codeInterpreter": "Interpréteur de code",
           "codingAgent": "Agent de code",
           "customTool": "Outil personnalisé",
+          "downloadFile": "Télécharger le fichier",
+          "analyzeImage": "Analyser l'image",
           "generateImage": "Générer une image",
           "generatePlan": "Générer un plan",
           "internalSearch": "Recherche interne",

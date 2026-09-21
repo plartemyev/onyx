@@ -1,4 +1,4 @@
-import { FiCircle, FiList, FiTool } from "react-icons/fi";
+import { FiCircle, FiEye, FiList, FiTool } from "react-icons/fi";
 import type { useTranslations } from "next-intl";
 import {
   Packet,
@@ -7,6 +7,7 @@ import {
 } from "@/app/app/services/streamingModels";
 import { constructCurrentSearchState } from "./timeline/renderers/search/searchStateUtils";
 import {
+  SvgDownload,
   SvgGlobe,
   SvgSearchMenu,
   SvgTerminal,
@@ -109,6 +110,10 @@ export function getToolName(packets: Packet[], t: TimelineTranslate): string {
       return t("toolNames.codeInterpreter");
     case PacketType.FETCH_TOOL_START:
       return t("toolNames.openUrls");
+    case PacketType.DOWNLOAD_TOOL_START:
+      return t("toolNames.downloadFile");
+    case PacketType.ANALYZE_IMAGE_START:
+      return t("toolNames.analyzeImage");
     case PacketType.CUSTOM_TOOL_START:
       return (
         (firstPacket.obj as { tool_name?: string }).tool_name ||
@@ -151,6 +156,10 @@ export function getToolIcon(packets: Packet[]): React.ReactNode {
       return <SvgTerminal className="w-3.5 h-3.5" />;
     case PacketType.FETCH_TOOL_START:
       return <SvgLink className="w-3.5 h-3.5" />;
+    case PacketType.DOWNLOAD_TOOL_START:
+      return <SvgDownload className="w-3.5 h-3.5" />;
+    case PacketType.ANALYZE_IMAGE_START:
+      return <FiEye className="w-3.5 h-3.5" />;
     case PacketType.CUSTOM_TOOL_START:
       return <FiTool className="w-3.5 h-3.5" />;
     case PacketType.IMAGE_GENERATION_TOOL_START:

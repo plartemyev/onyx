@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 import { useTranslations } from "next-intl";
-import { Button, Popover, Text, Tooltip } from "@opal/components";
+import {
+  Button,
+  InputTypeIn,
+  Popover,
+  Text,
+  Tooltip,
+} from "@opal/components";
 import { SvgBarChart, SvgCode, SvgSliders, SvgThermometer } from "@opal/icons";
 import { ContentAction, Section } from "@opal/layouts";
 import { Disabled } from "@opal/core";
@@ -14,7 +20,6 @@ import {
   ALL_REASONING_STOPS,
   PaneSlider,
   REASONING_STOP_LABEL_KEYS,
-  formatContextWindow,
   maxReasoningStop,
   minReasoningStop,
   reasoningStopIndex,
@@ -30,9 +35,19 @@ const TEMPERATURE_MARK_COUNT = 3;
 export type ModelSettingsPatch = Partial<
   Pick<
     ModelConfiguration,
-    "reasoning_effort_max" | "reasoning_effort_default" | "temperature_default"
+    | "max_input_tokens"
+    | "reasoning_effort_max"
+    | "reasoning_effort_default"
+    | "temperature_default"
   >
 >;
+
+/** Empty or sub-1 input clears the override, so the provider default applies. */
+function parseContextWindowInput(raw: string): number | null {
+  const parsed = Number(raw);
+  if (raw === "" || !Number.isFinite(parsed) || parsed < 1) return null;
+  return Math.floor(parsed);
+}
 
 /** The subset of a model configuration the popover reads. */
 export type ModelSettingsModel = Pick<
@@ -61,20 +76,12 @@ interface SectionHeaderProps {
   icon: IconFunctionComponent;
   title: string;
   caption: string;
-  rightValue?: string;
-  rightValueTooltip?: string;
 }
 
 /** The mock's section header is the design system's Content component, so
  *  ContentAction renders it. Outer spacing comes from margins, Section
  *  silences padding utilities. */
-function SectionHeader({
-  icon,
-  title,
-  caption,
-  rightValue,
-  rightValueTooltip,
-}: SectionHeaderProps) {
+function SectionHeader({ icon, title, caption }: SectionHeaderProps) {
   return (
     <Section
       alignItems="stretch"
@@ -89,19 +96,6 @@ function SectionHeader({
         title={title}
         description={caption}
         padding={0}
-        rightChildren={
-          rightValue !== undefined ? (
-            <Tooltip tooltip={rightValueTooltip} side="top">
-              <Text
-                font="secondary-mono"
-                color="text-04"
-                wordWrap="whitespace-nowrap"
-              >
-                {rightValue}
-              </Text>
-            </Tooltip>
-          ) : undefined
-        }
       />
     </Section>
   );
@@ -258,6 +252,10 @@ export function ModelSettingsPopover({
     if (effort) onChange({ reasoning_effort_default: effort });
   }
 
+  function setContextWindow(raw: string) {
+    onChange({ max_input_tokens: parseContextWindowInput(raw) });
+  }
+
   return (
     // modal keeps clicks and focus inside the popover away from the host
     // dialog's dismiss and focus-trap layers. Portaling into the dialog
@@ -295,21 +293,44 @@ export function ModelSettingsPopover({
             </Text>
           </Section>
 
-          <SectionHeader
-            icon={SvgCode}
-            title={tModelSelector("contextWindow.row.title")}
-            caption={tModelSelector("contextWindow.row.caption")}
-            rightValue={
-              model.max_input_tokens
-                ? formatContextWindow(model.max_input_tokens)
-                : "\u2014"
-            }
-            rightValueTooltip={
-              model.max_input_tokens
-                ? undefined
-                : tModelSelector("contextWindow.unknown.tooltip")
-            }
-          />
+          <Section
+            alignItems="stretch"
+            height="auto"
+            gap={0.375}
+            className="mb-1.5"
+          >
+            <SectionHeader
+              icon={SvgCode}
+              title={tModelSelector("contextWindow.row.title")}
+              caption={tModelSelector("contextWindow.row.caption")}
+            />
+            <Section
+              alignItems="stretch"
+              height="auto"
+              padding={0.5}
+              className="ms-8 me-2"
+            >
+              <Tooltip
+                tooltip={t("modelSettings.contextWindow.input.tooltip")}
+                side="top"
+              >
+                <InputTypeIn
+                  type="number"
+                  min={1}
+                  step={1}
+                  clearButton
+                  aria-label={tModelSelector("contextWindow.row.title")}
+                  placeholder={t(
+                    "modelSettings.contextWindow.input.placeholder"
+                  )}
+                  value={model.max_input_tokens?.toString() ?? ""}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setContextWindow(e.target.value)
+                  }
+                />
+              </Tooltip>
+            </Section>
+          </Section>
 
           {showReasoning && (
             <Section

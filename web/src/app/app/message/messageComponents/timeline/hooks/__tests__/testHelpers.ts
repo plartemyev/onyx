@@ -5,6 +5,7 @@ import {
   Packet,
   PacketType,
   Placement,
+  PythonToolGeneratedFile,
   StopReason,
 } from "@/app/app/services/streamingModels";
 import { OnyxDocument } from "@/lib/search/interfaces";
@@ -161,11 +162,13 @@ export function createPythonToolDeltaPacket(
   stdout: string,
   stderr: string,
   fileIds: string[],
-  placement: Partial<Placement> = {}
+  placement: Partial<Placement> = {},
+  files: PythonToolGeneratedFile[] = []
 ): Packet {
   return createPacket(PacketType.PYTHON_TOOL_DELTA, placement, {
     stdout,
     stderr,
     file_ids: fileIds,
+    files,
   });
 }

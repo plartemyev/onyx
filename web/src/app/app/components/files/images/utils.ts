@@ -6,6 +6,13 @@ export function buildImgUrl(fileId: string) {
 }
 
 /**
+ * True when a filename ends with a known image extension.
+ */
+export function isImageFileName(filename: string): boolean {
+  return IMAGE_EXTENSIONS.test(filename);
+}
+
+/**
  * If `href` points to a chat file and `linkText` ends with an image extension,
  * returns the file ID. Otherwise returns null.
  */

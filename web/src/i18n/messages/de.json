@@ -5403,6 +5403,12 @@
               "label": "Reasoning"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Maximale Eingabe-Tokens. Bei Ollama-Modellen wird dieser Wert als num_ctx gesendet. Leer lassen, um den Anbieter-Standard zu verwenden."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Standard"
@@ -10031,6 +10037,12 @@
           "executingCode": {
             "label": "Führt Code aus"
           },
+          "downloadingFile": {
+            "label": "Datei wird heruntergeladen"
+          },
+          "analyzingImage": {
+            "label": "Bild wird analysiert"
+          },
           "executingNamedTool": {
             "label": "Führt {toolName} aus"
           },
@@ -10187,6 +10199,8 @@
           "codeInterpreter": "Code-Interpreter",
           "codingAgent": "Coding-Agent",
           "customTool": "Benutzerdefiniertes Werkzeug",
+          "downloadFile": "Datei herunterladen",
+          "analyzeImage": "Bild analysieren",
           "generateImage": "Bild generieren",
           "generatePlan": "Plan erstellen",
           "internalSearch": "Interne Suche",

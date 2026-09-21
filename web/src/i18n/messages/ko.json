@@ -5403,6 +5403,12 @@
               "label": "추론"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "자동",
+              "tooltip": "최대 입력 토큰 수입니다. Ollama 모델의 경우 num_ctx로 전송됩니다. 비워 두면 공급자 기본값이 사용됩니다."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "기본값"
@@ -10031,6 +10037,12 @@
           "executingCode": {
             "label": "코드 실행 중"
           },
+          "downloadingFile": {
+            "label": "파일 다운로드 중"
+          },
+          "analyzingImage": {
+            "label": "이미지 분석 중"
+          },
           "executingNamedTool": {
             "label": "{toolName} 실행 중"
           },
@@ -10187,6 +10199,8 @@
           "codeInterpreter": "코드 인터프리터",
           "codingAgent": "코딩 에이전트",
           "customTool": "사용자 지정 도구",
+          "downloadFile": "파일 다운로드",
+          "analyzeImage": "이미지 분석",
           "generateImage": "이미지 생성",
           "generatePlan": "계획 생성",
           "internalSearch": "내부 검색",

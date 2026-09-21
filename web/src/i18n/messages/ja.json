@@ -5403,6 +5403,12 @@
               "label": "推論"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "自動",
+              "tooltip": "最大入力トークン数。Ollama モデルでは num_ctx として送信されます。空のままにするとプロバイダーのデフォルトが使用されます。"
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "デフォルト"
@@ -10031,6 +10037,12 @@
           "executingCode": {
             "label": "コードを実行中"
           },
+          "downloadingFile": {
+            "label": "ファイルをダウンロードしています"
+          },
+          "analyzingImage": {
+            "label": "画像を分析しています"
+          },
           "executingNamedTool": {
             "label": "{toolName} を実行中"
           },
@@ -10187,6 +10199,8 @@
           "codeInterpreter": "コードインタープリター",
           "codingAgent": "コーディングエージェント",
           "customTool": "カスタムツール",
+          "downloadFile": "ファイルをダウンロード",
+          "analyzeImage": "画像を分析",
           "generateImage": "画像生成",
           "generatePlan": "プラン生成",
           "internalSearch": "社内検索",

@@ -14,6 +14,11 @@ import {
   RenderType,
 } from "@/app/app/message/messageComponents/interfaces";
 import { CodeBlock } from "@/app/app/message/CodeBlock";
+import { InMessageImage } from "@/app/app/components/files/images/InMessageImage";
+import {
+  buildImgUrl,
+  isImageFileName,
+} from "@/app/app/components/files/images/utils";
 import hljs from "highlight.js/lib/core";
 import python from "highlight.js/lib/languages/python";
 import { SvgTerminal } from "@opal/icons";
@@ -78,6 +83,9 @@ function constructCurrentPythonState(packets: PythonToolPacket[]) {
     .filter((s) => s)
     .join("");
   const fileIds = pythonDeltas.flatMap((delta) => delta?.file_ids || []);
+  // Named files carry filenames, so images can render inline. Packets persisted
+  // before this field exists only have file_ids.
+  const generatedFiles = pythonDeltas.flatMap((delta) => delta?.files ?? []);
   const isStreaming = !pythonStart && streamingCode.length > 0;
   const isExecuting = pythonStart && !pythonEnd;
   const isComplete = pythonStart && pythonEnd;
@@ -88,6 +96,7 @@ function constructCurrentPythonState(packets: PythonToolPacket[]) {
     stdout,
     stderr,
     fileIds,
+    generatedFiles,
     isStreaming,
     isExecuting,
     isComplete,
@@ -107,6 +116,7 @@ export const PythonToolRenderer: MessageRenderer<PythonToolPacket, {}> = ({
     stdout,
     stderr,
     fileIds,
+    generatedFiles,
     isStreaming,
     isExecuting,
     isComplete,
@@ -193,12 +203,42 @@ export const PythonToolRenderer: MessageRenderer<PythonToolPacket, {}> = ({
         </div>
       )}
 
-      {/* File count */}
-      {fileIds.length > 0 && (
+      {/* Generated files: images inline, other files as download links.
+          Falls back to a count when filenames are unavailable (old packets). */}
+      {generatedFiles.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {generatedFiles.filter((file) => isImageFileName(file.filename))
+            .length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {generatedFiles
+                .filter((file) => isImageFileName(file.filename))
+                .map((file) => (
+                  <InMessageImage
+                    key={file.file_id}
+                    fileId={file.file_id}
+                    fileName={file.filename}
+                  />
+                ))}
+            </div>
+          )}
+          {generatedFiles
+            .filter((file) => !isImageFileName(file.filename))
+            .map((file) => (
+              <a
+                key={file.file_id}
+                href={buildImgUrl(file.file_id)}
+                download={file.filename}
+                className="text-sm text-text-03 underline hover:text-text-02 w-fit"
+              >
+                {file.filename}
+              </a>
+            ))}
+        </div>
+      ) : fileIds.length > 0 ? (
         <div className="text-sm text-text-03">
           {t("python.generatedFiles.label", { count: fileIds.length })}
         </div>
-      )}
+      ) : null}
 
       {/* No output fallback - only when complete with no output */}
       {isComplete && !stdout && !stderr && (

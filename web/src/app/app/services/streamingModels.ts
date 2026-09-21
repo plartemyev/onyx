@@ -27,6 +27,10 @@ export enum PacketType {
   FETCH_TOOL_START = "open_url_start",
   FETCH_TOOL_URLS = "open_url_urls",
   FETCH_TOOL_DOCUMENTS = "open_url_documents",
+  DOWNLOAD_TOOL_START = "download_tool_start",
+  DOWNLOAD_TOOL_FINAL = "download_tool_final",
+  ANALYZE_IMAGE_START = "analyze_image_start",
+  ANALYZE_IMAGE_FINAL = "analyze_image_final",
 
   // Tool call argument delta (streams tool args before tool executes)
   TOOL_CALL_ARGUMENT_DELTA = "tool_call_argument_delta",
@@ -175,11 +179,19 @@ export interface PythonToolStart extends BaseObj {
   code: string;
 }
 
+export interface PythonToolGeneratedFile {
+  filename: string;
+  file_id: string;
+}
+
 export interface PythonToolDelta extends BaseObj {
   type: "python_tool_delta";
   stdout: string;
   stderr: string;
   file_ids: string[];
+  // Same files as file_ids, with filenames, so images can render inline.
+  // Optional: packets persisted before this field exists lack it.
+  files?: PythonToolGeneratedFile[];
 }
 
 export interface ToolCallArgumentDelta extends BaseObj {
@@ -201,6 +213,40 @@ export interface FetchToolUrls extends BaseObj {
 export interface FetchToolDocuments extends BaseObj {
   type: "open_url_documents";
   documents: OnyxDocument[];
+}
+
+export interface DownloadToolStart extends BaseObj {
+  type: "download_tool_start";
+}
+
+export interface DownloadToolFile {
+  filename: string;
+  file_id: string;
+}
+
+export interface DownloadToolFinal extends BaseObj {
+  type: "download_tool_final";
+  files: DownloadToolFile[];
+  // "url (reason)" strings for URLs that could not be downloaded
+  failures: string[];
+}
+
+export interface AnalyzeImageStart extends BaseObj {
+  type: "analyze_image_start";
+}
+
+export interface AnalyzeImageFile {
+  filename: string;
+  file_id: string;
+  // Vision-model description of the image, when one was produced
+  annotation?: string | null;
+}
+
+export interface AnalyzeImageFinal extends BaseObj {
+  type: "analyze_image_final";
+  files: AnalyzeImageFile[];
+  // "url (reason)" strings for URLs that could not be fetched
+  failures: string[];
 }
 
 // Custom Tool Packets
@@ -397,6 +443,16 @@ export type FetchToolObj =
   | FetchToolDocuments
   | SectionEnd
   | PacketError;
+export type DownloadToolObj =
+  | DownloadToolStart
+  | DownloadToolFinal
+  | SectionEnd
+  | PacketError;
+export type AnalyzeImageObj =
+  | AnalyzeImageStart
+  | AnalyzeImageFinal
+  | SectionEnd
+  | PacketError;
 export type CustomToolObj =
   | CustomToolStart
   | CustomToolArgs
@@ -419,6 +475,8 @@ export type NewToolObj =
   | ImageGenerationToolObj
   | PythonToolObj
   | FetchToolObj
+  | DownloadToolObj
+  | AnalyzeImageObj
   | CustomToolObj
   | FileReaderToolObj
   | MemoryToolObj;
@@ -521,6 +579,16 @@ export interface PythonToolPacket {
 export interface FetchToolPacket {
   placement: Placement;
   obj: FetchToolObj;
+}
+
+export interface DownloadToolPacket {
+  placement: Placement;
+  obj: DownloadToolObj;
+}
+
+export interface AnalyzeImagePacket {
+  placement: Placement;
+  obj: AnalyzeImageObj;
 }
 
 export interface CustomToolPacket {

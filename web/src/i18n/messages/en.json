@@ -5403,6 +5403,12 @@
               "label": "reasoning"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Maximum input tokens. For Ollama models this is sent as num_ctx. Leave empty to use the provider default."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Default"
@@ -10061,6 +10067,12 @@
           "executingCode": {
             "label": "Executing code"
           },
+          "downloadingFile": {
+            "label": "Downloading file"
+          },
+          "analyzingImage": {
+            "label": "Analyzing image"
+          },
           "executingNamedTool": {
             "label": "Executing {toolName}"
           },
@@ -10217,6 +10229,8 @@
           "codeInterpreter": "Code Interpreter",
           "codingAgent": "Coding agent",
           "customTool": "Custom Tool",
+          "downloadFile": "Download File",
+          "analyzeImage": "Analyze Image",
           "generateImage": "Generate Image",
           "generatePlan": "Generate plan",
           "internalSearch": "Internal Search",
