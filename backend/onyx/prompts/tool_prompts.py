@@ -84,4 +84,29 @@ Focus on enduring preferences, long-term goals, stable constraints, and explicit
 TOOL_CALL_FAILURE_PROMPT = """
 LLM attempted to call a tool but failed. Most likely the tool name or arguments were misspelled.
 """.strip()
+
+
+# Replayed to the model in place of a result when one of its parallel calls to a
+# mergeable tool (search tools, open_url) was folded into the first call.
+TOOL_CALL_MERGED_PROMPT = (
+    "This tool call was merged into another call to the same tool in the same "
+    "step. Its arguments were combined into that call, and that call's results "
+    "cover this one. Do not re-run it."
+).strip()
+
+
+# Replayed to the model in place of a result when a call was dropped because the
+# step already ran the maximum number of concurrent tool calls.
+TOOL_CALL_DROPPED_CONCURRENCY_PROMPT = (
+    "This tool call was not run: the maximum number of tool calls for this step "
+    "was reached. Re-run it in a later step if it is still needed."
+).strip()
+
+
+# Replayed to the model when execution started but no result ever arrived
+# (threadpool timeout or worker loss).
+TOOL_CALL_LOST_PROMPT = (
+    "This tool call did not complete in time and produced no result. Do not "
+    "assume it succeeded; re-run it only if still needed."
+).strip()
 # ruff: noqa: E501, W605 end

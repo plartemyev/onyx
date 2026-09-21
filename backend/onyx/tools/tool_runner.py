@@ -7,6 +7,11 @@ from onyx.chat.models import ChatMessageSimple
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDocsResponse
 from onyx.db.memory import UserMemoryContext
+from onyx.prompts.tool_prompts import (
+    TOOL_CALL_DROPPED_CONCURRENCY_PROMPT,
+    TOOL_CALL_LOST_PROMPT,
+    TOOL_CALL_MERGED_PROMPT,
+)
 from onyx.server.query_and_chat.streaming_models import (
     Packet,
     PacketException,
@@ -229,6 +234,19 @@ def _safe_run_single_tool(
     return tool_response
 
 
+def _tombstone_tool_response(tool_call: ToolCallKickoff, notice: str) -> ToolResponse:
+    """Build an explicit non-executed response for a dropped tool call.
+
+    Every tool_call_id the model emitted must get exactly one response, or the
+    call silently disappears from history (and some providers reject the
+    unpaired assistant tool call on the next request)."""
+    return ToolResponse(
+        rich_response=None,
+        llm_facing_response=notice,
+        tool_call=tool_call,
+    )
+
+
 def run_tool_calls(
     tool_calls: list[ToolCallKickoff],
     tools: list[Tool],
@@ -268,6 +286,10 @@ def run_tool_calls(
     The provided `citation_mapping` may be mutated in-place: any new
     `SearchDocsResponse.citation_mapping` entries are merged into it.
 
+    Calls that do not execute (merged into a sibling call, dropped by the
+    concurrency cap, or lost to a threadpool timeout) get an explicit tombstone
+    response so the model sees one response per tool_call_id it emitted.
+
     Args:
         tool_calls: List of tool calls to execute.
         tools: List of available tool instances.
@@ -286,8 +308,9 @@ def run_tool_calls(
     Returns:
         A `ParallelToolCallResponse` containing:
         - `tool_responses`: `ToolResponse` objects for successfully dispatched tool calls
-          (each has `tool_call` set). If a tool execution fails at the threadpool layer,
-          its entry will be omitted.
+          (each has `tool_call` set), followed by tombstone responses for calls
+          that did not execute. If a tool execution fails at the threadpool layer,
+          its entry is a tombstone response.
         - `updated_citation_mapping`: The updated citation mapping dictionary.
     """
     # Merge tool calls for SearchTool, WebSearchTool, and OpenURLTool
@@ -295,9 +318,18 @@ def run_tool_calls(
         url_snippet_map = {}
     merged_tool_calls = _merge_tool_calls(tool_calls)
 
+    # Calls folded into a sibling call keep their identity in history via an
+    # explicit tombstone instead of vanishing.
+    merged_tool_call_ids = {tc.tool_call_id for tc in merged_tool_calls}
+    tombstone_responses: list[ToolResponse] = [
+        _tombstone_tool_response(tool_call, TOOL_CALL_MERGED_PROMPT)
+        for tool_call in tool_calls
+        if tool_call.tool_call_id not in merged_tool_call_ids
+    ]
+
     if not merged_tool_calls:
         return ParallelToolCallResponse(
-            tool_responses=[],
+            tool_responses=tombstone_responses,
             updated_citation_mapping=citation_mapping,
         )
 
@@ -314,11 +346,22 @@ def run_tool_calls(
     # Apply safety cap (drop tool calls beyond the cap)
     if max_concurrent_tools is not None:
         if max_concurrent_tools <= 0:
+            tombstone_responses.extend(
+                _tombstone_tool_response(
+                    tool_call, TOOL_CALL_DROPPED_CONCURRENCY_PROMPT
+                )
+                for tool_call in filtered_tool_calls
+            )
             return ParallelToolCallResponse(
-                tool_responses=[],
+                tool_responses=tombstone_responses,
                 updated_citation_mapping=citation_mapping,
             )
+        over_cap_calls = filtered_tool_calls[max_concurrent_tools:]
         filtered_tool_calls = filtered_tool_calls[:max_concurrent_tools]
+        tombstone_responses.extend(
+            _tombstone_tool_response(tool_call, TOOL_CALL_DROPPED_CONCURRENCY_PROMPT)
+            for tool_call in over_cap_calls
+        )
 
     # Get starting citation number from citation processor to avoid conflicts with project files
     starting_citation_num = next_citation_num
@@ -438,6 +481,21 @@ def run_tool_calls(
         timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
     )
 
+    # A None result means the threadpool layer lost the call (timeout or worker
+    # crash). Tombstone it so the call still gets exactly one response.
+    for (_, tool_call, _), result in zip(
+        tool_run_params, tool_run_results, strict=True
+    ):
+        if result is None:
+            logger.error(
+                "Tool call %s (%s) produced no result; tombstoning",
+                tool_call.tool_call_id,
+                tool_call.tool_name,
+            )
+            tombstone_responses.append(
+                _tombstone_tool_response(tool_call, TOOL_CALL_LOST_PROMPT)
+            )
+
     # Process results and update citation_mapping
     for result in tool_run_results:
         if result is None:
@@ -450,6 +508,7 @@ def run_tool_calls(
                 citation_mapping.update(new_citations)
 
     tool_responses = [result for result in tool_run_results if result is not None]
+    tool_responses.extend(tombstone_responses)
     return ParallelToolCallResponse(
         tool_responses=tool_responses,
         updated_citation_mapping=citation_mapping,

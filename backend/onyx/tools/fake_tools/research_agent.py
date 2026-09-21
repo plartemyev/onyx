@@ -4,7 +4,10 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from onyx.chat.chat_state import ChatStateContainer
-from onyx.chat.chat_utils import create_tool_call_failure_messages
+from onyx.chat.chat_utils import (
+    build_parallel_tool_call_messages,
+    create_tool_call_failure_messages,
+)
 from onyx.chat.citation_processor import (
     CitationMapping,
     CitationMode,
@@ -19,7 +22,11 @@ from onyx.chat.llm_loop import construct_message_history
 from onyx.chat.llm_step import run_llm_step, run_llm_step_pkt_generator
 from onyx.chat.models import ChatMessageSimple, LlmStepResult, ToolCallSimple
 from onyx.chat.prompt_utils import build_language_section, with_language_section
-from onyx.configs.chat_configs import DR_REPORT_LLM_TIMEOUT_S
+from onyx.configs.chat_configs import (
+    DR_REPORT_LLM_TIMEOUT_S,
+    DR_RESEARCH_AGENT_FORCE_REPORT_S,
+    DR_RESEARCH_AGENT_TIMEOUT_S,
+)
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDocsResponse
 from onyx.deep_research.dr_mock_tools import (
@@ -85,11 +92,9 @@ from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 logger = setup_logger()
 
 
-# 30 minute timeout per research agent
-RESEARCH_AGENT_TIMEOUT_SECONDS = 30 * 60
-RESEARCH_AGENT_TIMEOUT_MESSAGE = "Research Agent timed out after 30 minutes"
-# 12 minute timeout before forcing intermediate report generation
-RESEARCH_AGENT_FORCE_REPORT_SECONDS = 12 * 60
+RESEARCH_AGENT_TIMEOUT_MESSAGE = (
+    f"Research Agent timed out after {DR_RESEARCH_AGENT_TIMEOUT_S // 60} minutes"
+)
 # May be good to experiment with this, empirically reports of around 5,000 tokens are pretty good.
 MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS = 10000
 
@@ -274,10 +279,10 @@ def run_research_agent_call(
             while research_cycle_count <= MAX_RESEARCH_CYCLES:
                 # Check if we've exceeded the time limit - if so, skip LLM and generate report
                 elapsed_seconds = time.monotonic() - start_time
-                if elapsed_seconds > RESEARCH_AGENT_FORCE_REPORT_SECONDS:
+                if elapsed_seconds > DR_RESEARCH_AGENT_FORCE_REPORT_S:
                     logger.info(
                         "Research agent exceeded %ss (elapsed: %ss), forcing intermediate report generation",
-                        RESEARCH_AGENT_FORCE_REPORT_SECONDS,
+                        DR_RESEARCH_AGENT_FORCE_REPORT_S,
                         format(elapsed_seconds, ".1f"),
                     )
                     break
@@ -511,36 +516,34 @@ def run_research_agent_call(
                         tr for tr in tool_responses if tr.tool_call is not None
                     ]
 
-                    # Build ONE ASSISTANT message with all tool calls (OpenAI parallel format)
+                    # Build the shared OpenAI parallel tool calling shape:
+                    # ONE ASSISTANT message with all tool calls, followed by one
+                    # TOOL_CALL_RESPONSE message per call.
                     if valid_tool_responses:
                         tool_calls_simple: list[ToolCallSimple] = []
+                        response_texts: list[str] = []
                         for tool_response in valid_tool_responses:
                             tc = tool_response.tool_call
                             assert tc is not None  # Already filtered above
-                            tool_call_message = tc.to_msg_str()
-                            tool_call_token_count = token_counter(tool_call_message)
                             tool_calls_simple.append(
                                 ToolCallSimple(
                                     tool_call_id=tc.tool_call_id,
                                     tool_name=tc.tool_name,
                                     tool_arguments=tc.tool_args,
-                                    token_count=tool_call_token_count,
+                                    token_count=token_counter(tc.to_msg_str()),
                                 )
                             )
-
-                        total_tool_call_tokens = sum(
-                            tc.token_count for tc in tool_calls_simple
+                            response_texts.append(tool_response.llm_facing_response)
+                        msg_history.extend(
+                            build_parallel_tool_call_messages(
+                                tool_calls=tool_calls_simple,
+                                response_texts=response_texts,
+                                token_counter=token_counter,
+                            )
                         )
-                        assistant_with_tools = ChatMessageSimple(
-                            message="",
-                            token_count=total_tool_call_tokens,
-                            message_type=MessageType.ASSISTANT,
-                            tool_calls=tool_calls_simple,
-                            image_files=None,
-                        )
-                        msg_history.append(assistant_with_tools)
 
-                    # Now add tool call info and TOOL_CALL_RESPONSE messages for each
+                    # Record tool call info (persistence, citations, search docs)
+                    # for each response
                     for tool_response in valid_tool_responses:
                         tc = tool_response.tool_call
                         assert tc is not None  # Already filtered above
@@ -594,18 +597,6 @@ def run_research_agent_call(
                             generated_images=None,
                         )
                         state_container.add_tool_call(tool_call_info)
-
-                        tool_response_message = tool_response.llm_facing_response
-                        tool_response_token_count = token_counter(tool_response_message)
-
-                        tool_response_msg = ChatMessageSimple(
-                            message=tool_response_message,
-                            token_count=tool_response_token_count,
-                            message_type=MessageType.TOOL_CALL_RESPONSE,
-                            tool_call_id=tc.tool_call_id,
-                            image_files=None,
-                        )
-                        msg_history.append(tool_response_msg)
 
                 # If it reached this point, it did not call reasoning, so here we wipe it to not save it to multiple turns
                 most_recent_reasoning = None
@@ -661,7 +652,7 @@ def _on_research_agent_timeout(
     )
     logger.warning(
         "Research agent timed out after %s seconds for task: %s",
-        RESEARCH_AGENT_TIMEOUT_SECONDS,
+        DR_RESEARCH_AGENT_TIMEOUT_S,
         research_task,
     )
     return ResearchAgentCallResult(
@@ -713,7 +704,7 @@ def run_research_agent_calls(
         # Note: This simply allows the main thread to continue with an error message
         # It does not kill the background thread which may still write to the state objects passed to it
         # This is because forcefully killing Python threads is very dangerous
-        timeout=RESEARCH_AGENT_TIMEOUT_SECONDS,
+        timeout=DR_RESEARCH_AGENT_TIMEOUT_S,
         timeout_callback=_on_research_agent_timeout,
     )
 

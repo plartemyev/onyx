@@ -1,20 +1,28 @@
-"""Tests for chat_utils.py, specifically get_custom_agent_prompt."""
+"""Tests for chat_utils.py: get_custom_agent_prompt, the shared parallel
+tool-call history builder, and convert_chat_history's result-retention policy."""
 
 from io import BytesIO
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from onyx.chat.chat_utils import (
     _build_tool_call_response_history_message,
     _get_or_extract_plaintext,
+    build_parallel_tool_call_messages,
     convert_chat_history,
+    create_tool_call_failure_messages,
     get_custom_agent_prompt,
 )
-from onyx.chat.models import ChatLoadedFile
+from onyx.chat.models import ChatLoadedFile, ToolCallSimple
 from onyx.configs.constants import DEFAULT_PERSONA_ID, MessageType
 from onyx.db.models import ChatMessage
 from onyx.file_store.models import ChatFileType
 from onyx.prompts.chat_prompts import TOOL_CALL_RESPONSE_CROSS_MESSAGE
+from onyx.prompts.tool_prompts import TOOL_CALL_FAILURE_PROMPT
+from onyx.server.query_and_chat.placement import Placement
+from onyx.tools.models import ToolCallKickoff
 
 
 class TestGetCustomAgentPrompt:
@@ -181,6 +189,91 @@ class TestBuildToolCallResponseHistoryMessage:
         assert message == TOOL_CALL_RESPONSE_CROSS_MESSAGE
 
 
+class TestBuildParallelToolCallMessages:
+    """The canonical OpenAI parallel tool calling builder shared by the
+    in-turn and cross-turn history paths."""
+
+    def _tool_call(self, tool_call_id: str, token_count: int) -> ToolCallSimple:
+        return ToolCallSimple(
+            tool_call_id=tool_call_id,
+            tool_name="internal_search",
+            tool_arguments={"queries": ["q"]},
+            token_count=token_count,
+        )
+
+    def test_shape_one_assistant_plus_one_response_per_call(self) -> None:
+        calls = [self._tool_call("call-1", 10), self._tool_call("call-2", 20)]
+        messages = build_parallel_tool_call_messages(
+            tool_calls=calls,
+            response_texts=["result one", "result two"],
+            token_counter=len,
+        )
+
+        assert len(messages) == 3
+        assistant, response_1, response_2 = messages
+        assert assistant.message_type == MessageType.ASSISTANT
+        assert assistant.message == ""
+        assert assistant.tool_calls == calls
+        # Assistant tokens = tool call tokens only (no assistant text).
+        assert assistant.token_count == 30
+        assert response_1.message_type == MessageType.TOOL_CALL_RESPONSE
+        assert response_1.tool_call_id == "call-1"
+        assert response_1.message == "result one"
+        assert response_1.token_count == len("result one")
+        assert response_2.tool_call_id == "call-2"
+        assert response_2.message == "result two"
+
+    def test_assistant_message_rides_on_the_tool_call_message(self) -> None:
+        """Per-cycle answer text is replayed cycle-aligned: it belongs on the
+        same assistant message as that cycle's tool calls."""
+        calls = [self._tool_call("call-1", 10)]
+        messages = build_parallel_tool_call_messages(
+            tool_calls=calls,
+            response_texts=["result"],
+            token_counter=len,
+            assistant_message="Let me search for that.",
+        )
+
+        assistant = messages[0]
+        assert assistant.message == "Let me search for that."
+        assert assistant.tool_calls == calls
+        assert assistant.token_count == 10 + len("Let me search for that.")
+
+    def test_mismatched_calls_and_responses_raise(self) -> None:
+        with pytest.raises(ValueError, match="exactly one response"):
+            build_parallel_tool_call_messages(
+                tool_calls=[self._tool_call("call-1", 5)],
+                response_texts=[],
+                token_counter=len,
+            )
+
+
+class TestCreateToolCallFailureMessages:
+    def test_uses_the_shared_builder_shape(self) -> None:
+        kickoffs = [
+            ToolCallKickoff(
+                tool_call_id="call-1",
+                tool_name="internal_search",
+                tool_args={"queries": ["q"]},
+                placement=Placement(turn_index=0),
+            )
+        ]
+        messages = create_tool_call_failure_messages(kickoffs, token_counter=len)
+
+        assert len(messages) == 2
+        assistant, response = messages
+        assert assistant.message_type == MessageType.ASSISTANT
+        assert assistant.tool_calls is not None
+        assert assistant.tool_calls[0].tool_call_id == "call-1"
+        assert response.message_type == MessageType.TOOL_CALL_RESPONSE
+        assert response.tool_call_id == "call-1"
+        assert response.message == TOOL_CALL_FAILURE_PROMPT
+        assert response.token_count == len(TOOL_CALL_FAILURE_PROMPT)
+
+    def test_empty_input(self) -> None:
+        assert create_tool_call_failure_messages([], token_counter=len) == []
+
+
 class TestGetOrExtractPlaintext:
     """Tests for the plaintext extraction cache used by chat file loading."""
 
@@ -249,7 +342,10 @@ class TestConvertChatHistory:
     Regression coverage for the project-image duplication bug: project images
     (passed via ``context_image_files``) must attach to the last USER message
     exactly once, and only to the last USER message — even when earlier USER
-    messages exist in the history.
+    messages exist in the history. Also covers the cross-turn tool result
+    retention policy: the most recent tool-using turn keeps its results in
+    full (bounded by ``max_recent_tool_response_tokens``), older turns are
+    tombstoned.
     """
 
     def _make_chat_message(
@@ -265,6 +361,25 @@ class TestConvertChatHistory:
         msg.files = None
         msg.tool_calls = None
         return msg
+
+    def _make_tool_call(
+        self,
+        tool_id: int,
+        tool_call_id: str,
+        turn_number: int = 0,
+        tool_call_response: str = "original tool output",
+        generated_images: list[dict] | None = None,
+        tool_call_tokens: int = 12,
+    ) -> MagicMock:
+        tool_call = MagicMock()
+        tool_call.tool_id = tool_id
+        tool_call.tool_call_id = tool_call_id
+        tool_call.turn_number = turn_number
+        tool_call.tool_call_arguments = {"queries": ["alpha"]}
+        tool_call.tool_call_tokens = tool_call_tokens
+        tool_call.tool_call_response = tool_call_response
+        tool_call.generated_images = generated_images
+        return tool_call
 
     def test_attaches_project_images_to_last_user_message_only_once(
         self,
@@ -313,15 +428,13 @@ class TestConvertChatHistory:
     def test_tool_response_placeholder_token_count_is_measured(self) -> None:
         """Cross-turn tool responses are replayed as a placeholder — its
         budgeted token count must come from the token counter, not a
-        hardcoded constant."""
-        tool_call = MagicMock()
-        tool_call.turn_number = 0
-        tool_call.tool_id = 1
-        tool_call.tool_call_id = "call-1"
-        tool_call.tool_call_arguments = {"queries": ["alpha"]}
-        tool_call.tool_call_tokens = 12
-        tool_call.generated_images = None
-        tool_call.tool_call_response = "original tool output"
+        hardcoded constant. A zero retention budget tombstones everything,
+        isolating the placeholder path."""
+        tool_call = self._make_tool_call(
+            tool_id=1,
+            tool_call_id="call-1",
+            tool_call_response="original tool output",
+        )
 
         assistant_msg = self._make_chat_message("final answer", MessageType.ASSISTANT)
         assistant_msg.tool_calls = [tool_call]
@@ -338,6 +451,7 @@ class TestConvertChatHistory:
             additional_context=None,
             token_counter=lambda s: len(s),
             tool_id_to_name_map={1: "internal_search"},
+            max_recent_tool_response_tokens=0,
         )
 
         tool_responses = [
@@ -348,3 +462,172 @@ class TestConvertChatHistory:
         assert len(tool_responses) == 1
         assert tool_responses[0].message == TOOL_CALL_RESPONSE_CROSS_MESSAGE
         assert tool_responses[0].token_count == len(TOOL_CALL_RESPONSE_CROSS_MESSAGE)
+
+    def test_recent_turn_results_retained_in_full(self) -> None:
+        """The most recent tool-using turn replays its full results; older
+        turns keep the tombstone."""
+        older_call = self._make_tool_call(
+            tool_id=1,
+            tool_call_id="call-old",
+            turn_number=0,
+            tool_call_response="results from turn one",
+        )
+        older_msg = self._make_chat_message("turn one answer", MessageType.ASSISTANT)
+        older_msg.tool_calls = [older_call]
+
+        recent_call = self._make_tool_call(
+            tool_id=1,
+            tool_call_id="call-new",
+            turn_number=0,
+            tool_call_response="results from turn two",
+        )
+        recent_msg = self._make_chat_message("turn two answer", MessageType.ASSISTANT)
+        recent_msg.tool_calls = [recent_call]
+
+        chat_history = [
+            self._make_chat_message("A question", MessageType.USER),
+            older_msg,
+            self._make_chat_message("Follow-up", MessageType.USER),
+            recent_msg,
+        ]
+
+        result = convert_chat_history(
+            chat_history=cast(list[ChatMessage], chat_history),
+            files=[],
+            context_image_files=[],
+            additional_context=None,
+            token_counter=lambda s: len(s),
+            tool_id_to_name_map={1: "internal_search"},
+        )
+
+        tool_responses = {
+            m.tool_call_id: m.message
+            for m in result.simple_messages
+            if m.message_type == MessageType.TOOL_CALL_RESPONSE
+        }
+        assert tool_responses["call-old"] == TOOL_CALL_RESPONSE_CROSS_MESSAGE
+        assert tool_responses["call-new"] == "results from turn two"
+
+    def test_retention_cap_tombsrones_older_results_of_the_recent_turn(self) -> None:
+        """Within the retained turn, newest results claim the budget first;
+        anything older that no longer fits is tombstoned."""
+        # Listed chronologically: call-1 ran first, call-2 second.
+        big_call = self._make_tool_call(
+            tool_id=1,
+            tool_call_id="call-1",
+            turn_number=0,
+            tool_call_response="x" * 100,
+        )
+        small_call = self._make_tool_call(
+            tool_id=1,
+            tool_call_id="call-2",
+            turn_number=0,
+            tool_call_response="y" * 20,
+        )
+        recent_msg = self._make_chat_message("turn answer", MessageType.ASSISTANT)
+        recent_msg.tool_calls = [big_call, small_call]
+
+        chat_history = [
+            self._make_chat_message("A question", MessageType.USER),
+            recent_msg,
+        ]
+
+        result = convert_chat_history(
+            chat_history=cast(list[ChatMessage], chat_history),
+            files=[],
+            context_image_files=[],
+            additional_context=None,
+            token_counter=lambda s: len(s),
+            tool_id_to_name_map={1: "internal_search"},
+            max_recent_tool_response_tokens=50,
+        )
+
+        tool_responses = {
+            m.tool_call_id: m.message
+            for m in result.simple_messages
+            if m.message_type == MessageType.TOOL_CALL_RESPONSE
+        }
+        # The newest (call-2) fits in the 50-token budget; the older one does not.
+        assert tool_responses["call-2"] == "y" * 20
+        assert tool_responses["call-1"] == TOOL_CALL_RESPONSE_CROSS_MESSAGE
+
+    def test_retention_cap_zero_tombstones_everything(self) -> None:
+        single_call = self._make_tool_call(
+            tool_id=1,
+            tool_call_id="call-1",
+            tool_call_response="full result",
+        )
+        recent_msg = self._make_chat_message("turn answer", MessageType.ASSISTANT)
+        recent_msg.tool_calls = [single_call]
+
+        chat_history = [
+            self._make_chat_message("A question", MessageType.USER),
+            recent_msg,
+        ]
+
+        result = convert_chat_history(
+            chat_history=cast(list[ChatMessage], chat_history),
+            files=[],
+            context_image_files=[],
+            additional_context=None,
+            token_counter=lambda s: len(s),
+            tool_id_to_name_map={1: "internal_search"},
+            max_recent_tool_response_tokens=0,
+        )
+
+        tool_responses = [
+            m.message
+            for m in result.simple_messages
+            if m.message_type == MessageType.TOOL_CALL_RESPONSE
+        ]
+        assert tool_responses == [TOOL_CALL_RESPONSE_CROSS_MESSAGE]
+
+    def test_image_generation_results_replay_at_any_age(self) -> None:
+        """generate_image responses replay their image references regardless
+        of the retention policy — the model needs the file ids to edit them."""
+        image_call = self._make_tool_call(
+            tool_id=2,
+            tool_call_id="call-img",
+            tool_call_response="image metadata json",
+            generated_images=[{"file_id": "img-1", "revised_prompt": "p1"}],
+        )
+        image_msg = self._make_chat_message("older turn answer", MessageType.ASSISTANT)
+        image_msg.tool_calls = [image_call]
+
+        recent_call = self._make_tool_call(
+            tool_id=1,
+            tool_call_id="call-recent",
+            tool_call_response="recent results",
+        )
+        recent_msg = self._make_chat_message(
+            "recent turn answer", MessageType.ASSISTANT
+        )
+        recent_msg.tool_calls = [recent_call]
+
+        chat_history = [
+            self._make_chat_message("A question", MessageType.USER),
+            image_msg,
+            self._make_chat_message("Follow-up", MessageType.USER),
+            recent_msg,
+        ]
+
+        result = convert_chat_history(
+            chat_history=cast(list[ChatMessage], chat_history),
+            files=[],
+            context_image_files=[],
+            additional_context=None,
+            token_counter=lambda s: len(s),
+            tool_id_to_name_map={1: "internal_search", 2: "generate_image"},
+            max_recent_tool_response_tokens=0,
+        )
+
+        tool_responses = {
+            m.tool_call_id: m.message
+            for m in result.simple_messages
+            if m.message_type == MessageType.TOOL_CALL_RESPONSE
+        }
+        assert (
+            tool_responses["call-img"]
+            == '[{"file_id": "img-1", "revised_prompt": "p1"}]'
+        )
+        assert tool_responses["call-recent"] == TOOL_CALL_RESPONSE_CROSS_MESSAGE
