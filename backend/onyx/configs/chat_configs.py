@@ -48,6 +48,28 @@ LLM_FIRST_CHUNK_MAX_RETRIES = max(
 # Socket-read timeout for deep-research report calls — bounds inter-chunk gaps
 # (including a zero-chunk stall), not total generation time.
 DR_REPORT_LLM_TIMEOUT_S = int(os.environ.get("DR_REPORT_LLM_TIMEOUT_S") or "60")
+# Deep Research wall-clock limits. Defaults assume reasonably fast inference;
+# raise via env when running on slow hardware.
+# Overall budget before the orchestrator forces final report generation. The
+# run may still exceed it: a research cycle that starts just before the cutoff
+# runs to completion.
+DR_FORCE_REPORT_S = int(os.environ.get("DR_FORCE_REPORT_S") or 30 * 60)
+# Orchestrator rounds (plan → research → …). The final report is forced at the
+# last cycle even if time remains, so this bounds total work alongside
+# DR_FORCE_REPORT_S.
+DR_MAX_ORCHESTRATOR_CYCLES = int(os.environ.get("DR_MAX_ORCHESTRATOR_CYCLES") or "8")
+DR_MAX_ORCHESTRATOR_CYCLES_REASONING = int(
+    os.environ.get("DR_MAX_ORCHESTRATOR_CYCLES_REASONING") or "4"
+)
+# Per research-agent call: overall wall-clock timeout (a timed-out agent
+# returns a placeholder report), and time before its intermediate report is
+# forced.
+DR_RESEARCH_AGENT_TIMEOUT_S = int(
+    os.environ.get("DR_RESEARCH_AGENT_TIMEOUT_S") or 30 * 60
+)
+DR_RESEARCH_AGENT_FORCE_REPORT_S = int(
+    os.environ.get("DR_RESEARCH_AGENT_FORCE_REPORT_S") or 12 * 60
+)
 # Timeout for non-streaming secondary LLM flows (e.g. search section-relevance
 # classification and section-expansion selection). These are short, low-effort
 # calls; the bound exists so a stalled provider connection fails fast into the
