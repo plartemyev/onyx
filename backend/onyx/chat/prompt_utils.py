@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from onyx.configs.app_configs import PYTHON_SANDBOX_NETWORK_ENABLED
 from onyx.db.enums import SUPPORTED_LANGUAGE_ENGLISH_NAMES, SupportedLanguage
 from onyx.db.memory import UserMemoryContext
 from onyx.db.persona import get_default_behavior_persona
@@ -22,6 +23,8 @@ from onyx.prompts.tool_prompts import (
     MEMORY_GUIDANCE,
     OPEN_URLS_GUIDANCE,
     PYTHON_TOOL_GUIDANCE,
+    PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE,
+    PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE,
     TOOL_DESCRIPTION_SEARCH_GUIDANCE,
     TOOL_SECTION_HEADER,
     WEB_SEARCH_GUIDANCE,
@@ -247,6 +250,18 @@ def _build_user_information_section(
     return USER_INFORMATION_HEADER + "\n".join(sections)
 
 
+def _build_python_tool_guidance() -> str:
+    """run_python guidance whose network section matches the deployment's
+    sandbox configuration (PYTHON_EXECUTOR_DOCKER_NETWORK)."""
+    return PYTHON_TOOL_GUIDANCE.format(
+        network_guidance=(
+            PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE
+            if PYTHON_SANDBOX_NETWORK_ENABLED
+            else PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE
+        )
+    )
+
+
 def build_system_prompt(
     base_system_prompt: str,
     datetime_aware: bool = False,
@@ -286,7 +301,7 @@ def build_system_prompt(
                 site_colon_disabled=WEB_SEARCH_SITE_DISABLED_GUIDANCE
             ),
             OPEN_URLS_GUIDANCE,
-            PYTHON_TOOL_GUIDANCE,
+            _build_python_tool_guidance(),
             GENERATE_IMAGE_GUIDANCE,
             MEMORY_GUIDANCE,
         ]
@@ -328,7 +343,7 @@ def build_system_prompt(
             tool_guidance_sections.append(OPEN_URLS_GUIDANCE)
 
         if has_python or include_all_guidance:
-            tool_guidance_sections.append(PYTHON_TOOL_GUIDANCE)
+            tool_guidance_sections.append(_build_python_tool_guidance())
 
         if has_generate_image or include_all_guidance:
             tool_guidance_sections.append(GENERATE_IMAGE_GUIDANCE)

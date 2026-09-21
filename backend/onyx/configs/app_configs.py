@@ -1704,6 +1704,14 @@ CODE_INTERPRETER_STAGING_CONCURRENCY = int(
     os.environ.get("CODE_INTERPRETER_STAGING_CONCURRENCY") or 8
 )
 
+# Whether sandboxed code can reach the network. Mirrors the code-interpreter
+# service's PYTHON_EXECUTOR_DOCKER_NETWORK: the compose default joins the
+# compose network, "none" isolates the sandbox. The run_python tool guidance
+# describes whichever behavior is active.
+PYTHON_SANDBOX_NETWORK_ENABLED = (
+    os.environ.get("PYTHON_EXECUTOR_DOCKER_NETWORK") or "onyx_default"
+) != "none"
+
 # Per-call MCP read timeout; configurable since some tools (e.g. data-agent
 # servers) run longer than the default.
 MCP_TOOL_CALL_TIMEOUT_SECONDS = int(

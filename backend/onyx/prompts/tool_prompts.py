@@ -51,13 +51,27 @@ Do not open URLs that are image files like .png, .jpg, etc.
 You should almost always use open_url after a web_search call. Use this tool when a user asks about a specific provided URL.
 """.lstrip()
 
+PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE = """
+Internet access is available in the sandbox: your code can fetch public URLs and call APIs. \
+This includes downloading files such as images that the user asks about: fetch the bytes and save them in the current directory, and the user gets them in chat. \
+The sandbox Python has no pip, and `uv` is not available. Plain `pip install` and `python -m pip` fail. \
+To add a package, install it into a local folder with the system pip and add that folder to `sys.path`: \
+`subprocess.run(["pip", "install", "--no-cache-dir", "--target", "_pylibs", "<package>"], check=True)` then `sys.path.insert(0, "_pylibs")` before the import. \
+Installs do not persist between calls, so put both lines at the top of every script that needs the package, and prefer the preinstalled libraries first. \
+If a network request fails, continue without it.
+""".strip()
+
+PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE = """
+Internet access for this session is disabled. Do not make external web requests, API calls, or package installations as they will fail.
+""".strip()
+
 PYTHON_TOOL_GUIDANCE = """
 ## run_python
 Use the `run_python` tool to execute Python code in an isolated sandbox. The tool will respond with the output of the execution or time out after 60.0 seconds.
 Any files uploaded to the chat will be automatically be available in the execution environment's current directory. \
 The current directory in the file system can be used to save and persist user files. Files written to the current directory will be returned with a `file_link`. \
 Use this to give the user a way to download the file OR to display generated images.
-Internet access for this session is disabled. Do not make external web requests or API calls as they will fail.
+{network_guidance}
 Use `openpyxl` to read and write Excel files. You have access to libraries like numpy, pandas, scipy, matplotlib, and PIL.
 Write chart titles, axis labels, legends, and other text rendered into images in the language you reply in. \
 The sandbox fonts cannot shape Arabic or render CJK glyphs (they come out as disconnected letters or boxes), so for those languages write the rendered text in English and explain the labels in your reply.

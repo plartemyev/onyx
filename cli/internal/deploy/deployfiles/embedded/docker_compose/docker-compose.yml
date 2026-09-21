@@ -554,6 +554,11 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # Network for sandboxed executor containers. The default joins the compose
+      # network, giving sandboxed code Internet and LAN access. Set to "none" in
+      # .env to restore full network isolation.
+      - PYTHON_EXECUTOR_DOCKER_NETWORK=${PYTHON_EXECUTOR_DOCKER_NETWORK:-onyx_default}
     healthcheck:
       # /health probes the executor backend, not just the API process: it needs
       # the Docker daemon reachable and the executor image present on the host.
