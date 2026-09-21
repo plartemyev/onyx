@@ -1214,6 +1214,25 @@ OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED = (
     os.environ.get("OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED", "true").lower() == "true"
 )
 
+# Outbound fetch pacing for OnyxWebCrawler (open_url + download_file +
+# analyze_image): requests sharing a provider (imgur, reddit, ...) are
+# serialized and spaced a random gap apart, so image CDNs and search engines
+# never see same-provider bursts. Different providers stay parallel.
+REQUEST_PACING_ENABLED = (
+    os.environ.get("REQUEST_PACING_ENABLED", "true").lower() == "true"
+)
+REQUEST_PACING_MIN_GAP_SECONDS = float(
+    os.environ.get("REQUEST_PACING_MIN_GAP_SECONDS") or 0.7
+)
+REQUEST_PACING_MAX_GAP_SECONDS = float(
+    os.environ.get("REQUEST_PACING_MAX_GAP_SECONDS") or 5.0
+)
+# Upper bound on time spent queued behind same-provider requests, so a
+# pile-up cannot stall a chat turn forever (mirrors the SearXNG pacer).
+REQUEST_PACING_MAX_WAIT_SECONDS = float(
+    os.environ.get("REQUEST_PACING_MAX_WAIT_SECONDS") or 30.0
+)
+
 # NOTE: the three SSRF env vars below (OPEN_URL_VALIDATE_SSRF,
 # MCP_SERVER_ALLOW_PRIVATE_NETWORK, MCP_SERVER_ALLOW_LOOPBACK) are no longer read
 # at their call sites. They only seed the default "SSRF Protection" level when no

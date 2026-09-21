@@ -2,23 +2,35 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import requests
 
 from onyx.configs.app_configs import OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED
-from onyx.file_processing.html_utils import ParsedHTML, web_html_cleanup
+from onyx.file_processing.html_utils import (
+    ParsedHTML,
+    extract_image_urls,
+    web_html_cleanup,
+)
 from onyx.server.security.models import outbound_allow_private_network
 from onyx.server.security.store import get_security_settings
 from onyx.tools.tool_implementations.open_url.models import (
+    FailedFetch,
     WebContent,
     WebContentProvider,
 )
 from onyx.utils.logger import setup_logger
 from onyx.utils.playwright_fetch import (
+    DEFAULT_HEADERS,
+    IMAGE_FETCH_HEADERS,
+    DownloadedContent,
     RenderedPage,
+    fetch_content_bytes,
     fetch_rendered_html,
     looks_like_cloudflare_challenge,
 )
+from onyx.utils.request_pacer import Pacer, get_default_pacer
 from onyx.utils.url import SSRFException, ssrf_safe_get
 from onyx.utils.web_content import (
     decode_html_bytes,
@@ -35,6 +47,7 @@ DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_USER_AGENT = "OnyxWebCrawler/1.0 (+https://www.onyx.app)"
 DEFAULT_MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 DEFAULT_MAX_HTML_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+DEFAULT_MAX_DOWNLOAD_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 DEFAULT_MAX_WORKERS = 5
 
 # Headers that, when present on a 4xx response, signal that the upstream
@@ -63,8 +76,14 @@ class FailureReason:
     NETWORK_ERROR = "network error while fetching the URL"
     OVERSIZED_HTML = "HTML response exceeded the configured maximum size"
     OVERSIZED_PDF = "PDF response exceeded the configured maximum size"
+    OVERSIZED_FILE = "file exceeded the configured maximum download size"
     DECODE_ERROR = "could not decode the response body"
     EMPTY_OR_UNPARSEABLE = "response could not be parsed into readable text"
+    HTML_NOT_FILE = "the URL returned a web page, not a downloadable file"
+    IMAGE_NOT_AVAILABLE = (
+        "the image URL returned a web page instead of the image file — the "
+        "image is likely deleted, private, or not directly downloadable"
+    )
 
     @staticmethod
     def http_status(status_code: int) -> str:
@@ -82,7 +101,79 @@ def _failed_result(url: str, failure_reason: str | None = None) -> WebContent:
     )
 
 
-def _has_cloudflare_signals(response: requests.Response) -> bool:
+@dataclass
+class FetchedFile:
+    """Binary content fetched from a URL, with its declared content type."""
+
+    content: bytes
+    content_type: str | None
+
+
+def primary_content_type(header_value: str | None) -> str | None:
+    """Normalize a Content-Type header to its bare MIME type."""
+    if not header_value:
+        return None
+    return header_value.split(";", 1)[0].strip().lower() or None
+
+
+def sniff_mime_type(content: bytes) -> str | None:
+    """Best-effort MIME detection from magic bytes, for servers that send a
+    generic Content-Type."""
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    if content.startswith(b"%PDF-"):
+        return "application/pdf"
+    return None
+
+
+# Image CDN hosts that serve file bytes directly. Their URLs often carry no
+# extension (e.g. https://i.imgur.com/AbCdEf), so the extension check alone
+# is not enough.
+_IMAGE_HOSTS = (
+    "i.imgur.com",
+    "i.redd.it",
+    "preview.redd.it",
+    "external-preview.redd.it",
+    "i.redditmedia.com",
+    "styles.redditmedia.com",
+)
+
+_IMAGE_EXTENSIONS = (
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".svg",
+    ".tiff",
+    ".webp",
+)
+
+
+def looks_like_image_url(url: str) -> bool:
+    """True when the URL points at a directly served image, by image CDN host
+    or file extension. Used to fetch with an <img>-style request instead of a
+    page-navigation one (see IMAGE_FETCH_HEADERS)."""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if any(
+        host == image_host or host.endswith(f".{image_host}")
+        for image_host in _IMAGE_HOSTS
+    ):
+        return True
+    path = parsed.path.lower()
+    return any(path.endswith(extension) for extension in _IMAGE_EXTENSIONS)
+
+
+def has_cloudflare_signals(response: requests.Response) -> bool:
     """True iff the response carries actual Cloudflare-specific markers.
 
     Strict on purpose — only used to choose between the CF-specific failure
@@ -98,21 +189,21 @@ def _has_cloudflare_signals(response: requests.Response) -> bool:
     return server.startswith("cloudflare")
 
 
-def _should_try_playwright_fallback(response: requests.Response) -> bool:
+def should_try_playwright_fallback(response: requests.Response) -> bool:
     """True if a Playwright render is plausibly worth attempting.
 
-    Broader than `_has_cloudflare_signals` — any 403 is cheap insurance to
+    Broader than `has_cloudflare_signals` — any 403 is cheap insurance to
     retry through a real browser (some sites serve JS-protected interstitials
-    without CF headers). Real 401/404/410/5xx errors fall through unchanged.
+    without CF headers). 429 is included because antibot WAFs rate-limit
+    datacenter clients before serving a challenge. Real 401/404/410/5xx
+    errors fall through unchanged.
     """
     return response.status_code >= 300 and (
-        response.status_code == 403 or _has_cloudflare_signals(response)
+        response.status_code in (403, 429) or has_cloudflare_signals(response)
     )
 
 
-def _failure_reason_for_status(
-    response: requests.Response, has_cf_signals: bool
-) -> str:
+def failure_reason_for_status(response: requests.Response, has_cf_signals: bool) -> str:
     """Pick the LLM-facing failure reason for a 4xx/5xx upstream response.
 
     Only labels failures as Cloudflare when the response actually carries
@@ -152,6 +243,7 @@ def _parse_html_to_web_content(url: str, html: str) -> WebContent:
         full_content=text_content,
         published_date=None,
         scrape_successful=True,
+        image_urls=extract_image_urls(html, url),
     )
 
 
@@ -177,6 +269,7 @@ class OnyxWebCrawler(WebContentProvider):
         max_html_size_bytes: int | None = None,
         playwright_fallback_enabled: bool = OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED,
         validate_ssrf: bool | None = None,
+        pacer: Pacer | None = None,
     ) -> None:
         self._read_timeout_seconds = timeout_seconds
         self._connect_timeout_seconds = connect_timeout_seconds
@@ -186,6 +279,8 @@ class OnyxWebCrawler(WebContentProvider):
         # None => resolve from the admin SSRF Protection setting per fetch (see
         # _should_validate_ssrf); a non-None caller value pins it.
         self._validate_ssrf_override = validate_ssrf
+        # Shared by default so every crawler in the process paces jointly.
+        self._pacer = pacer if pacer is not None else get_default_pacer()
         self._headers = {
             "User-Agent": user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -224,6 +319,7 @@ class OnyxWebCrawler(WebContentProvider):
             return _failed_result(url, FailureReason.NETWORK_ERROR)
 
     def _fetch_url(self, url: str) -> WebContent:
+        self._pacer.pace(url)
         try:
             response = ssrf_safe_get(
                 url,
@@ -256,10 +352,10 @@ class OnyxWebCrawler(WebContentProvider):
             #     either headers or a CF body returned by the render. A bare
             #     403 from e.g. a private GitHub repo or expired presigned
             #     S3 URL gets the generic-403 reason instead).
-            has_cf_signals = _has_cloudflare_signals(response)
+            has_cf_signals = has_cloudflare_signals(response)
             try_fallback = (
                 self._playwright_fallback_enabled
-                and _should_try_playwright_fallback(response)
+                and should_try_playwright_fallback(response)
             )
 
             if try_fallback:
@@ -279,7 +375,7 @@ class OnyxWebCrawler(WebContentProvider):
 
             logger.warning("Onyx crawler received %s for %s", response.status_code, url)
             return _failed_result(
-                url, _failure_reason_for_status(response, has_cf_signals)
+                url, failure_reason_for_status(response, has_cf_signals)
             )
 
         content_type = response.headers.get("Content-Type", "")
@@ -339,6 +435,161 @@ class OnyxWebCrawler(WebContentProvider):
             scrape_successful=True,
         )
 
+    def download_file_bytes(
+        self,
+        url: str,
+        *,
+        max_file_size_bytes: int = DEFAULT_MAX_DOWNLOAD_SIZE_BYTES,
+    ) -> FetchedFile | FailedFetch:
+        """Download binary content for a URL with bot-protection fallbacks.
+
+        Fast path: SSRF-safe GET with browser-like headers — navigation-style
+        for page-like URLs, `<img>`-style for image URLs (image CDNs like
+        imgur and reddit redirect navigation requests for direct image URLs
+        to their HTML viewer pages). On 403 / Cloudflare signals (or any
+        fallback-worthy 4xx), retries via a one-shot headless Chromium fetch
+        that inherits the browser's TLS fingerprint, User-Agent, and cookies.
+
+        Returns:
+            FetchedFile on success. FailedFetch with an LLM-facing reason
+            otherwise (auth walls, challenges, oversized files, network
+            errors, or URLs that return a web page instead of a file).
+        """
+        # Image CDNs (imgur, reddit, ...) redirect navigation-style requests
+        # for direct image URLs to their HTML viewer pages, which this method
+        # rejects as HTML_NOT_FILE. Fetch image-like URLs the way a browser
+        # <img> load does; those CDNs serve the bytes for that.
+        headers = IMAGE_FETCH_HEADERS if looks_like_image_url(url) else DEFAULT_HEADERS
+        self._pacer.pace(url)
+        try:
+            response = ssrf_safe_get(
+                url,
+                headers=headers,
+                timeout=(self._connect_timeout_seconds, self._read_timeout_seconds),
+                allow_private_network=not self._should_validate_ssrf(),
+            )
+        except SSRFException:
+            logger.error("SSRF protection blocked download of %s", url)
+            return FailedFetch(url=url, failure_reason=FailureReason.SSRF_BLOCKED)
+        except Exception as exc:
+            logger.warning(
+                "Download fetch failed for %s (%s)", url, exc.__class__.__name__
+            )
+            return FailedFetch(url=url, failure_reason=FailureReason.NETWORK_ERROR)
+
+        content_type = primary_content_type(response.headers.get("Content-Type"))
+        content = b""
+        if response.status_code < 400:
+            content = response.content
+        else:
+            has_cf_signals = has_cloudflare_signals(response)
+            try_fallback = self._playwright_fallback_enabled and (
+                should_try_playwright_fallback(response)
+            )
+            if try_fallback:
+                logger.info(
+                    "Download got HTTP %s for %s; retrying via Playwright",
+                    response.status_code,
+                    url,
+                )
+                fallback = self._download_via_playwright(
+                    url, max_file_size_bytes=max_file_size_bytes
+                )
+                if fallback is not None:
+                    return fallback
+            return FailedFetch(
+                url=url,
+                failure_reason=failure_reason_for_status(response, has_cf_signals),
+            )
+
+        if len(content) > max_file_size_bytes:
+            return FailedFetch(url=url, failure_reason=FailureReason.OVERSIZED_FILE)
+        if not content:
+            return FailedFetch(url=url, failure_reason=FailureReason.NETWORK_ERROR)
+        if content_type and (
+            content_type.startswith("text/html")
+            or content_type == "application/xhtml+xml"
+        ):
+            # Antibot-protected hosts (imgur, reddit, ...) commonly answer
+            # direct file fetches with an HTTP 200 HTML block page instead of
+            # an error status, so this is the *most likely* failure mode for
+            # major sites. First trust magic bytes over a mislabelled header;
+            # then retry through a real browser before giving up.
+            sniffed_type = sniff_mime_type(content)
+            if sniffed_type:
+                logger.info(
+                    "Download of %s had %s Content-Type but binary magic bytes; "
+                    "trusting the bytes",
+                    url,
+                    content_type,
+                )
+                return FetchedFile(content=content, content_type=sniffed_type)
+            if self._playwright_fallback_enabled:
+                logger.info(
+                    "Download of %s got an HTML page with HTTP %s; retrying via "
+                    "Playwright",
+                    url,
+                    response.status_code,
+                )
+                fallback = self._download_via_playwright(
+                    url, max_file_size_bytes=max_file_size_bytes
+                )
+                if fallback is not None:
+                    return fallback
+            # For image URLs this is the imgur/reddit viewer-page pattern: the
+            # CDN served its HTML page instead of the file, so the link points
+            # at content the user cannot download directly.
+            return FailedFetch(
+                url=url,
+                failure_reason=(
+                    FailureReason.IMAGE_NOT_AVAILABLE
+                    if looks_like_image_url(url)
+                    else FailureReason.HTML_NOT_FILE
+                ),
+            )
+        return FetchedFile(content=content, content_type=content_type)
+
+    def _download_via_playwright(
+        self, url: str, *, max_file_size_bytes: int
+    ) -> FetchedFile | FailedFetch | None:
+        """One-shot headless-Chromium binary fetch. Returns None when the
+        fallback gave no new information (caller keeps its status-based reason).
+        """
+        self._pacer.pace(url)
+        rendered_content: DownloadedContent | None = fetch_content_bytes(
+            url, allow_private_network=not self._should_validate_ssrf()
+        )
+        if rendered_content is None:
+            return None
+
+        if len(rendered_content.content) > max_file_size_bytes:
+            return FailedFetch(url=url, failure_reason=FailureReason.OVERSIZED_FILE)
+
+        content_type = primary_content_type(rendered_content.content_type)
+        if content_type and (
+            content_type.startswith("text/html")
+            or content_type == "application/xhtml+xml"
+        ):
+            # The challenge did not resolve (or the URL genuinely serves HTML).
+            snippet = rendered_content.content[:4096].decode("utf-8", errors="ignore")
+            if looks_like_cloudflare_challenge(snippet):
+                return FailedFetch(
+                    url=url, failure_reason=FailureReason.CLOUDFLARE_CHALLENGE
+                )
+            # For image URLs the render typically lands on the host's viewer
+            # page (imgur/reddit pattern) — say that instead of the generic
+            # not-a-file reason.
+            return FailedFetch(
+                url=url,
+                failure_reason=(
+                    FailureReason.IMAGE_NOT_AVAILABLE
+                    if looks_like_image_url(url)
+                    else FailureReason.HTML_NOT_FILE
+                ),
+            )
+
+        return FetchedFile(content=rendered_content.content, content_type=content_type)
+
     def _fetch_via_playwright(self, url: str) -> WebContent | None:
         """Try a one-shot headless render.
 
@@ -353,6 +604,7 @@ class OnyxWebCrawler(WebContentProvider):
               or rendered HTML didn't parse to anything). Caller should fall
               back to its own status-based failure reason.
         """
+        self._pacer.pace(url)
         rendered: RenderedPage | None = fetch_rendered_html(
             url, allow_private_network=not self._should_validate_ssrf()
         )

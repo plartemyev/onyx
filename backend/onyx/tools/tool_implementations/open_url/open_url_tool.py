@@ -382,6 +382,8 @@ def _convert_sections_to_llm_string_with_citations(
 
         if chunk.metadata:
             result["metadata"] = json.dumps(chunk.metadata, ensure_ascii=False)
+        if chunk.image_urls:
+            result["images"] = chunk.image_urls
 
         # Calculate chars used by metadata fields (everything except content)
         metadata_chars = _estimate_result_chars(result)

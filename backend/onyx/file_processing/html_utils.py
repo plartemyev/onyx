@@ -3,6 +3,7 @@ from copy import copy
 from dataclasses import dataclass
 from io import BytesIO
 from typing import IO
+from urllib.parse import urljoin
 
 import bs4
 
@@ -174,6 +175,53 @@ def format_document_soup(
 def parse_html_page_basic(text: str | BytesIO | IO[bytes]) -> str:
     soup = bs4.BeautifulSoup(text, "lxml")
     return format_document_soup(soup)
+
+
+_IMG_ELEMENT = "img"
+_SRC_ATTRIBUTE = "src"
+# Attributes used by common lazy-loading libraries as the real image source
+_LAZY_SRC_ATTRIBUTES = ("data-src", "data-lazy-src", "data-original")
+_DATA_URI_PREFIX = "data:"
+# Cap on direct image URLs extracted from a single page for the open_url tool
+MAX_IMAGE_URLS_PER_PAGE = 10
+
+
+def extract_image_urls(
+    html: str, base_url: str, max_images: int = MAX_IMAGE_URLS_PER_PAGE
+) -> list[str]:
+    """Extract direct image URLs from `<img>` tags in an HTML page.
+
+    Resolves relative URLs against `base_url`, checks lazy-load source
+    attributes, skips data URIs and non-http(s) schemes, dedupes, and caps
+    the result. Query strings are preserved because image CDN URLs typically
+    require their params (size, format, signatures) to serve the image.
+    """
+    if not html:
+        return []
+
+    soup = bs4.BeautifulSoup(html, "lxml")
+    image_urls: list[str] = []
+    seen: set[str] = set()
+    for img in soup.find_all(_IMG_ELEMENT):
+        # Skip obvious tracking pixels by their declared dimensions
+        if img.get("width") in ("0", "1") or img.get("height") in ("0", "1"):
+            continue
+        for attribute in (_SRC_ATTRIBUTE, *_LAZY_SRC_ATTRIBUTES):
+            raw_src = img.get(attribute)
+            src = raw_src[0] if isinstance(raw_src, list) else raw_src
+            if not src or src.startswith(_DATA_URI_PREFIX):
+                continue
+            absolute_url = urljoin(base_url, src.strip())
+            if not absolute_url.startswith(("http://", "https://")):
+                continue
+            if absolute_url in seen:
+                break
+            seen.add(absolute_url)
+            image_urls.append(absolute_url)
+            break
+        if len(image_urls) >= max_images:
+            break
+    return image_urls
 
 
 def web_html_cleanup(

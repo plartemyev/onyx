@@ -13,6 +13,9 @@ class WebContent(BaseModel):
     full_content: str
     published_date: datetime | None = None
     scrape_successful: bool = True
+    # Direct image URLs found in `<img>` tags on the page. Not normalized:
+    # image CDN URLs usually require their query params intact.
+    image_urls: list[str] = []
     # Short, LLM-/admin-facing explanation of why a fetch failed (set when
     # `scrape_successful=False`). Examples: "blocked by a Cloudflare bot
     # challenge — try a different URL or configure Firecrawl as the web

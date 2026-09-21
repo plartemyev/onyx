@@ -10,12 +10,23 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import onyx.tools.tool_implementations.open_url.onyx_web_crawler as crawler_module
 from onyx.tools.tool_implementations.open_url.onyx_web_crawler import (
     FailureReason,
     OnyxWebCrawler,
 )
 from onyx.utils.playwright_fetch import RenderedPage
+from onyx.utils.request_pacer import NullPacer
+
+
+@pytest.fixture(autouse=True)
+def _disable_request_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep real per-provider sleeps (0.7-5s) out of unit tests. Tests that
+    exercise pacing inject a recording pacer via the crawler constructor."""
+    monkeypatch.setattr(crawler_module, "get_default_pacer", lambda: NullPacer())
+
 
 SUCCESS_HTML = "<html><head><title>Real Page</title></head><body><p>Hello world, this is real content from the page after rendering.</p></body></html>"
 # Empty rendered page — what we'd get if Playwright navigation produced nothing

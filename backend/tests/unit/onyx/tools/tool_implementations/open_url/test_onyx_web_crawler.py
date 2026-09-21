@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,14 @@ from onyx.tools.tool_implementations.open_url.onyx_web_crawler import (
     DEFAULT_READ_TIMEOUT_SECONDS,
     OnyxWebCrawler,
 )
+from onyx.utils.request_pacer import NullPacer
+
+
+@pytest.fixture(autouse=True)
+def _disable_request_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep real per-provider sleeps (0.7-5s) out of unit tests. Tests that
+    exercise pacing inject a recording pacer via the crawler constructor."""
+    monkeypatch.setattr(crawler_module, "get_default_pacer", lambda: NullPacer())
 
 
 class FakeResponse(BaseModel):
@@ -24,6 +33,36 @@ class FakeResponse(BaseModel):
     text: str = ""
     apparent_encoding: str | None = None
     encoding: str | None = None
+
+
+def test_fetch_url_extracts_image_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    crawler = OnyxWebCrawler()
+    html = (
+        "<html><body><p>Some readable content.</p>"
+        '<img src="/images/hero.jpg?w=800">'
+        '<img src="https://cdn.example.com/abs.png">'
+        '<img src="data:image/png;base64,AAAA">'
+        "</body></html>"
+    ).encode()
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html; charset=utf-8"},
+        content=html,
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    result = crawler._fetch_url("https://example.com/page")
+
+    assert result.scrape_successful is True
+    assert result.image_urls == [
+        "https://example.com/images/hero.jpg?w=800",
+        "https://cdn.example.com/abs.png",
+    ]
 
 
 def test_fetch_url_pdf_with_content_type(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -413,3 +452,584 @@ def test_should_validate_ssrf_override_pins(monkeypatch: pytest.MonkeyPatch) -> 
     crawler = OnyxWebCrawler(validate_ssrf=False)
     _pin_level(monkeypatch, SSRFProtectionLevel.VALIDATE_ALL)
     assert crawler._should_validate_ssrf() is False
+
+
+def _jpeg_response() -> FakeResponse:
+    return FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "image/jpeg"},
+        content=b"\xff\xd8\xff\xe0jpegdata",
+    )
+
+
+def test_download_file_bytes_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    crawler = OnyxWebCrawler()
+    response = _jpeg_response()
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/cat.jpg")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert result.content == b"\xff\xd8\xff\xe0jpegdata"
+    assert result.content_type == "image/jpeg"
+
+
+class _RecordingPacer:
+    def __init__(self) -> None:
+        self.paced_urls: list[str] = []
+
+    def pace(self, url: str) -> None:
+        self.paced_urls.append(url)
+
+
+def test_download_file_bytes_paces_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pacer = _RecordingPacer()
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=False, pacer=pacer)
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: _jpeg_response(),  # noqa: ARG005
+    )
+
+    crawler.download_file_bytes("https://i.imgur.com/AKVZMd3b.jpg")
+
+    assert pacer.paced_urls == ["https://i.imgur.com/AKVZMd3b.jpg"]
+
+
+def test_download_file_bytes_paces_playwright_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The browser retry is a fresh request to the same provider, so it is
+    paced too."""
+    pacer = _RecordingPacer()
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True, pacer=pacer)
+    response = FakeResponse(
+        status_code=403,
+        headers={},
+        content=b"blocked",
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: None,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://i.imgur.com/AKVZMd3b.jpg")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert pacer.paced_urls == ["https://i.imgur.com/AKVZMd3b.jpg"] * 2
+
+
+def test_fetch_url_paces_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    pacer = _RecordingPacer()
+    crawler = OnyxWebCrawler(pacer=pacer)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html; charset=utf-8"},
+        content=b"<html><body><p>Readable text.</p></body></html>",
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    crawler._fetch_url("https://example.com/page")
+
+    assert pacer.paced_urls == ["https://example.com/page"]
+
+
+def test_download_file_bytes_rejects_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=False)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html; charset=utf-8"},
+        content=b"<html><body>page</body></html>",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/page")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.HTML_NOT_FILE
+
+
+def test_download_file_bytes_rejects_html_after_playwright_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 HTML response retries via Playwright, and when the real browser
+    also yields no usable bytes, the failure reason stays HTML_NOT_FILE."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content=b"<html><body>blocked</body></html>",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+    fallback_calls: list[str] = []
+
+    def _no_bytes(url: str, **kwargs: Any) -> None:  # noqa: ARG001
+        fallback_calls.append(url)
+        return None
+
+    monkeypatch.setattr(crawler_module, "fetch_content_bytes", _no_bytes)
+
+    result = crawler.download_file_bytes("https://example.com/page")
+
+    assert fallback_calls == ["https://example.com/page"]
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.HTML_NOT_FILE
+
+
+def test_download_file_bytes_html_page_falls_back_to_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 200 + HTML (the imgur/reddit antibot block pattern) retries through
+    the headless browser, which can still fetch the real file bytes."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content=b"<html><body>blocked</body></html>",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+    downloaded = crawler_module.DownloadedContent(
+        content=b"\xff\xd8\xff\xe0jpegdata",
+        final_url="https://example.com/cat.jpg",
+        content_type="image/jpeg",
+        status=200,
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: downloaded,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/cat.jpg")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert result.content == b"\xff\xd8\xff\xe0jpegdata"
+    assert result.content_type == "image/jpeg"
+
+
+def test_download_file_bytes_trusts_binary_magic_bytes_over_html_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Servers behind antibot walls sometimes mislabel binaries as text/html;
+    the magic bytes win so the file is still downloadable."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=False)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content=b"\x89PNG\r\n\x1a\npngdata",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: pytest.fail(  # noqa: ARG005
+            "Playwright fallback must not be needed"
+        ),
+    )
+
+    result = crawler.download_file_bytes("https://example.com/cat.png")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert result.content_type == "image/png"
+    assert result.content == b"\x89PNG\r\n\x1a\npngdata"
+
+
+def test_download_file_bytes_429_falls_back_to_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """429 (antibot rate limiting without CF headers) is worth one browser
+    retry for downloads."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=429,
+        headers={"Content-Type": "text/html"},
+        content=b"slow down",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+    downloaded = crawler_module.DownloadedContent(
+        content=b"\x89PNG\r\n\x1a\npngdata",
+        final_url="https://example.com/cat.png",
+        content_type="image/png",
+        status=200,
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: downloaded,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/cat.png")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert result.content_type == "image/png"
+
+
+def test_download_file_bytes_enforces_size_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crawler = OnyxWebCrawler()
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "image/png"},
+        content=b"\x89PNG\r\n\x1a\n" + b"x" * 200,
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes(
+        "https://example.com/cat.png", max_file_size_bytes=100
+    )
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.OVERSIZED_FILE
+
+
+def test_download_file_bytes_403_falls_back_to_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=403,
+        headers={"cf-ray": "some-ray"},
+        content=b"blocked",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    downloaded = crawler_module.DownloadedContent(
+        content=b"\x89PNG\r\n\x1a\npngdata",
+        final_url="https://example.com/cat.png",
+        content_type="image/png",
+        status=200,
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: downloaded,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/cat.png")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert result.content == b"\x89PNG\r\n\x1a\npngdata"
+    assert result.content_type == "image/png"
+
+
+def test_download_file_bytes_403_challenge_not_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=403,
+        headers={"cf-ray": "some-ray"},
+        content=b"blocked",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    downloaded = crawler_module.DownloadedContent(
+        content=b"<html>Just a moment...</html>",
+        final_url="https://example.com/cat.png",
+        content_type="text/html",
+        status=403,
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: downloaded,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/cat.png")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.CLOUDFLARE_CHALLENGE
+
+
+def test_download_file_bytes_403_fallback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=403,
+        headers={},
+        content=b"blocked",
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: None,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/cat.jpg")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.HTTP_403_BLOCKED
+
+
+def test_download_file_bytes_ssrf_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    crawler = OnyxWebCrawler()
+
+    def _raise_ssrf(*args: object, **kwargs: object) -> None:  # noqa: ARG001
+        raise crawler_module.SSRFException("internal address")
+
+    monkeypatch.setattr(crawler_module, "ssrf_safe_get", _raise_ssrf)
+
+    result = crawler.download_file_bytes("http://127.0.0.1:8080/secret")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.SSRF_BLOCKED
+
+
+class TestLooksLikeImageUrl:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://i.imgur.com/AKVZMd3b.jpg",
+            # Image CDN hosts with no extension in the URL
+            "https://i.imgur.com/AKVZMd3",
+            "https://i.redd.it/7mw4q5vkt5vb1",
+            "https://preview.redd.it/abc.jpg?auto=webp&s=deadbeef",
+            "https://external-preview.redd.it/abc",
+            "https://media.i.imgur.com/abc.gif",
+            # Generic hosts with an image extension
+            "https://example.com/cat.jpg",
+            "https://example.com/images/CAT.PNG",
+            "https://example.com/pic.svg?w=800",
+        ],
+    )
+    def test_image_urls(self, url: str) -> None:
+        assert crawler_module.looks_like_image_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/page",
+            "https://example.com/report.pdf",
+            "https://example.com/photo.jpgx",
+            # Viewer pages, not the image CDN hosts
+            "https://imgur.com/trending",
+            "https://www.reddit.com/r/pics/top/.json",
+        ],
+    )
+    def test_non_image_urls(self, url: str) -> None:
+        assert crawler_module.looks_like_image_url(url) is False
+
+
+def _capture_download_headers(
+    monkeypatch: pytest.MonkeyPatch, response: FakeResponse
+) -> dict[str, str]:
+    """Stub ssrf_safe_get and return the headers it was called with."""
+    captured: dict[str, str] = {}
+
+    def _fake_get(*_args: Any, **kwargs: Any) -> FakeResponse:
+        captured.update(kwargs.get("headers") or {})
+        return response
+
+    monkeypatch.setattr(crawler_module, "ssrf_safe_get", _fake_get)
+    return captured
+
+
+def test_download_file_bytes_image_url_uses_image_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Image URLs are fetched the way a browser <img> load is, because image
+    CDNs (imgur, reddit) redirect navigation-style requests to HTML pages."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=False)
+    headers = _capture_download_headers(monkeypatch, _jpeg_response())
+
+    result = crawler.download_file_bytes("https://i.imgur.com/AKVZMd3b.jpg")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert headers["Accept"].startswith("image/")
+    assert headers["Sec-Fetch-Dest"] == "image"
+
+
+def test_download_file_bytes_page_url_uses_navigation_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=False)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "image/jpeg"},
+        content=b"\xff\xd8\xff\xe0jpegdata",
+    )
+    headers = _capture_download_headers(monkeypatch, response)
+
+    # Extension-less, non-image-host URL keeps the navigation-style request
+    result = crawler.download_file_bytes("https://example.com/file")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert headers["Accept"].startswith("text/html")
+    assert headers["Sec-Fetch-Dest"] == "document"
+
+
+def test_download_file_bytes_image_playwright_render_also_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When even the browser render of an image URL lands on an HTML page
+    (the imgur/reddit viewer-page pattern for deleted images), the failure
+    names the image problem instead of the generic not-a-file reason."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content=b"<html><body>viewer page</body></html>",
+    )
+    _capture_download_headers(monkeypatch, response)
+    downloaded = crawler_module.DownloadedContent(
+        content=b"<html><body>viewer page</body></html>",
+        final_url="https://imgur.com/deletedimage",
+        content_type="text/html",
+        status=200,
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: downloaded,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://i.imgur.com/deletedimage.jpg")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.IMAGE_NOT_AVAILABLE
+
+
+def test_download_file_bytes_page_playwright_render_also_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-image URLs that end up HTML keep the generic not-a-file reason."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content=b"<html><body>page</body></html>",
+    )
+    _capture_download_headers(monkeypatch, response)
+    downloaded = crawler_module.DownloadedContent(
+        content=b"<html><body>page</body></html>",
+        final_url="https://example.com/page",
+        content_type="text/html",
+        status=200,
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: downloaded,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/page")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.HTML_NOT_FILE
+
+
+def test_download_file_bytes_image_html_without_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the fallback disabled, an image URL that returns HTML still gets
+    the image-specific reason."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=False)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content=b"<html><body>viewer page</body></html>",
+    )
+    _capture_download_headers(monkeypatch, response)
+
+    result = crawler.download_file_bytes("https://i.imgur.com/deletedimage.jpg")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert result.failure_reason == crawler_module.FailureReason.IMAGE_NOT_AVAILABLE
+
+
+def test_download_file_bytes_image_html_keeps_playwright_rescue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 HTML response for an image URL still retries through the
+    headless browser, which rescues the file when the block is a bot
+    challenge rather than a viewer page."""
+    crawler = OnyxWebCrawler(playwright_fallback_enabled=True)
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content=b"<html><body>challenge</body></html>",
+    )
+    _capture_download_headers(monkeypatch, response)
+    downloaded = crawler_module.DownloadedContent(
+        content=b"\xff\xd8\xff\xe0jpegdata",
+        final_url="https://i.imgur.com/AKVZMd3b.jpg",
+        content_type="image/jpeg",
+        status=200,
+    )
+    monkeypatch.setattr(
+        crawler_module,
+        "fetch_content_bytes",
+        lambda *args, **kwargs: downloaded,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://i.imgur.com/AKVZMd3b.jpg")
+
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert result.content == b"\xff\xd8\xff\xe0jpegdata"
