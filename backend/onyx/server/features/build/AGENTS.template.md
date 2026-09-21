@@ -28,7 +28,7 @@ in the user's connected apps. Use all available resources to best accomplish the
 {{ORGANIZATION_INSTRUCTIONS_SECTION}}
 ## Environment
 
-Ephemeral VM with Python 3.11 and Node v22. A Python virtual environment is already on your
+Ephemeral VM with Python 3.13 and Node 24. A Python virtual environment is already on your
 `PATH`. Common libraries (i.e. pandas, matplotlib, pdfplumber, python-pptx) come preinstalled.
 Install anything else with `pip install <pkg>`, or `bun install <pkg>` from
 `outputs/web`. Your LLM is {{LLM_PROVIDER_NAME}} / {{LLM_MODEL_NAME}}.
