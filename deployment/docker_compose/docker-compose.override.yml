@@ -1,0 +1,61 @@
+# Local additions merged on top of docker-compose.yml automatically.
+services:
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+    volumes:
+      - ./searxng:/etc/searxng:ro
+
+  # Pacing proxy for Onyx -> SearXNG: serializes /search calls with a
+  # random 1-6s gap. Point Onyx's searxng_base_url at this service.
+  searxng-pacer:
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: python /app/pacer.py
+    environment:
+      - UPSTREAM=http://searxng:8080
+      - DELAY_MIN=1
+      - DELAY_MAX=6
+      - MAX_WAIT=20
+    volumes:
+      - ./pacer/pacer.py:/app/pacer.py:ro
+    depends_on:
+      - searxng
+
+  # Deep Research / long-run chat tuning for slow local inference (48h budget).
+  # Merged into the api_server service from docker-compose.yml by compose.
+  api_server:
+    environment:
+      # Overall Deep Research time budget before the final report is forced (48h)
+      - DR_FORCE_REPORT_S=172800
+      # Orchestrator cycles: high enough that time is the only binding limit
+      - DR_MAX_ORCHESTRATOR_CYCLES=1000
+      - DR_MAX_ORCHESTRATOR_CYCLES_REASONING=500
+      # Sub-agent limits: let each research agent use the full budget (48h)
+      - DR_RESEARCH_AGENT_TIMEOUT_S=172800
+      - DR_RESEARCH_AGENT_FORCE_REPORT_S=172800
+      # Keep the stream buffer replayable across disconnects for the whole run (48h)
+      - CHAT_STREAM_BUFFER_TTL_S=172800
+      # Slow inference: allow long gaps between streamed chunks
+      - DR_REPORT_LLM_TIMEOUT_S=1200
+      - LLM_SOCKET_READ_TIMEOUT=1200
+      # Regular chat agentic loop: 6 -> 12 tool-call cycles before forced answer
+      - MAX_LLM_CYCLES=12
+      # 25 -> 50 retrieved chunks fed to the LLM per search
+      - MAX_CHUNKS_FED_TO_CHAT=50
+      # Tool-calling reimplementation evaluation: dump full request history,
+      # accumulated reasoning/answer and tool calls to onyx_debug.log per step.
+      # Read at import time — applies on the next api_server restart; turn off
+      # (and restart) once evaluation is done, it logs full prompts.
+      - LOG_ONYX_MODEL_INTERACTIONS=true
+
+  # Background workers also make LLM calls (scheduled Craft runs, doc
+  # processing). Match api_server's slow-inference tolerance.
+  background:
+    environment:
+      - LLM_SOCKET_READ_TIMEOUT=1200
+      # Craft/scheduled chat runs in workers use the same loop + retrieval caps
+      - MAX_LLM_CYCLES=12
+      - MAX_CHUNKS_FED_TO_CHAT=50

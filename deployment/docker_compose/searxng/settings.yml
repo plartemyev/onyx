@@ -1,0 +1,26 @@
+use_default_settings: true
+server:
+  secret_key: "a796f0cc637b6f11ec870fdb017b2704f8407104c1c0743a"
+  # Private instance: the limiter blocks API-style requests like Onyx's.
+  limiter: false
+search:
+  formats:
+    - html
+    # Required by Onyx; requests use format=json.
+    - json
+# Engine overrides merge by name with the defaults.
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  # Spare general-web engines: extra redundancy when a main engine
+  # gets CAPTCHA'd or rate-limited.
+  - name: qwant
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: fireball
+    disabled: false
+  - name: privacywall
+    disabled: false
