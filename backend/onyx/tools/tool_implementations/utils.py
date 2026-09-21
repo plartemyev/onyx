@@ -110,6 +110,8 @@ def convert_inference_sections_to_llm_string(
             )
         else:
             result["content"] = section.combined_content
+        if chunk.image_urls:
+            result["images"] = chunk.image_urls
         if chunk.metadata:
             result["metadata"] = json.dumps(chunk.metadata, ensure_ascii=False)
         results.append(result)

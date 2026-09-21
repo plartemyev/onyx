@@ -63,6 +63,20 @@ DEFAULT_BOT_CHALLENGE_GRACE_MS = 5000
 # Generous because we *want* to absorb a Cloudflare interstitial.
 DEFAULT_NAVIGATION_TIMEOUT_MS = 30000
 
+# Header set mirroring a browser <img> load. Image CDNs (imgur, reddit, ...)
+# treat navigation-style requests to direct image URLs as page visits and
+# redirect them to HTML viewer pages; an image-dest request gets the bytes.
+IMAGE_FETCH_HEADERS: dict[str, str] = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "image",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": "cross-site",
+}
+
 
 class RenderedPage(BaseModel):
     """Result of a successful Playwright navigation."""
@@ -70,6 +84,15 @@ class RenderedPage(BaseModel):
     html: str
     final_url: str
     last_modified: str | None = None
+    status: int | None = None
+
+
+class DownloadedContent(BaseModel):
+    """Binary content fetched via Playwright (bot-protected hosts)."""
+
+    content: bytes
+    final_url: str
+    content_type: str | None = None
     status: int | None = None
 
 
@@ -331,4 +354,93 @@ def fetch_rendered_html(
                 exc.__class__.__name__,
                 msg.splitlines()[0] if msg else "",
             )
+        return None
+
+
+def fetch_content_bytes(
+    url: str,
+    *,
+    navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
+    bot_challenge_grace_ms: int = DEFAULT_BOT_CHALLENGE_GRACE_MS,
+    allow_private_network: bool = False,
+) -> DownloadedContent | None:
+    """Fetch raw bytes for a URL via headless Chromium.
+
+    For direct file URLs (images, PDFs, ...) this inherits the browser's TLS
+    fingerprint, User-Agent, and cookies, so it succeeds where a Python HTTP
+    client is fingerprint-blocked. If the first response looks like a bot
+    challenge, the grace period is awaited and the URL is re-fetched through
+    the context's request API, which carries any clearance cookies the
+    challenge set. Callers must check `content_type`: a challenge that did
+    not resolve still returns a response, but with an HTML body.
+
+    Owns its own short-lived Playwright lifecycle (one context per call),
+    like `fetch_rendered_html`.
+
+    Returns:
+        DownloadedContent on success, or None if navigation failed entirely
+        (including SSRF rejection of the URL).
+    """
+    try:
+        validate_outbound_http_url(
+            url,
+            allow_private_network=allow_private_network,
+            block_loopback_and_link_local=True,
+        )
+    except (SSRFException, ValueError) as exc:
+        logger.warning(
+            "Refusing Playwright binary fetch for %s (%s)", url, exc.__class__.__name__
+        )
+        return None
+
+    try:
+        with playwright_session() as context:
+            page = context.new_page()
+            try:
+                response = page.goto(
+                    url,
+                    timeout=navigation_timeout_ms,
+                    wait_until="commit",
+                )
+                if response is None:
+                    return None
+
+                status = response.status
+                content_type = response.header_value("content-type")
+                cf_ray = response.header_value("cf-ray")
+
+                if _looks_like_bot_challenge(status, cf_ray):
+                    page.wait_for_timeout(bot_challenge_grace_ms)
+                    try:
+                        page.wait_for_load_state(
+                            "networkidle", timeout=bot_challenge_grace_ms
+                        )
+                    except PlaywrightTimeoutError:
+                        pass
+                    # Re-fetch through the context's request API so any
+                    # clearance cookies the challenge set are included.
+                    api_response = context.request.get(
+                        url, timeout=navigation_timeout_ms
+                    )
+                    status = api_response.status
+                    content_type = api_response.headers.get("content-type")
+                    content = api_response.body()
+                else:
+                    content = response.body()
+
+                return DownloadedContent(
+                    content=content,
+                    final_url=page.url,
+                    content_type=content_type,
+                    status=status,
+                )
+            finally:
+                page.close()
+    except Exception as exc:
+        logger.warning(
+            "Playwright binary fetch failed for %s (%s: %s)",
+            url,
+            exc.__class__.__name__,
+            str(exc).splitlines()[0] if str(exc) else "",
+        )
         return None

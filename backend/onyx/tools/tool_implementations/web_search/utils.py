@@ -151,6 +151,7 @@ def inference_section_from_internet_page_scrape(
         chunk_context="",
         updated_at=result.published_date,
         image_file_id=None,
+        image_urls=result.image_urls or None,
     )
     return InferenceSection(
         center_chunk=inference_chunk,
@@ -185,6 +186,7 @@ def inference_section_from_internet_search_result(
         chunk_context="",
         updated_at=result.published_date,
         image_file_id=None,
+        image_urls=result.image_urls or None,
     )
 
     return InferenceSection(

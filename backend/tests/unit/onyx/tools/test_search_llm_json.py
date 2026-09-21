@@ -123,6 +123,7 @@ def _make_chunk(
     chunk_id: int = 0,
     file_id: str | None = None,
     content: str | None = None,
+    image_urls: list[str] | None = None,
 ) -> InferenceChunk:
     return InferenceChunk(
         document_id=document_id,
@@ -144,6 +145,7 @@ def _make_chunk(
         section_continuation=False,
         blurb=f"blurb-{document_id}",
         file_id=file_id,
+        image_urls=image_urls,
     )
 
 
@@ -298,6 +300,29 @@ class TestContentFieldWrappingForFileBearingHits:
         assert "code interpreter" in results[0]["content"].lower()
         assert results[1]["content"] == "plain combined"
         assert "file_name" not in results[1]
+
+
+class TestImageUrlsInLLMJson:
+    def test_images_emitted_when_present(self) -> None:
+        chunk = _make_chunk(
+            "doc-img", image_urls=["https://cdn.example.com/a.jpg?w=640"]
+        )
+        section = _make_section(chunk)
+
+        llm_string, _ = convert_inference_sections_to_llm_string([section])
+        payload = json.loads(llm_string)
+
+        assert payload["results"][0]["images"] == [
+            "https://cdn.example.com/a.jpg?w=640"
+        ]
+
+    def test_images_omitted_when_absent(self) -> None:
+        section = _make_section(_make_chunk("doc-noimg"))
+
+        llm_string, _ = convert_inference_sections_to_llm_string([section])
+        payload = json.loads(llm_string)
+
+        assert "images" not in payload["results"][0]
 
 
 if __name__ == "__main__":

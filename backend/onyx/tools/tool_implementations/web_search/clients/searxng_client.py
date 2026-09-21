@@ -1,3 +1,5 @@
+from urllib.parse import urljoin
+
 import requests
 from fastapi import HTTPException
 
@@ -12,16 +14,61 @@ logger = setup_logger()
 
 _SEARXNG_TIMEOUT_SECONDS = (5, 30)
 
+# Max image-search results attached per query
+_MAX_IMAGE_RESULTS = 5
+# One image result is inserted after this many general results so images
+# survive the downstream per-query result cap (which truncates the tail)
+_IMAGE_INTERLEAVE_INTERVAL = 4
+
+
+def _absolute_http_url(url: str, base_url: str) -> str | None:
+    """Resolve `url` against `base_url` and keep only http(s) URLs."""
+    if not url:
+        return None
+    absolute_url = urljoin(base_url, url.strip())
+    if not absolute_url.startswith(("http://", "https://")):
+        return None
+    return absolute_url
+
+
+def _interleave_image_results(
+    general_results: list[WebSearchResult],
+    image_results: list[WebSearchResult],
+) -> list[WebSearchResult]:
+    """Spread image results between general results at a fixed interval.
+
+    Downstream truncates each query's result list to a cap, so appending
+    images at the end would always drop them for queries with many hits.
+    """
+    if not image_results:
+        return general_results
+    combined: list[WebSearchResult] = []
+    image_index = 0
+    for index, result in enumerate(general_results):
+        combined.append(result)
+        if (index + 1) % _IMAGE_INTERLEAVE_INTERVAL == 0 and image_index < len(
+            image_results
+        ):
+            combined.append(image_results[image_index])
+            image_index += 1
+    combined.extend(image_results[image_index:])
+    return combined
+
 
 class SearXNGClient(WebSearchProvider):
     def __init__(
         self,
         searxng_base_url: str,
         num_results: int = 10,
+        language: str | None = None,
     ) -> None:
         logger.debug("Initializing SearXNGClient with base URL: %s", searxng_base_url)
         self._searxng_base_url = searxng_base_url
         self._num_results = num_results
+        # Optional SearXNG UI language / locale (e.g. "en", "en-US", "de").
+        # Without it, results follow the instance's own configured language,
+        # which can localize snippets (and skew engines) unexpectedly.
+        self._language = language or None
 
     @retry_builder(tries=3, delay=1, backoff=2)
     def search(self, query: str) -> list[WebSearchResult]:
@@ -29,6 +76,8 @@ class SearXNGClient(WebSearchProvider):
             "q": query,
             "format": "json",
         }
+        if self._language:
+            payload["language"] = self._language
         logger.debug(
             "Searching with payload: %s to %s/search", payload, self._searxng_base_url
         )
@@ -44,14 +93,76 @@ class SearXNGClient(WebSearchProvider):
         # SearXNG doesn't support limiting results via API parameters,
         # so we limit client-side after receiving the response
         limited_results = result_list[: self._num_results]
-        return [
-            WebSearchResult(
-                title=result["title"],
-                link=result["url"],
-                snippet=result["content"],
+        general_results = [self._parse_web_result(result) for result in limited_results]
+        image_results = self._search_images(query)
+        return _interleave_image_results(general_results, image_results)
+
+    def _parse_web_result(self, result: dict) -> WebSearchResult:
+        """Build a WebSearchResult from a general (web) search hit.
+
+        Attaches the hit's `img_src` thumbnail as a direct image URL when present.
+        """
+        image_url = _absolute_http_url(result.get("img_src") or "", result["url"])
+        return WebSearchResult(
+            title=result["title"],
+            link=result["url"],
+            snippet=result["content"],
+            image_urls=[image_url] if image_url else [],
+        )
+
+    def _search_images(self, query: str) -> list[WebSearchResult]:
+        """Best-effort image search via the SearXNG images category.
+
+        Returns image hits as WebSearchResults whose `link` is the source page
+        and whose `image_urls` holds the direct image URL. Never raises: a
+        failing image search must not take down the whole web search.
+        """
+        try:
+            payload = {
+                "q": query,
+                "format": "json",
+                "categories": "images",
+            }
+            if self._language:
+                payload["language"] = self._language
+            response = requests.post(
+                f"{self._searxng_base_url}/search",
+                data=payload,
+                timeout=_SEARXNG_TIMEOUT_SECONDS,
             )
-            for result in limited_results
-        ]
+            response.raise_for_status()
+            result_list = response.json().get("results", [])
+        except Exception:
+            logger.warning("SearXNG image search failed for query: %s", query)
+            return []
+
+        image_results: list[WebSearchResult] = []
+        seen_image_urls: set[str] = set()
+        for result in result_list:
+            if len(image_results) >= _MAX_IMAGE_RESULTS:
+                break
+            source_url = result.get("url") or ""
+            image_url = _absolute_http_url(
+                result.get("img_src") or result.get("thumbnail_src") or "",
+                source_url,
+            )
+            if not image_url or image_url in seen_image_urls:
+                continue
+            seen_image_urls.add(image_url)
+            snippet_parts = [
+                str(part)
+                for part in (result.get("resolution"), result.get("content"))
+                if part
+            ]
+            image_results.append(
+                WebSearchResult(
+                    title=result.get("title") or "",
+                    link=source_url or image_url,
+                    snippet=" | ".join(snippet_parts),
+                    image_urls=[image_url],
+                )
+            )
+        return image_results
 
     def test_connection(self) -> dict[str, str]:
         try:

@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from onyx.tools.tool_implementations.open_url.models import WebContent
+from onyx.tools.tool_implementations.web_search.models import WebSearchResult
 from onyx.tools.tool_implementations.web_search.utils import (
     inference_section_from_internet_page_scrape,
+    inference_section_from_internet_search_result,
 )
 
 CONTENT_FILE = Path(__file__).parent / "data" / "tartan.txt"
@@ -207,3 +209,44 @@ def test_similar_snippet_in_middle_fuzzy_match() -> None:
         ]
         + TRUNCATED_CONTENT_SUFFIX
     )
+
+
+def test_inference_section_from_search_result_carries_image_urls() -> None:
+    result = WebSearchResult(
+        title="Drakeposting",
+        link="https://knowyourmeme.com/memes/drake",
+        snippet="Meme history",
+        image_urls=["https://i.kym-cdn.com/drake.jpg"],
+    )
+
+    section = inference_section_from_internet_search_result(result, rank=0)
+
+    assert section.center_chunk.image_urls == ["https://i.kym-cdn.com/drake.jpg"]
+
+
+def test_inference_section_from_search_result_no_image_urls() -> None:
+    result = WebSearchResult(
+        title="Drakeposting",
+        link="https://knowyourmeme.com/memes/drake",
+        snippet="Meme history",
+    )
+
+    section = inference_section_from_internet_search_result(result, rank=0)
+
+    assert section.center_chunk.image_urls is None
+
+
+def test_inference_section_from_page_scrape_carries_image_urls() -> None:
+    web_content = WebContent(
+        title="Tartan",
+        link="https://en.wikipedia.org/wiki/Tartan",
+        full_content="Some page text.",
+        scrape_successful=True,
+        image_urls=["https://upload.wikimedia.org/tartan.jpg"],
+    )
+
+    section = inference_section_from_internet_page_scrape(web_content, "")
+
+    assert section.center_chunk.image_urls == [
+        "https://upload.wikimedia.org/tartan.jpg"
+    ]

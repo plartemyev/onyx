@@ -229,6 +229,11 @@ class InferenceChunk(BaseChunk):
     # retrieval via a Postgres lookup
     file_id: str | None = None
 
+    # Direct image URLs associated with this section. Only populated by the
+    # web_search / open_url tools; surfaced to the LLM so it can download the
+    # images (e.g. via the Python sandbox)
+    image_urls: list[str] | None = None
+
     @property
     def unique_id(self) -> str:
         return f"{self.document_id}__{self.chunk_id}"

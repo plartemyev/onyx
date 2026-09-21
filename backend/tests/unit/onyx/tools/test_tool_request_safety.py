@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import call, patch
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
@@ -39,11 +39,20 @@ def test_searxng_search_has_connect_and_read_timeouts() -> None:
     ) as post:
         post.return_value.json.return_value = {"results": []}
         assert client.search("query") == []
-        post.assert_called_once_with(
-            "https://example.com/search",
-            data={"q": "query", "format": "json"},
-            timeout=(5, 30),
-        )
+        # Both the general search and the image-category search must carry
+        # explicit connect + read timeouts
+        assert post.call_args_list == [
+            call(
+                "https://example.com/search",
+                data={"q": "query", "format": "json"},
+                timeout=(5, 30),
+            ),
+            call(
+                "https://example.com/search",
+                data={"q": "query", "format": "json", "categories": "images"},
+                timeout=(5, 30),
+            ),
+        ]
 
 
 def test_searxng_connection_has_connect_and_read_timeouts() -> None:
