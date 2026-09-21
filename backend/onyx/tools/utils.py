@@ -11,6 +11,13 @@ from onyx.db.models import LLMProvider
 from onyx.llm.constants import LlmProviderNames
 from onyx.llm.model_capabilities import find_model_obj, get_model_map
 from onyx.tools.interface import Tool
+from onyx.tools.models import (
+    AnalyzeImageToolRichResponse,
+    DownloadToolRichResponse,
+    PythonExecutionFile,
+    PythonToolRichResponse,
+    ToolResponse,
+)
 
 
 def explicit_tool_calling_supported(model_provider: str, model_name: str) -> bool:
@@ -58,6 +65,36 @@ def is_document_search_available(db_session: Session) -> bool:
     docs_exist = check_docs_exist(db_session)
     connectors_exist = check_connectors_exist(db_session)
     return docs_exist or connectors_exist
+
+
+def tool_response_generated_files(
+    tool_response: ToolResponse,
+) -> list[PythonExecutionFile] | None:
+    """Files a tool produced for the user, for persistence on ToolCallInfo.
+
+    Code interpreter files come back as PythonExecutionFile already; the
+    download_file and analyze_image tools return DownloadedFile and are
+    converted here. Returns None when the response carries no files."""
+    rich_response = tool_response.rich_response
+    if isinstance(rich_response, PythonToolRichResponse):
+        return rich_response.generated_files or None
+    if isinstance(rich_response, DownloadToolRichResponse):
+        return [
+            PythonExecutionFile(
+                filename=downloaded_file.filename,
+                file_link=downloaded_file.file_url,
+            )
+            for downloaded_file in rich_response.files
+        ]
+    if isinstance(rich_response, AnalyzeImageToolRichResponse):
+        return [
+            PythonExecutionFile(
+                filename=analyzed_file.filename,
+                file_link=analyzed_file.file_url,
+            )
+            for analyzed_file in rich_response.files
+        ]
+    return None
 
 
 def generate_tools_description(tools: list[Tool]) -> str:

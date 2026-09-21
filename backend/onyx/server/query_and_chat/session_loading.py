@@ -46,6 +46,7 @@ from onyx.server.query_and_chat.streaming_models import (
     OverallStop,
     Packet,
     PythonToolDelta,
+    PythonToolGeneratedFile,
     PythonToolStart,
     ReasoningDelta,
     ReasoningStart,
@@ -449,6 +450,7 @@ def create_python_tool_packets(
     file_ids: list[str],
     turn_index: int,
     tab_index: int = 0,
+    files: list[PythonToolGeneratedFile] | None = None,
 ) -> list[Packet]:
     """Recreate PythonToolStart + PythonToolDelta + SectionEnd from the stored
     tool call data so the frontend can display both the code and its output
@@ -465,6 +467,7 @@ def create_python_tool_packets(
                 stdout=stdout,
                 stderr=stderr,
                 file_ids=file_ids,
+                files=files or [],
             ),
         )
     )
@@ -711,6 +714,7 @@ def translate_assistant_message_to_packets(
                         stdout = ""
                         stderr = ""
                         file_ids: list[str] = []
+                        generated_file_packets: list[PythonToolGeneratedFile] = []
                         if tool_call.tool_call_response:
                             try:
                                 response_data = json.loads(tool_call.tool_call_response)
@@ -719,11 +723,20 @@ def translate_assistant_message_to_packets(
                                 generated_files = response_data.get(
                                     "generated_files", []
                                 )
-                                file_ids = [
-                                    f.get("file_link", "").split("/")[-1]
-                                    for f in generated_files
-                                    if f.get("file_link")
-                                ]
+                                for generated_file in generated_files:
+                                    file_link = generated_file.get("file_link", "")
+                                    if not file_link:
+                                        continue
+                                    file_id = file_link.split("/")[-1]
+                                    file_ids.append(file_id)
+                                    filename = generated_file.get("filename")
+                                    if filename:
+                                        generated_file_packets.append(
+                                            PythonToolGeneratedFile(
+                                                filename=filename,
+                                                file_id=file_id,
+                                            )
+                                        )
                             except (json.JSONDecodeError, KeyError):
                                 # Fall back to raw response as stdout
                                 stdout = tool_call.tool_call_response
@@ -735,6 +748,7 @@ def translate_assistant_message_to_packets(
                                 file_ids=file_ids,
                                 turn_index=turn_num,
                                 tab_index=tool_call.tab_index,
+                                files=generated_file_packets,
                             )
                         )
 

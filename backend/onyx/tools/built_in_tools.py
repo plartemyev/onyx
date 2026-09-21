@@ -3,7 +3,11 @@ from typing import Type, Union
 from onyx.tools.tool_implementations.coding_agent.coding_agent_tool import (
     CodingAgentTool,
 )
+from onyx.tools.tool_implementations.download.download_tool import DownloadFileTool
 from onyx.tools.tool_implementations.file_reader.file_reader_tool import FileReaderTool
+from onyx.tools.tool_implementations.image_analysis.analyze_image_tool import (
+    AnalyzeImageTool,
+)
 from onyx.tools.tool_implementations.images.image_generation_tool import (
     ImageGenerationTool,
 )
@@ -26,6 +30,8 @@ BUILT_IN_TOOL_TYPES = Union[
     WebSearchTool,
     KnowledgeGraphTool,
     OpenURLTool,
+    DownloadFileTool,
+    AnalyzeImageTool,
     PythonTool,
     FileReaderTool,
     MemoryTool,
@@ -38,6 +44,8 @@ BUILT_IN_TOOL_MAP: dict[str, Type[BUILT_IN_TOOL_TYPES]] = {
     WebSearchTool.__name__: WebSearchTool,
     KnowledgeGraphTool.__name__: KnowledgeGraphTool,
     OpenURLTool.__name__: OpenURLTool,
+    DownloadFileTool.__name__: DownloadFileTool,
+    AnalyzeImageTool.__name__: AnalyzeImageTool,
     PythonTool.__name__: PythonTool,
     FileReaderTool.__name__: FileReaderTool,
     MemoryTool.__name__: MemoryTool,

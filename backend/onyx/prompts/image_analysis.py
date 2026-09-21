@@ -19,3 +19,17 @@ DEFAULT_IMAGE_ANALYSIS_SYSTEM_PROMPT = (
     "Focus on aspects of the image that are relevant to the user's question.\n"
     "Be specific and detailed about visual elements that directly address the query.\n"
 )
+
+# Used by agent tools (analyze_image, download_file, run_python) to describe
+# images fetched from the web. The consumer is another LLM that cannot see the
+# image, so the description must be self-contained.
+AGENT_IMAGE_ANNOTATION_SYSTEM_PROMPT = (
+    "You are the eyes of an AI agent that cannot see images directly.\n"
+    "Describe the image so the agent can reason about it without viewing it.\n"
+    "State the image type (photo, chart, diagram, screenshot, meme, ...), the main subject, "
+    "and notable details.\n"
+    "Transcribe any visible text verbatim. For charts and diagrams, report the key values, "
+    "axes, and trends.\n"
+    "If a question about the image is provided, answer it directly and keep the general "
+    "description brief."
+)

@@ -25,6 +25,7 @@ from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     Packet,
     PythonToolDelta,
+    PythonToolGeneratedFile,
     PythonToolStart,
 )
 from onyx.tools.interface import Tool
@@ -36,6 +37,11 @@ from onyx.tools.models import (
     PythonToolRichResponse,
     ToolCallException,
     ToolResponse,
+    ToolResponseImage,
+)
+from onyx.tools.tool_implementations.image_analysis.shared import (
+    annotate_images_in_parallel,
+    get_tool_vision_llm,
 )
 from onyx.tools.tool_implementations.python.code_interpreter_client import (
     CodeInterpreterClient,
@@ -54,6 +60,12 @@ CODE_FIELD = "code"
 CODE_INTERPRETER_DEFAULT_FILENAME = "file"
 CODE_INTERPRETER_FILENAME_MAX_LENGTH = 200
 CODE_INTERPRETER_UNSAFE_FILENAME_CHARS = re.compile(r"[\x00-\x1f/\\:\*\?\"<>\|]+")
+# Shown to the LLM when files were generated
+FILES_NOTICE_TEMPLATE = (
+    "Generated files are saved and stay available by filename in later "
+    "executions of this session. Image files are displayed to the user in chat; "
+    "embed one in your reply with markdown: ![filename](file_link)."
+)
 
 
 def _safe_code_interpreter_filename(filename: str) -> str:
@@ -211,6 +223,26 @@ def _build_staging_notice(
     return " ".join(parts) if parts else None
 
 
+def _combine_staging_inputs(
+    chat_files: list[ChatFile],
+    generated_artifacts: dict[str, bytes],
+) -> list[ChatFile]:
+    """User files plus previously generated artifacts, as sandbox inputs.
+
+    An artifact with the same filename as a user file replaces it: later code
+    that reads that name expects the generated content."""
+    inputs = [
+        chat_file
+        for chat_file in chat_files
+        if chat_file.filename not in generated_artifacts
+    ]
+    inputs.extend(
+        ChatFile(filename=name, content=content)
+        for name, content in generated_artifacts.items()
+    )
+    return inputs
+
+
 class PythonTool(Tool[PythonToolOverrideKwargs]):
     """
     Python code execution tool using an external Code Interpreter service.
@@ -237,6 +269,10 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
         # exceed the lifetime of a single agent session (at most MAX_LLM_CYCLES
         # iterations, typically a few minutes), so stale-ID eviction is not needed.
         self._uploaded_file_cache: dict[tuple[str, str], str] = {}
+        # Generated artifacts from earlier executions of this session, keyed by
+        # filename (newest wins). The sandbox is wiped between executions, so
+        # artifacts are re-staged as inputs to let later calls build on them.
+        self._generated_artifacts: dict[str, bytes] = {}
 
     @property
     def id(self) -> int:
@@ -388,8 +424,13 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
         with CodeInterpreterClient() as client:
             # Select the files to stage (referenced-first, recent backfill,
             # bounded by the caps), upload them, and note any drops to the LLM.
+            # Inputs include artifacts from earlier executions: the sandbox is
+            # wiped per call, so re-staging is what makes them persistent.
+            staging_inputs = _combine_staging_inputs(
+                chat_files, self._generated_artifacts
+            )
             selection = _select_files_for_staging(
-                chat_files,
+                staging_inputs,
                 code,
                 max_files=CODE_INTERPRETER_MAX_STAGED_FILES,
                 max_bytes=CODE_INTERPRETER_MAX_STAGED_BYTES,
@@ -401,7 +442,7 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
 
             staging_notice = _build_staging_notice(
                 selection.dropped_by_caps,
-                len(chat_files),
+                len(staging_inputs),
                 selection.read_failures + upload_failures,
             )
             if staging_notice:
@@ -465,6 +506,12 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 generated_file_ids: list[str] = []
                 file_ids_to_cleanup: list[str] = []
                 file_store = get_default_file_store()
+                # Generated images, as (filename, bytes, Onyx file id,
+                # PythonExecutionFile) — captions attach to the file entry and
+                # the bytes replay to vision-capable chat models.
+                images_to_annotate: list[
+                    tuple[str, bytes, str, PythonExecutionFile]
+                ] = []
 
                 for workspace_file in result_event.files:
                     if workspace_file.kind != "file" or not workspace_file.file_id:
@@ -488,13 +535,20 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                             file_type=mime_type,
                         )
 
-                        generated_files.append(
-                            PythonExecutionFile(
-                                filename=filename,
-                                file_link=build_full_frontend_file_url(onyx_file_id),
-                            )
+                        # Keep for re-staging in later executions (newest wins)
+                        self._generated_artifacts[filename] = file_content
+
+                        generated_file = PythonExecutionFile(
+                            filename=filename,
+                            file_link=build_full_frontend_file_url(onyx_file_id),
                         )
+                        generated_files.append(generated_file)
                         generated_file_ids.append(onyx_file_id)
+
+                        if mime_type.startswith("image/"):
+                            images_to_annotate.append(
+                                (filename, file_content, onyx_file_id, generated_file)
+                            )
 
                         # Mark for cleanup
                         file_ids_to_cleanup.append(workspace_file.file_id)
@@ -522,12 +576,44 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 # orphaned when the session ends, but the code interpreter cleans up
                 # stale files on its own TTL.
 
+                # Describe generated images with the configured captioning model
+                # so the agent learns what they contain. Degrades to no caption
+                # when no vision model is available.
+                annotations: list[str | None] = [None] * len(images_to_annotate)
+                if images_to_annotate:
+                    vision_llm = get_tool_vision_llm()
+                    if vision_llm is not None:
+                        annotations = annotate_images_in_parallel(
+                            vision_llm,
+                            [
+                                (filename, content)
+                                for filename, content, _, _ in images_to_annotate
+                            ],
+                        )
+                    for (_, _, _, generated_file), annotation in zip(
+                        images_to_annotate, annotations, strict=True
+                    ):
+                        generated_file.image_caption = annotation
+
                 # Emit file_ids once files are processed
                 if generated_file_ids:
                     self.emitter.emit(
                         Packet(
                             placement=placement,
-                            obj=PythonToolDelta(file_ids=generated_file_ids),
+                            obj=PythonToolDelta(
+                                file_ids=generated_file_ids,
+                                files=[
+                                    PythonToolGeneratedFile(
+                                        filename=generated_file.filename,
+                                        file_id=generated_file_id,
+                                    )
+                                    for generated_file, generated_file_id in zip(
+                                        generated_files,
+                                        generated_file_ids,
+                                        strict=True,
+                                    )
+                                ],
+                            ),
                         )
                     )
 
@@ -540,6 +626,7 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                     generated_files=generated_files,
                     error=(None if result_event.exit_code == 0 else truncated_stderr),
                     staging_notice=staging_notice,
+                    files_notice=FILES_NOTICE_TEMPLATE if generated_files else None,
                 )
 
                 # Serialize result for LLM
@@ -549,6 +636,14 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 return ToolResponse(
                     rich_response=PythonToolRichResponse(
                         generated_files=generated_files,
+                        tool_images=[
+                            ToolResponseImage(
+                                filename=generated_file.filename,
+                                file_id=onyx_file_id,
+                                content=content,
+                            )
+                            for _, content, onyx_file_id, generated_file in images_to_annotate
+                        ],
                     ),
                     llm_facing_response=llm_response,
                 )

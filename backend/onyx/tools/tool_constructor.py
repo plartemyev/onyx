@@ -38,7 +38,11 @@ from onyx.tools.tool_implementations.coding_agent.coding_agent_tool import (
 from onyx.tools.tool_implementations.custom.custom_tool import (
     build_custom_tools_from_openapi_schema_and_headers,
 )
+from onyx.tools.tool_implementations.download.download_tool import DownloadFileTool
 from onyx.tools.tool_implementations.file_reader.file_reader_tool import FileReaderTool
+from onyx.tools.tool_implementations.image_analysis.analyze_image_tool import (
+    AnalyzeImageTool,
+)
 from onyx.tools.tool_implementations.images.image_generation_tool import (
     ImageGenerationTool,
 )
@@ -338,6 +342,18 @@ def _construct_tools_impl(
                     raise ValueError(
                         "Open URL tool requires a web content provider, please contact your Onyx admin to get it configured!"
                     )
+
+            # Handle Download Tool
+            elif tool_cls.__name__ == DownloadFileTool.__name__:
+                tool_dict[db_tool_model.id] = [
+                    DownloadFileTool(tool_id=db_tool_model.id, emitter=emitter)
+                ]
+
+            # Handle Analyze Image Tool
+            elif tool_cls.__name__ == AnalyzeImageTool.__name__:
+                tool_dict[db_tool_model.id] = [
+                    AnalyzeImageTool(tool_id=db_tool_model.id, emitter=emitter)
+                ]
 
             # Handle Python/Code Interpreter Tool
             elif tool_cls.__name__ == PythonTool.__name__:

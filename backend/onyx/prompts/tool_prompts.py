@@ -43,27 +43,71 @@ Do not use the "site:" operator in your web search queries.
 """.lstrip()
 
 
+DOWNLOAD_TOOL_GUIDANCE = """
+## download_file
+Use the `download_file` tool to fetch files from direct URLs (like https://example.com/image.jpg) and show them to the user. \
+It runs with full browser-like request protection, so it succeeds where downloads in the Python sandbox are blocked. \
+The URLs must point at the file itself, not a web page containing the file. \
+At most 5 URLs are downloaded per call; the result tells you if extra URLs were skipped, and you can call the tool again for the rest. \
+Downloaded images are described for you automatically: the result includes an `annotation` for each image, so you normally do not need analyze_image for them. \
+To share a downloaded image in your reply, embed it exactly once with markdown: ![filename](file_url). \
+Never wrap the embed in a link. Link other files as [filename](file_url).
+""".lstrip()
+
+
+ANALYZE_IMAGE_GUIDANCE = """
+## analyze_image
+Use the `analyze_image` tool when you need to know what an image shows, or to answer a specific question about an image. \
+It attaches each image to the chat for the user and returns the vision model's description (or the answer to your `question` about it). \
+Pass a `question` to focus the analysis on one detail you need to know, e.g. "What trend does this chart show?" or "What text appears on the sign?". \
+Give it direct image URLs (they must point at the image file itself, not a web page containing the image) \
+and/or `file_ids` of images already saved in this chat — from `[attached image — file_id: <id>]` tags on user-attached images, or from earlier tool results. \
+Never invent a file_id. \
+At most 5 images are analyzed per call. \
+Images downloaded with download_file already include annotations; call analyze_image with the file's file_id only if you need a specific detail its annotation does not cover.
+""".lstrip()
+
+
 OPEN_URLS_GUIDANCE = """
 ## open_url
 Use the `open_url` tool to read the content of one or more URLs. Use this tool to access the contents of the most promising web pages from your web searches or user specified URLs. \
 You can open many URLs at once by passing multiple URLs in the array if multiple pages seem promising. Prioritize the most promising pages and reputable sources. \
-Do not open URLs that are image files like .png, .jpg, etc.
+Do not open URLs that are image files like .png, .jpg, etc. — this tool reads text only. \
+Results may include an `images` field with direct image URLs found on the page. \
+To learn what one of those images shows, use the `analyze_image` tool. To share a web image with the user without analyzing it, download it with the `download_file` or `run_python` tool.
 You should almost always use open_url after a web_search call. Use this tool when a user asks about a specific provided URL.
 """.lstrip()
+
+PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE = """
+Internet access is available in the sandbox: your code can fetch public URLs and call APIs. \
+This includes downloading files such as images that the user asks about: fetch the bytes and save them in the current directory, and the user gets them in chat. \
+If you need to know what an image contains, use the `analyze_image` tool instead — the sandbox cannot view images for you. \
+Always send browser-like headers (a real Chrome User-Agent and an Accept header) with downloads; plain Python requests are often blocked. \
+If a download still fails (403 or another bot-protection error), use the `download_file` tool instead — it fetches with full browser protection and shows the file to the user. \
+The sandbox Python has no pip, and `uv` is not available. Plain `pip install` and `python -m pip` fail. \
+To add a package, install it into a local folder with the system pip and add that folder to `sys.path`: \
+`subprocess.run(["pip", "install", "--no-cache-dir", "--target", "_pylibs", "<package>"], check=True)` then `sys.path.insert(0, "_pylibs")` before the import. \
+Installs do not persist between calls, so put both lines at the top of every script that needs the package, and prefer the preinstalled libraries first. \
+If a network request fails, continue without it.
+""".strip()
+
+PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE = """
+Internet access for this session is disabled. Do not make external web requests, API calls, or package installations as they will fail.
+""".strip()
 
 PYTHON_TOOL_GUIDANCE = """
 ## run_python
 Use the `run_python` tool to execute Python code in an isolated sandbox. The tool will respond with the output of the execution or time out after 60.0 seconds.
-Any files uploaded to the chat will be automatically be available in the execution environment's current directory. \
-The current directory in the file system can be used to save and persist user files. Files written to the current directory will be returned with a `file_link`. \
-Use this to give the user a way to download the file OR to display generated images.
-Internet access for this session is disabled. Do not make external web requests or API calls as they will fail.
+Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
+The current directory in the file system can be used to save and persist user files. Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
+Image files are displayed in chat; embed one in your reply with markdown: ![filename](file_link).
+{network_guidance}
 Use `openpyxl` to read and write Excel files. You have access to libraries like numpy, pandas, scipy, matplotlib, and PIL.
 Write chart titles, axis labels, legends, and other text rendered into images in the language you reply in. \
 The sandbox fonts cannot shape Arabic or render CJK glyphs (they come out as disconnected letters or boxes), so for those languages write the rendered text in English and explain the labels in your reply.
-IMPORTANT: each call to this tool runs in a fresh, stateless sandbox. Variables, imports, and in-memory state from previous calls will NOT be available, \
-and files written by a previous call will NOT be available in later calls. \
-Therefore batch multi-step work into a single script per call: e.g. load a workbook once, read all needed sheets, apply all edits, and save the result in one execution — not one small step per call.
+IMPORTANT: each call to this tool runs in a fresh sandbox. Variables, imports, and installed packages from previous calls will NOT be available. \
+Files written by a previous call ARE available in later calls by filename, so multi-step work can build across calls (up to per-execution limits). \
+Batching related steps into a single script is still more efficient than many small calls.
 """.lstrip()
 
 GENERATE_IMAGE_GUIDANCE = """
@@ -84,4 +128,29 @@ Focus on enduring preferences, long-term goals, stable constraints, and explicit
 TOOL_CALL_FAILURE_PROMPT = """
 LLM attempted to call a tool but failed. Most likely the tool name or arguments were misspelled.
 """.strip()
+
+
+# Replayed to the model in place of a result when one of its parallel calls to a
+# mergeable tool (search tools, open_url) was folded into the first call.
+TOOL_CALL_MERGED_PROMPT = (
+    "This tool call was merged into another call to the same tool in the same "
+    "step. Its arguments were combined into that call, and that call's results "
+    "cover this one. Do not re-run it."
+).strip()
+
+
+# Replayed to the model in place of a result when a call was dropped because the
+# step already ran the maximum number of concurrent tool calls.
+TOOL_CALL_DROPPED_CONCURRENCY_PROMPT = (
+    "This tool call was not run: the maximum number of tool calls for this step "
+    "was reached. Re-run it in a later step if it is still needed."
+).strip()
+
+
+# Replayed to the model when execution started but no result ever arrived
+# (threadpool timeout or worker loss).
+TOOL_CALL_LOST_PROMPT = (
+    "This tool call did not complete in time and produced no result. Do not "
+    "assume it succeeded; re-run it only if still needed."
+).strip()
 # ruff: noqa: E501, W605 end

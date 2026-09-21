@@ -97,6 +97,10 @@ class ToolResponse(BaseModel):
         | CustomToolCallSummary
         # This comes from code interpreter, carries generated files
         | PythonToolRichResponse
+        # This comes from the download tool, carries the saved downloaded files
+        | DownloadToolRichResponse
+        # This comes from the analyze_image tool, carries the analyzed images
+        | AnalyzeImageToolRichResponse
         # If the rich response is a string, this is what's saved to the tool call in the DB
         | str
         | None  # If nothing needs to be persisted outside of the string value passed to the LLM
@@ -233,6 +237,8 @@ class PythonToolRichResponse(BaseModel):
     """Rich response from the Python tool carrying generated files."""
 
     generated_files: list[PythonExecutionFile] = []
+    # Generated images, for direct replay to vision-capable chat models
+    tool_images: list[ToolResponseImage] = []
 
 
 class PythonToolOverrideKwargs(BaseModel):
@@ -325,11 +331,62 @@ class LlmOpenUrlResult(BaseCiteableToolResult):
     content: str
 
 
+class ToolResponseImage(BaseModel):
+    """An image produced by a tool call, with its bytes.
+
+    Carried on rich responses so the chat loop can replay the image into the
+    LLM context (vision-capable models). In-memory only — rich responses are
+    never persisted."""
+
+    filename: str
+    file_id: str
+    content: bytes
+
+
 class PythonExecutionFile(BaseModel):
     """File generated during Python execution"""
 
     filename: str
     file_link: str
+    # Vision-model description, set for generated image files
+    image_caption: str | None = None
+
+
+class DownloadedFile(BaseModel):
+    """A file the download tool fetched and saved to the file store."""
+
+    url: str
+    file_id: str
+    file_url: str
+    filename: str
+    mime_type: str
+    # Vision-model description, set for image files
+    annotation: str | None = None
+
+
+class DownloadFailure(BaseModel):
+    """A URL the download tool could not download, with the reason."""
+
+    url: str
+    failure_reason: str | None = None
+
+
+class DownloadToolRichResponse(BaseModel):
+    """Rich response of the download tool, carries the saved downloaded files"""
+
+    files: list[DownloadedFile]
+    failures: list[DownloadFailure]
+    # Downloaded images, for direct replay to vision-capable chat models
+    tool_images: list[ToolResponseImage] = []
+
+
+class AnalyzeImageToolRichResponse(BaseModel):
+    """Rich response of the analyze_image tool"""
+
+    files: list[DownloadedFile]
+    failures: list[DownloadFailure]
+    # Analyzed images, for direct replay to vision-capable chat models
+    tool_images: list[ToolResponseImage] = []
 
 
 class LlmPythonExecutionResult(BaseModel):
@@ -345,3 +402,6 @@ class LlmPythonExecutionResult(BaseModel):
     error: str | None = None
     # Set when some session files are absent
     staging_notice: str | None = None
+    # Set when files were generated: they stay available in later executions
+    # and image files are displayed to the user in chat
+    files_notice: str | None = None
