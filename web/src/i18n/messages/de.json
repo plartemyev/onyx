@@ -5403,6 +5403,12 @@
               "label": "Reasoning"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Maximale Eingabe-Tokens. Bei Ollama-Modellen wird dieser Wert als num_ctx gesendet. Leer lassen, um den Anbieter-Standard zu verwenden."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Standard"

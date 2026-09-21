@@ -5403,6 +5403,12 @@
               "label": "استدلال"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "تلقائي",
+              "tooltip": "الحد الأقصى لرموز الإدخال. بالنسبة لنماذج Ollama، تُرسَل هذه القيمة كـ num_ctx. اتركه فارغًا لاستخدام الافتراضي من المزوّد."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "الافتراضي"

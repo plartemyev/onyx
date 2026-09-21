@@ -5403,6 +5403,12 @@
               "label": "raciocínio"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Tokens máximos de entrada. Para modelos do Ollama, o valor é enviado como num_ctx. Deixe vazio para usar o padrão do provedor."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Padrão"

@@ -5403,6 +5403,12 @@
               "label": "추론"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "자동",
+              "tooltip": "최대 입력 토큰 수입니다. Ollama 모델의 경우 num_ctx로 전송됩니다. 비워 두면 공급자 기본값이 사용됩니다."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "기본값"

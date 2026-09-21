@@ -5403,6 +5403,12 @@
               "label": "raisonnement"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Nombre maximal de jetons d'entrée. Pour les modèles Ollama, cette valeur est envoyée sous forme de num_ctx. Laissez vide pour utiliser la valeur par défaut du fournisseur."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Par défaut"

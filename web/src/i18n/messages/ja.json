@@ -5403,6 +5403,12 @@
               "label": "推論"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "自動",
+              "tooltip": "最大入力トークン数。Ollama モデルでは num_ctx として送信されます。空のままにするとプロバイダーのデフォルトが使用されます。"
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "デフォルト"

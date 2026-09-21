@@ -5403,6 +5403,12 @@
               "label": "推理"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "自动",
+              "tooltip": "最大输入 token 数。对于 Ollama 模型，该值会作为 num_ctx 发送。留空则使用提供商的默认值。"
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "默认"

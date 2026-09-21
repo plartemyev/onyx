@@ -5403,6 +5403,12 @@
               "label": "reasoning"
             }
           },
+          "contextWindow": {
+            "input": {
+              "placeholder": "Auto",
+              "tooltip": "Maximum input tokens. For Ollama models this is sent as num_ctx. Leave empty to use the provider default."
+            }
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Default"
