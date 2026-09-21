@@ -505,7 +505,9 @@ services:
     #   - "6379:6379"
     # docker silently mounts /data even without an explicit volume mount, which enables
     # persistence. explicitly setting save and appendonly forces ephemeral behavior.
-    command: redis-server --save "" --appendonly no
+    # REDIS_PASSWORD is read by the app (onyx.configs.app_configs) and all proxy/
+    # worker clients; empty string keeps auth disabled (pre-existing behavior).
+    command: sh -c 'exec redis-server --save "" --appendonly no --requirepass "${REDIS_PASSWORD}"'
     env_file:
       - path: .env
         required: false
@@ -554,6 +556,11 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # Network for sandboxed executor containers. The default joins the compose
+      # network, giving sandboxed code Internet and LAN access. Set to "none" in
+      # .env to restore full network isolation.
+      - PYTHON_EXECUTOR_DOCKER_NETWORK=${PYTHON_EXECUTOR_DOCKER_NETWORK:-onyx_default}
     healthcheck:
       # /health probes the executor backend, not just the API process: it needs
       # the Docker daemon reachable and the executor image present on the host.
