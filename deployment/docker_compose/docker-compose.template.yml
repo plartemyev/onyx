@@ -610,7 +610,9 @@ services:
     #!endfor
     # docker silently mounts /data even without an explicit volume mount, which enables
     # persistence. explicitly setting save and appendonly forces ephemeral behavior.
-    command: redis-server --save "" --appendonly no
+    # REDIS_PASSWORD is read by the app (onyx.configs.app_configs) and all proxy/
+    # worker clients; empty string keeps auth disabled (pre-existing behavior).
+    command: sh -c 'exec redis-server --save "" --appendonly no --requirepass "${REDIS_PASSWORD}"'
     #!for default
     env_file:
       - path: .env
