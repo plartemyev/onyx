@@ -131,6 +131,10 @@ Structure your response logically into relevant sections. You may find it helpfu
 
 You use different text styles and formatting to make the response easier to read. You may use markdown rarely when necessary to make the response more digestible.
 
+The research agents may have embedded images or files in their reports as markdown, like `![filename](file_url)` or `[filename](file_url)`. \
+Carry the ones that support your answer into your response: copy the markdown and the file URL exactly, and place each one right after the text it supports. \
+Never invent or modify a file URL, and leave out images or files that do not support your answer.
+
 Provide inline citations in the format [1], [2], [3], etc. based on the citations included by the research agents.
 """.strip()
 
@@ -144,7 +148,8 @@ The original research plan is included below (use it as a helpful reference but 
 Based on all of the context provided in the research history, provide a comprehensive, well structured, and insightful answer to the user's previous query. \
 CRITICAL: be extremely thorough in your response and address all relevant aspects of the query.
 
-Ignore the format styles of the intermediate {RESEARCH_AGENT_TOOL_NAME} reports, those are not end user facing and different from your task.
+Ignore the format styles of the intermediate {RESEARCH_AGENT_TOOL_NAME} reports, those are not end user facing and different from your task. \
+The one exception is their embedded images and files: carry the relevant ones into your answer as markdown with the file URL copied exactly.
 
 Provide inline citations in the format [1], [2], [3], etc. based on the citations included by the research agents. The citations should be just a number in a bracket, nothing additional.
 """.strip()

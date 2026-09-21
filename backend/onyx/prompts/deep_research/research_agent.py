@@ -51,6 +51,10 @@ Remove any obviously irrelevant or duplicative information.
 
 If a statement seems not trustworthy or is contradictory to other statements, it is important to flag it.
 
+If any tool result returned an image or file (it carries a `file_url` or `file_link` pointing at the saved file), include the relevant ones in the report so they are not lost. \
+Embed an image as `![filename](file_url)` and any other file as `[filename](file_url)`, always copying the file URL exactly as it appeared in the tool results. \
+Place each one right after the text it supports. Do not include images or files that are not relevant to the research topic.
+
 Cite all sources INLINE using the format [1], [2], [3], etc. based on the `document` field of the source. \
 Cite inline as opposed to leaving all citations until the very end of the response.
 """
@@ -62,6 +66,8 @@ Please write me a comprehensive report on the research topic given the context a
 
 Remember to include AS MUCH INFORMATION AS POSSIBLE and as faithful to the original sources as possible. \
 Keep it free of formatting and focus on the facts only. Be sure to include all context for each fact to avoid misinterpretation or misattribution.
+
+If any tool result returned an image or file with a `file_url` or `file_link`, embed the relevant ones with markdown and copy the file URL exactly. Never invent or modify a file URL.
 
 Cite every fact INLINE using the format [1], [2], [3], etc. based on the `document` field of the source.
 
