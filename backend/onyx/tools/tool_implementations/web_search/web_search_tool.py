@@ -150,7 +150,8 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
             "function": {
                 "name": self.name,
                 "description": (
-                    "Search the web for information. Returns a list of search results with titles, metadata, and snippets."
+                    "Search the web for information. Returns a list of search results with titles, metadata, and snippets. "
+                    "Some results include direct image URLs in an `images` field; download those with run_python if you need to share the images."
                 ),
                 "parameters": {
                     "type": "object",
@@ -280,7 +281,11 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
         all_search_results: list[WebSearchResult] = []
 
         if valid_results:
-            # Track seen (title, url) pairs to avoid duplicates
+            # Track seen (url, image_urls) pairs to avoid duplicates. Keyed by
+            # URL (not title) so the same page returned by different queries —
+            # often with different titles/snippets — collapses to one entry.
+            # Image URLs stay in the key so distinct image results from the
+            # same source page don't collapse.
             seen = set()
             # Track current index for each result set
             indices = [0] * len(valid_results)
@@ -293,7 +298,7 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
                         break
                     if indices[idx] < len(results):
                         result = results[indices[idx]]
-                        key = (result.title, result.link)
+                        key = (result.link, tuple(result.image_urls))
                         if key not in seen:
                             seen.add(key)
                             all_search_results.append(result)

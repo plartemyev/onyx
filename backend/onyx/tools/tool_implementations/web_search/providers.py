@@ -83,6 +83,7 @@ def build_search_provider_from_config(
         return SearXNGClient(
             searxng_base_url,
             num_results=num_results,
+            language=config.get("language"),
         )
 
     # All other providers require an API key

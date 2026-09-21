@@ -28,11 +28,20 @@ class WebSearchResult(BaseModel):
     snippet: str
     author: str | None = None
     published_date: datetime | None = None
+    # Direct image URLs associated with this result (e.g. a page thumbnail or
+    # an image-search hit). Deliberately NOT run through normalize_url: image
+    # CDN URLs usually require their query params (size, format, signatures).
+    image_urls: list[str] = []
 
     @field_validator("link")
     @classmethod
     def normalize_link(cls, v: str) -> str:
         return normalize_url(v)
+
+    @field_validator("image_urls")
+    @classmethod
+    def keep_absolute_image_urls(cls, v: list[str]) -> list[str]:
+        return [url for url in v if url.startswith(("http://", "https://"))]
 
 
 class WebSearchProvider:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -159,3 +160,83 @@ class TestWebSearchToolRunQueryCoercion:
 
         assert "No valid" in str(exc_info.value)
         cast(MagicMock, mock_provider.search).assert_not_called()
+
+
+class TestResultDeduplication:
+    """Merged multi-query results must not repeat the same URL."""
+
+    def test_same_url_from_multiple_queries_appears_once(self) -> None:
+        """The same page returned by different queries often carries a
+        different title/snippet per query. Collapsing by URL keeps one entry,
+        so the LLM sees each source exactly once (with one citation number)."""
+        duplicate_url = "https://www.reddit.com/r/KSPMemes/"
+        mock_provider = MagicMock()
+        mock_provider.supports_site_filter = False
+        mock_provider.search.side_effect = [
+            [
+                WebSearchResult(
+                    title="r/KSPMemes - Reddit", link=duplicate_url, snippet="a"
+                )
+            ],
+            [
+                WebSearchResult(
+                    title="For all your meme-related needs - Reddit",
+                    link=duplicate_url,
+                    snippet="b",
+                ),
+                WebSearchResult(
+                    title="Other page", link="https://example.com/other", snippet="c"
+                ),
+            ],
+        ]
+        tool = _make_tool(mock_provider)
+        placement = Placement(turn_index=0, tab_index=0)
+        override_kwargs = WebSearchToolOverrideKwargs(starting_citation_num=1)
+
+        response = tool.run(
+            placement=placement,
+            override_kwargs=override_kwargs,
+            queries=["ksp memes", "ksp memes reddit"],
+        )
+
+        payload = json.loads(response.llm_facing_response)
+        links = [result["url"] for result in payload["results"]]
+        assert links.count(duplicate_url) == 1
+        assert len(links) == 2
+
+    def test_distinct_image_results_from_same_page_survive(self) -> None:
+        """Image results share a source-page link but carry different direct
+        image URLs — those must NOT be collapsed into one result."""
+        page_url = "https://example.com/gallery"
+        mock_provider = MagicMock()
+        mock_provider.supports_site_filter = False
+        mock_provider.search.side_effect = [
+            [
+                WebSearchResult(
+                    title="Gallery",
+                    link=page_url,
+                    snippet="s",
+                    image_urls=["https://cdn.example.com/1.jpg"],
+                )
+            ],
+            [
+                WebSearchResult(
+                    title="Gallery",
+                    link=page_url,
+                    snippet="s",
+                    image_urls=["https://cdn.example.com/2.jpg"],
+                )
+            ],
+        ]
+        tool = _make_tool(mock_provider)
+        placement = Placement(turn_index=0, tab_index=0)
+        override_kwargs = WebSearchToolOverrideKwargs(starting_citation_num=1)
+
+        response = tool.run(
+            placement=placement,
+            override_kwargs=override_kwargs,
+            queries=["gallery", "gallery images"],
+        )
+
+        payload = json.loads(response.llm_facing_response)
+        assert len(payload["results"]) == 2
