@@ -10,7 +10,7 @@ from onyx.chat.chat_state import ChatStateContainer
 from onyx.chat.citation_processor import DynamicCitationProcessor
 from onyx.chat.emitter import Emitter
 from onyx.chat.incognito import current_turn_persists_content
-from onyx.chat.models import ChatMessageSimple, LlmStepResult
+from onyx.chat.models import ChatLoadedFile, ChatMessageSimple, LlmStepResult
 from onyx.chat.tool_call_args_streaming import maybe_emit_argument_delta
 from onyx.configs.app_configs import (
     ENABLE_AZURE_IMAGE_CAP,
@@ -20,7 +20,6 @@ from onyx.configs.app_configs import (
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDoc
 from onyx.file_store.models import ChatFileType
-from onyx.llm.constants import LlmProviderNames
 from onyx.llm.interfaces import (
     LLM,
     LanguageModelInput,
@@ -148,6 +147,140 @@ class _XmlToolCallContentFilter:
         return remaining
 
 
+_TEXT_TOOL_RESULT_LINE_RE = re.compile(
+    r"^\s*\[Tool Result\]\s+id=\S+\s*$",
+    re.IGNORECASE,
+)
+
+
+class _TextToolCallContentFilter:
+    """Streaming filter that suppresses imitated `[Tool Call]` history-format lines.
+
+    Models that saw the former flattened Ollama history format sometimes emit it
+    as content instead of using native tool calls. Whole lines are buffered so
+    suppression decisions never split prose mid-line; args pretty-printed across
+    lines are swallowed until their JSON object balances, bounded by
+    _MAX_SUPPRESSED_BLOCK_CHARS so a malformed block cannot eat the answer.
+    Only lines naming a tool present in the current request are suppressed, and
+    content inside markdown code fences is always passed through.
+    """
+
+    _MAX_SUPPRESSED_BLOCK_CHARS = 8000
+
+    def __init__(self, tool_names: set[str]) -> None:
+        self._tool_names = tool_names
+        self._pending = ""
+        self._in_code_fence = False
+        self._suppressing = False
+        self._brace_depth = 0
+        self._suppressed_parts: list[str] = []
+
+    @staticmethod
+    def _brace_delta(text: str) -> int:
+        depth = 0
+        in_string = False
+        escaped = False
+        for char in text:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+        return depth
+
+    def _process_line(self, line: str) -> str | None:
+        """Filter one complete line. Returns None when the line is suppressed."""
+        if self._suppressing:
+            self._suppressed_parts.append(line)
+            self._brace_depth += self._brace_delta(line)
+            if self._brace_depth <= 0:
+                # Args object closed; the imitated call block ends here.
+                self._suppressing = False
+                self._suppressed_parts = []
+                return None
+            if (
+                sum(len(part) + 1 for part in self._suppressed_parts)
+                > self._MAX_SUPPRESSED_BLOCK_CHARS
+            ):
+                # Malformed block that never balances — emit it as prose rather
+                # than swallowing the rest of the answer.
+                self._suppressing = False
+                suppressed = "\n".join(self._suppressed_parts)
+                self._suppressed_parts = []
+                return suppressed
+            return None
+
+        if line.strip().startswith("```"):
+            self._in_code_fence = not self._in_code_fence
+            return line
+
+        if self._in_code_fence:
+            return line
+
+        if _TEXT_TOOL_RESULT_LINE_RE.match(line):
+            return None
+
+        line_match = _TEXT_TOOL_CALL_LINE_RE.match(line)
+        if line_match and line_match.group("name") in self._tool_names:
+            args_text = line_match.group("args")
+            brace_depth = self._brace_delta(args_text)
+            if brace_depth > 0 or not args_text.strip():
+                # Args continue on following lines (pretty-printed JSON or an
+                # `args=` with the object opening below); suppress until the
+                # JSON object balances.
+                self._suppressing = True
+                self._brace_depth = brace_depth
+                self._suppressed_parts = [line]
+                return None
+            # Complete single-line call — drop the line outright.
+            return None
+
+        return line
+
+    def process(self, content: str) -> str:
+        if not content:
+            return ""
+
+        if not self._tool_names:
+            return content
+
+        self._pending += content
+        *complete_lines, tail = self._pending.split("\n")
+        self._pending = tail
+
+        output_parts: list[str] = []
+        for line in complete_lines:
+            emitted = self._process_line(line)
+            if emitted is not None:
+                output_parts.append(emitted)
+        # Complete lines were each followed by a newline in the input.
+        output = "\n".join(output_parts)
+        if output_parts:
+            output += "\n"
+        return output
+
+    def flush(self) -> str:
+        pending = self._pending
+        self._pending = ""
+        if self._suppressing:
+            # Unterminated block at stream end — emit what was held rather
+            # than dropping the tail of the answer.
+            self._suppressing = False
+            suppressed = self._suppressed_parts
+            self._suppressed_parts = []
+            return "\n".join([*suppressed, pending])
+        return pending
+
+
 def _matching_open_marker_prefix_len(text: str) -> int:
     """Return longest suffix of text that matches prefix of "<function_calls"."""
     max_len = min(len(text), len(_FUNCTION_CALLS_OPEN_MARKER) - 1)
@@ -194,6 +327,28 @@ def _looks_like_xml_tool_call_payload(text: str | None) -> bool:
         return False
     lowered = text.lower()
     return "<function_calls" in lowered and "<invoke" in lowered
+
+
+_TEXT_TOOL_CALL_LINE_RE = re.compile(
+    r"^\s*\[Tool Call\]\s+name=(?P<name>.+?)\s+id=(?P<id>\S+)\s+args=(?P<args>.*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _looks_like_text_tool_call_payload(text: str | None) -> bool:
+    """Detect Onyx's flattened `[Tool Call]` history format emitted as content.
+
+    Models that saw the format in their (former) flattened history sometimes
+    imitate it in their own output instead of using native tool calls. The
+    marker must be followed by `name=` on the same line so prose that merely
+    mentions "[Tool Call]" does not trigger fallback extraction; extraction
+    itself still validates the name against the current tool definitions.
+    """
+    if not text:
+        return False
+    return bool(
+        re.search(r"^\s*\[Tool Call\]\s+name=\S+", text, re.IGNORECASE | re.MULTILINE)
+    )
 
 
 def _try_parse_json_string(value: Any) -> Any:
@@ -495,6 +650,25 @@ def extract_tool_calls_from_response_text(
             tool_name_to_def=tool_name_to_def,
         )
 
+    # Models that saw Onyx's flattened `[Tool Call]` history format sometimes
+    # emit it as content. Parse those lines so imitated calls execute instead
+    # of dead-cycling. Identical (tool, args) pairs already matched by the
+    # JSON/XML passes are skipped so a call never executes twice; duplicates
+    # within a single pass are kept, matching the JSON pass's behavior.
+    existing_call_keys = {
+        (tool_name, json.dumps(tool_args, sort_keys=True))
+        for tool_name, tool_args in matched_tool_calls
+    }
+    for tool_name, tool_args in _extract_text_tool_calls_from_response_text(
+        response_text=response_text,
+        tool_name_to_def=tool_name_to_def,
+    ):
+        call_key = (tool_name, json.dumps(tool_args, sort_keys=True))
+        if call_key in existing_call_keys:
+            continue
+        existing_call_keys.add(call_key)
+        matched_tool_calls.append((tool_name, tool_args))
+
     tool_calls: list[ToolCallKickoff] = []
     for tab_index, (tool_name, tool_args) in enumerate(matched_tool_calls):
         tool_calls.append(
@@ -581,6 +755,92 @@ def _parse_xml_parameter_value(raw_value: str, string_attr: str | None) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return value
+
+
+def _extract_balanced_json_block(text: str, start: int) -> str | None:
+    """Return the brace-balanced JSON object starting at ``text[start]``.
+
+    Handles args pretty-printed across multiple lines (a model imitating the
+    flattened history format does not always keep the JSON on one line).
+    Returns None when no balanced object starts at that position.
+    """
+    if start >= len(text) or text[start] != "{":
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
+def _extract_text_tool_calls_from_response_text(
+    response_text: str,
+    tool_name_to_def: dict[str, dict],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Extract `[Tool Call] name=... id=... args=...` lines from response text.
+
+    The flattened history format used for Ollama is sometimes imitated by the
+    model in its own content. Model-invented IDs are ignored (extracted calls
+    get fresh IDs like the other text-based extraction paths).
+    """
+    matched_tool_calls: list[tuple[str, dict[str, Any]]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for line_match in _TEXT_TOOL_CALL_LINE_RE.finditer(response_text):
+        raw_name = line_match.group("name")
+        tool_name = raw_name if raw_name in tool_name_to_def else None
+        if tool_name is None:
+            # Accept the sanitized spelling too: the model may copy the name
+            # from the tool schema rather than the (unsanitized) history name.
+            sanitized = sanitize_tool_name(raw_name)
+            if sanitized in tool_name_to_def:
+                tool_name = sanitized
+            else:
+                continue
+
+        args_start = line_match.start("args")
+        # Skip whitespace before the JSON object opens (covers pretty-printed
+        # args that start on a following line).
+        while (
+            args_start < len(response_text) and response_text[args_start] in " \t\r\n"
+        ):
+            args_start += 1
+        args_json = _extract_balanced_json_block(
+            response_text, args_start
+        ) or line_match.group("args")
+        tool_args = _parse_tool_args_to_dict(args_json)
+        if not tool_args and tool_name_to_def[tool_name].get("parameters", {}).get(
+            "required"
+        ):
+            # Required arguments exist but the args payload is unparseable —
+            # executing would just fail, so leave the line as prose.
+            continue
+
+        dedupe_key = (tool_name, json.dumps(tool_args, sort_keys=True))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        matched_tool_calls.append((tool_name, tool_args))
+
+    return matched_tool_calls
 
 
 def _resolve_tool_arguments(obj: dict[str, Any]) -> dict[str, Any] | None:
@@ -735,69 +995,6 @@ def _build_structured_tool_response_message(msg: ChatMessageSimple) -> ToolMessa
     )
 
 
-class _HistoryMessageFormatter:
-    def format_assistant_message(self, msg: ChatMessageSimple) -> AssistantMessage:
-        raise NotImplementedError
-
-    def format_tool_response_message(
-        self, msg: ChatMessageSimple
-    ) -> ToolMessage | UserMessage:
-        raise NotImplementedError
-
-
-class _DefaultHistoryMessageFormatter(_HistoryMessageFormatter):
-    def format_assistant_message(self, msg: ChatMessageSimple) -> AssistantMessage:
-        return _build_structured_assistant_message(msg)
-
-    def format_tool_response_message(self, msg: ChatMessageSimple) -> ToolMessage:
-        return _build_structured_tool_response_message(msg)
-
-
-class _OllamaHistoryMessageFormatter(_HistoryMessageFormatter):
-    def format_assistant_message(self, msg: ChatMessageSimple) -> AssistantMessage:
-        if not msg.tool_calls:
-            return _build_structured_assistant_message(msg)
-
-        tool_call_lines = [
-            (
-                f"[Tool Call] name={tc.tool_name} id={tc.tool_call_id} args={json.dumps(tc.tool_arguments)}"
-            )
-            for tc in msg.tool_calls
-        ]
-        assistant_content = (
-            "\n".join([msg.message, *tool_call_lines])
-            if msg.message
-            else "\n".join(tool_call_lines)
-        )
-        return AssistantMessage(
-            role="assistant",
-            content=assistant_content,
-            tool_calls=None,
-        )
-
-    def format_tool_response_message(self, msg: ChatMessageSimple) -> UserMessage:
-        if not msg.tool_call_id:
-            raise ValueError(
-                f"Tool call response message encountered but tool_call_id is not available. Message: {msg}"
-            )
-
-        return UserMessage(
-            role="user",
-            content=f"[Tool Result] id={msg.tool_call_id}\n{msg.message}",
-        )
-
-
-_DEFAULT_HISTORY_MESSAGE_FORMATTER = _DefaultHistoryMessageFormatter()
-_OLLAMA_HISTORY_MESSAGE_FORMATTER = _OllamaHistoryMessageFormatter()
-
-
-def _get_history_message_formatter(llm_config: LLMConfig) -> _HistoryMessageFormatter:
-    if llm_config.model_provider == LlmProviderNames.OLLAMA_CHAT:
-        return _OLLAMA_HISTORY_MESSAGE_FORMATTER
-
-    return _DEFAULT_HISTORY_MESSAGE_FORMATTER
-
-
 # Azure OpenAI documents a 50-image limit per request; other Azure-hosted
 # models don't publish one. When ENABLE_AZURE_IMAGE_CAP=true is set, we cap
 # all Azure providers at 50 to avoid raw 400s from the gateway. Off by
@@ -831,15 +1028,17 @@ def _select_recent_image_indices(
     what the user explicitly attached over project-context fill.
 
     Returns the keep-set and the count of images that would be dropped. Only
-    ChatFileType.IMAGE entries on USER messages count — that matches what
-    translate_history_to_llm_format actually emits, so cap slots aren't
-    wasted on images that would never reach the LLM."""
+    ChatFileType.IMAGE entries on USER or TOOL_CALL_RESPONSE messages count —
+    that matches what translate_history_to_llm_format actually emits, so cap
+    slots aren't wasted on images that would never reach the LLM."""
     keep: set[tuple[int, int]] = set()
     total = 0
     kept = 0
     for msg_idx in range(len(history) - 1, -1, -1):
         msg = history[msg_idx]
-        if msg.message_type != MessageType.USER or not msg.image_files:
+        if msg.message_type not in (MessageType.USER, MessageType.TOOL_CALL_RESPONSE):
+            continue
+        if not msg.image_files:
             continue
         for img_idx, img in enumerate(msg.image_files):
             if img.file_type != ChatFileType.IMAGE:
@@ -849,6 +1048,29 @@ def _select_recent_image_indices(
                 keep.add((msg_idx, img_idx))
                 kept += 1
     return keep, max(0, total - cap)
+
+
+def _image_content_part(img_file: ChatLoadedFile) -> ImageContentPart | None:
+    """Build an image content part from a chat file's bytes, or None if the
+    bytes cannot be processed."""
+    try:
+        image_type = get_image_type_from_bytes(img_file.content)
+        base64_data = img_file.to_base64()
+        image_url = f"data:{image_type};base64,{base64_data}"
+        return ImageContentPart(
+            type="image_url",
+            image_url=ImageUrlDetail(
+                url=image_url,
+                detail=None,
+            ),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to process image file %s: %s. Skipping image.",
+            img_file.file_id,
+            e,
+        )
+        return None
 
 
 def translate_history_to_llm_format(
@@ -861,7 +1083,6 @@ def translate_history_to_llm_format(
     handling different message types and image files for multimodal support.
     """
     messages: list[ChatCompletionMessage] = []
-    history_message_formatter = _get_history_message_formatter(llm_config)
     # Note: cacheability is computed from pre-translation ChatMessageSimple types.
     # Some providers flatten tool history into plain assistant/user text, so this split
     # may be less semantically meaningful, but it remains safe and order-preserving.
@@ -873,7 +1094,11 @@ def translate_history_to_llm_format(
     # provider 400, so replay a text marker instead. Admins can mark custom
     # vision models with the VISION flow type to keep images flowing.
     supports_image_input = True
-    if any(msg.message_type == MessageType.USER and msg.image_files for msg in history):
+    if any(
+        msg.message_type in (MessageType.USER, MessageType.TOOL_CALL_RESPONSE)
+        and msg.image_files
+        for msg in history
+    ):
         supports_image_input = model_supports_image_input(
             llm_config.model_name,
             llm_config.model_provider,
@@ -1008,10 +1233,58 @@ def translate_history_to_llm_format(
             messages.append(reminder_msg)
 
         elif msg.message_type == MessageType.ASSISTANT:
-            messages.append(history_message_formatter.format_assistant_message(msg))
+            messages.append(_build_structured_assistant_message(msg))
 
         elif msg.message_type == MessageType.TOOL_CALL_RESPONSE:
-            messages.append(history_message_formatter.format_tool_response_message(msg))
+            # Tool responses can carry images produced by the tool (e.g. the
+            # analyze_image or python tool). Vision-capable models get the
+            # pixels as content parts; non-vision models get text markers.
+            if msg.image_files:
+                formatted = _build_structured_tool_response_message(msg)
+                text_content = (
+                    formatted.content if isinstance(formatted.content, str) else ""
+                )
+                content_parts: list[TextContentPart | ImageContentPart] = [
+                    TextContentPart(
+                        type="text",
+                        text=text_content,
+                    )
+                ]
+                for img_idx, img_file in enumerate(msg.image_files):
+                    if img_file.file_type != ChatFileType.IMAGE:
+                        continue
+                    if (
+                        keep_image_indices is not None
+                        and (idx, img_idx) not in keep_image_indices
+                    ):
+                        continue
+                    if not supports_image_input:
+                        content_parts.append(
+                            TextContentPart(
+                                type="text",
+                                text=NON_VISION_IMAGE_MARKER.format(
+                                    file_id=img_file.file_id
+                                ),
+                            )
+                        )
+                        continue
+                    content_parts.append(
+                        TextContentPart(
+                            type="text",
+                            text=f"[image returned by tool — file_id: {img_file.file_id}]",
+                        )
+                    )
+                    image_part = _image_content_part(img_file)
+                    if image_part is not None:
+                        content_parts.append(image_part)
+                messages.append(
+                    UserMessage(
+                        role="user",
+                        content=content_parts,
+                    )
+                )
+            else:
+                messages.append(_build_structured_tool_response_message(msg))
 
         else:
             logger.warning(
@@ -1180,6 +1453,17 @@ def run_llm_step_pkt_generator(
     finish_reasons: set[str] = set()
     terminal_finish_reason: str | None = None
     xml_tool_call_content_filter = _XmlToolCallContentFilter()
+    # Suppress lines imitating the former flattened Ollama history format.
+    # Names are matched against both the schema name and its sanitized form:
+    # imitating models may copy either spelling.
+    text_tool_call_names: set[str] = set()
+    for tool_def in tool_definitions:
+        if tool_def.get("type") == "function" and "function" in tool_def:
+            schema_name = tool_def["function"].get("name")
+            if schema_name:
+                text_tool_call_names.add(schema_name)
+                text_tool_call_names.add(sanitize_tool_name(schema_name))
+    text_tool_call_content_filter = _TextToolCallContentFilter(text_tool_call_names)
 
     processor_state: Any = None
 
@@ -1334,18 +1618,20 @@ def run_llm_step_pkt_generator(
                 terminal_finish_reason = str(finish_reason)
             delta = packet.choice.delta
 
-            # Weird behavior from some model providers, just log and ignore for now
+            # Weird behavior from some model providers, just log and ignore for now.
+            # Most providers emit 1-2 legitimately empty tail chunks per stream
+            # (usage summary + stop chunk), so this is debug-only; the stream-end
+            # "no actionable deltas" warning below covers the pathological case.
             if (
                 not delta.content
                 and delta.reasoning_content is None
                 and not delta.tool_calls
             ):
                 empty_chunk_count += 1
-                logger.warning(
+                logger.debug(
                     "LLM packet is empty (no content, reasoning, or tool calls). "
-                    "finish_reason=%s. Skipping: %s",
+                    "finish_reason=%s. Skipping.",
                     finish_reason,
-                    packet,
                 )
                 continue
 
@@ -1390,7 +1676,10 @@ def run_llm_step_pkt_generator(
                 # Keep raw content for fallback extraction. Display content can be
                 # filtered and, in deep-research REQUIRED mode, routed as reasoning.
                 accumulated_raw_answer += delta.content
-                filtered_content = xml_tool_call_content_filter.process(delta.content)
+                filtered_content = text_tool_call_content_filter.process(delta.content)
+                filtered_content = xml_tool_call_content_filter.process(
+                    filtered_content
+                )
                 if filtered_content:
                     yield from _emit_content_chunk(filtered_content)
 
@@ -1407,7 +1696,14 @@ def run_llm_step_pkt_generator(
                         parsers=arg_parsers,
                     )
 
-        # Flush any tail text buffered while checking for split "<function_calls" markers.
+        # Flush any tail text buffered by the filters while checking for split
+        # markers or line boundaries.
+        filtered_content_tail = text_tool_call_content_filter.flush()
+        filtered_content_tail = xml_tool_call_content_filter.process(
+            filtered_content_tail
+        )
+        if filtered_content_tail:
+            yield from _emit_content_chunk(filtered_content_tail)
         filtered_content_tail = xml_tool_call_content_filter.flush()
         if filtered_content_tail:
             yield from _emit_content_chunk(filtered_content_tail)

@@ -6,10 +6,13 @@ import pytest
 
 from onyx.chat import llm_step as llm_step_module
 from onyx.chat.llm_step import (
+    _extract_text_tool_calls_from_response_text,
     _extract_tool_call_kickoffs,
     _increment_turns,
+    _looks_like_text_tool_call_payload,
     _parse_tool_args_to_dict,
     _resolve_tool_arguments,
+    _TextToolCallContentFilter,
     _XmlToolCallContentFilter,
     extract_tool_calls_from_response_text,
     translate_history_to_llm_format,
@@ -30,7 +33,7 @@ from onyx.llm.well_known_providers.constants import (
     AZURE_PROVIDER_NAME,
     OPENAI_PROVIDER_NAME,
 )
-from onyx.prompts.chat_prompts import IMAGE_DROP_REMINDER
+from onyx.prompts.chat_prompts import IMAGE_DROP_REMINDER, NON_VISION_IMAGE_MARKER
 from onyx.prompts.constants import SYSTEM_REMINDER_TAG_CLOSE, SYSTEM_REMINDER_TAG_OPEN
 from onyx.server.query_and_chat.placement import Placement
 from onyx.utils.postgres_sanitization import sanitize_string
@@ -524,7 +527,14 @@ class TestTranslateHistoryToLlmFormat:
         assert translated[0].tool_calls is not None
         assert translated[0].tool_calls[0].function.name == "ServiceNow_API"
 
-    def test_flattens_tool_history_for_ollama(self) -> None:
+    def test_preserves_structured_tool_history_for_ollama(self) -> None:
+        """Ollama receives the same structured tool history as other providers.
+
+        The history used to be flattened to `[Tool Call]`/`[Tool Result]` text;
+        models imitated that format in their own output and Onyx could not parse
+        it back. Modern Ollama handles structured tool history natively, so it
+        must flow through unmodified.
+        """
         translated = translate_history_to_llm_format(
             history=self._tool_history(),
             llm_config=self._llm_config(LlmProviderNames.OLLAMA_CHAT),
@@ -532,15 +542,13 @@ class TestTranslateHistoryToLlmFormat:
         assert isinstance(translated, list)
 
         assert isinstance(translated[0], AssistantMessage)
-        assert translated[0].tool_calls is None
-        assert translated[0].content is not None
-        assert "51381e0b0" in translated[0].content
+        assert translated[0].tool_calls is not None
+        assert translated[0].tool_calls[0].id == "51381e0b0"
+        assert isinstance(translated[1], ToolMessage)
+        assert translated[1].tool_call_id == "51381e0b0"
+        assert translated[1].content == "tool result body"
 
-        assert isinstance(translated[1], UserMessage)
-        assert "51381e0b0" in translated[1].content
-        assert "tool result body" in translated[1].content
-
-    def test_flattens_multiple_assistant_tool_calls_for_ollama(self) -> None:
+    def test_preserves_multiple_assistant_tool_calls_for_ollama(self) -> None:
         history = [
             ChatMessageSimple(
                 message="I will use tools now.",
@@ -567,12 +575,13 @@ class TestTranslateHistoryToLlmFormat:
 
         assert isinstance(translated, list)
         assert isinstance(translated[0], AssistantMessage)
-        assert translated[0].tool_calls is None
-        assert translated[0].content == (
-            "I will use tools now.\n"
-            '[Tool Call] name=internal_search id=call-a args={"queries": ["alpha"]}\n'
-            '[Tool Call] name=internal_search id=call-b args={"queries": ["beta"]}'
-        )
+        assert translated[0].content == "I will use tools now."
+        assert translated[0].tool_calls is not None
+        assert [tc.id for tc in translated[0].tool_calls] == ["call-a", "call-b"]
+        assert [tc.function.name for tc in translated[0].tool_calls] == [
+            "internal_search",
+            "internal_search",
+        ]
 
     @pytest.mark.parametrize(
         "provider",
@@ -1110,3 +1119,370 @@ class TestFinishReasonPropagation:
         result = self._run_stream([("Hello", None), (" world", "stop")])
         assert result.finish_reason == "stop"
         assert result.answer == "Hello world"
+
+
+_TOOL_IMAGE_PREFIX = "[image returned by tool — file_id: "
+
+
+def _make_tool_response_msg(
+    text: str, images: list[ChatLoadedFile] | None = None
+) -> ChatMessageSimple:
+    return ChatMessageSimple(
+        message=text,
+        token_count=5,
+        message_type=MessageType.TOOL_CALL_RESPONSE,
+        tool_call_id="call-0",
+        image_files=images,
+    )
+
+
+class TestToolResponseImageReplay:
+    """Tool-produced images (analyze_image / download_file / run_python) are
+    replayed to the model as content parts on the tool response message."""
+
+    @pytest.fixture(autouse=True)
+    def _vision_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Default the gate open; individual tests close it explicitly.
+        monkeypatch.setattr(
+            llm_step_module, "model_supports_image_input", lambda *_: True
+        )
+
+    def test_vision_capable_model_gets_image_parts(self) -> None:
+        history = [
+            _make_tool_response_msg("result json", images=[_make_image("tool-img0")]),
+        ]
+        translated = translate_history_to_llm_format(
+            history=history, llm_config=_make_llm_config("openai")
+        )
+        assert isinstance(translated, list)
+        assert len(translated) == 1
+        msg = translated[0]
+        assert isinstance(msg, UserMessage)
+        assert isinstance(msg.content, list)
+        # The tool response text survives as the first part
+        assert isinstance(msg.content[0], TextContentPart)
+        assert "result json" in msg.content[0].text
+        # Followed by the image label and the image part itself
+        labels = [
+            p.text
+            for p in msg.content
+            if isinstance(p, TextContentPart) and p.text.startswith(_TOOL_IMAGE_PREFIX)
+        ]
+        assert labels == [f"{_TOOL_IMAGE_PREFIX}tool-img0]"]
+        image_parts = [p for p in msg.content if isinstance(p, ImageContentPart)]
+        assert len(image_parts) == 1
+        assert image_parts[0].image_url.url.startswith("data:image/png;base64,")
+
+    def test_non_vision_model_gets_text_markers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            llm_step_module, "model_supports_image_input", lambda *_: False
+        )
+        history = [
+            _make_tool_response_msg("result json", images=[_make_image("tool-img0")]),
+        ]
+        translated = translate_history_to_llm_format(
+            history=history, llm_config=_make_llm_config("openai")
+        )
+        assert isinstance(translated, list)
+        msg = translated[0]
+        assert isinstance(msg, UserMessage)
+        assert isinstance(msg.content, list)
+        assert not any(isinstance(p, ImageContentPart) for p in msg.content)
+        marker_texts = [
+            p.text
+            for p in msg.content
+            if isinstance(p, TextContentPart)
+            and p.text == NON_VISION_IMAGE_MARKER.format(file_id="tool-img0")
+        ]
+        assert len(marker_texts) == 1
+
+    def test_without_images_stays_plain_text(self) -> None:
+        history = [_make_tool_response_msg("plain result")]
+        translated = translate_history_to_llm_format(
+            history=history, llm_config=_make_llm_config("openai")
+        )
+        assert isinstance(translated, list)
+        msg = translated[0]
+        # The default formatter emits a ToolMessage for image-less responses
+        assert isinstance(msg, ToolMessage)
+        assert "plain result" in str(msg.content)
+
+    def test_azure_cap_counts_tool_images_and_keeps_recent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(llm_step_module, "ENABLE_AZURE_IMAGE_CAP", True)
+        monkeypatch.setattr(llm_step_module, "_AZURE_DEFAULT_IMAGE_CAP", 2)
+        history = [
+            _make_user_msg("user attached", images=[_make_image("user-img")]),
+            _make_tool_response_msg(
+                "tool result",
+                images=[_make_image("tool-img0"), _make_image("tool-img1")],
+            ),
+        ]
+        translated = translate_history_to_llm_format(
+            history=history, llm_config=_make_llm_config(AZURE_PROVIDER_NAME)
+        )
+        assert isinstance(translated, list)
+        user_msg, tool_msg, reminder = translated
+        assert isinstance(user_msg, UserMessage)
+        assert isinstance(tool_msg, UserMessage)
+        # Newest message wins cap slots: both tool images kept, user image dropped
+        assert _attached_image_file_ids(user_msg) == []
+        tool_image_parts = [
+            p
+            for p in tool_msg.content
+            if isinstance(p, ImageContentPart)  # type: ignore[union-attr]
+        ]
+        assert len(tool_image_parts) == 2
+        assert isinstance(reminder, UserMessage)
+
+
+def _search_tool_definitions() -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "internal_search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "queries": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["queries"],
+                },
+            },
+        }
+    ]
+
+
+class TestLooksLikeTextToolCallPayload:
+    def test_detects_marker_line(self) -> None:
+        text = 'prose\n[Tool Call] name=internal_search id=x args={"queries": ["a"]}'
+        assert _looks_like_text_tool_call_payload(text) is True
+
+    def test_ignores_mention_without_name(self) -> None:
+        assert (
+            _looks_like_text_tool_call_payload("what does [Tool Call] mean?") is False
+        )
+
+    def test_ignores_empty_and_none(self) -> None:
+        assert _looks_like_text_tool_call_payload(None) is False
+        assert _looks_like_text_tool_call_payload("") is False
+
+
+class TestExtractTextToolCalls:
+    def test_extracts_single_line_call(self) -> None:
+        response_text = (
+            "Let me search for that.\n"
+            '[Tool Call] name=internal_search id=fake-123 args={"queries": ["alpha"]}\n'
+            "[Tool Result] id=fake-123\nfabricated result"
+        )
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=_search_tool_definitions(),
+            placement=Placement(turn_index=2),
+        )
+
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_name == "internal_search"
+        assert tool_calls[0].tool_args == {"queries": ["alpha"]}
+        # Model-invented IDs are ignored; extracted IDs are assigned.
+        assert tool_calls[0].tool_call_id.startswith("extracted_")
+        assert tool_calls[0].placement == Placement(turn_index=2)
+
+    def test_extracts_multi_line_pretty_args(self) -> None:
+        response_text = (
+            "[Tool Call] name=internal_search id=x args=\n"
+            "{\n"
+            '  "queries": [\n'
+            '    "alpha"\n'
+            "  ]\n"
+            "}\n"
+            "More prose."
+        )
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=_search_tool_definitions(),
+            placement=Placement(turn_index=0),
+        )
+
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_args == {"queries": ["alpha"]}
+
+    def test_ignores_unknown_tool_name(self) -> None:
+        response_text = '[Tool Call] name=not_a_real_tool id=x args={"bogus": 1}'
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=_search_tool_definitions(),
+            placement=Placement(turn_index=0),
+        )
+        assert tool_calls == []
+
+    def test_accepts_sanitized_name_spelling(self) -> None:
+        tool_definitions = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "ServiceNow_API",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        response_text = "[Tool Call] name=ServiceNow API id=x args={}"
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=tool_definitions,
+            placement=Placement(turn_index=0),
+        )
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_name == "ServiceNow_API"
+
+    def test_text_pass_dedupes_identical_lines(self) -> None:
+        """The text extraction pass itself does not re-add the same call.
+
+        (Identical JSON matches from the JSON pass are intentionally kept —
+        execution-time merging collapses same-tool calls.)
+        """
+        line = '[Tool Call] name=internal_search id=x args={"queries": ["alpha"]}'
+        matched = _extract_text_tool_calls_from_response_text(
+            response_text=f"{line}\n{line}",
+            tool_name_to_def={
+                "internal_search": _search_tool_definitions()[0]["function"]
+            },
+        )
+        assert len(matched) == 1
+
+    def test_dedupes_text_format_against_json_match(self) -> None:
+        """The bare args JSON inside a [Tool Call] line can match on its own
+        via schema matching; the same call must not execute twice."""
+        response_text = (
+            '[Tool Call] name=internal_search id=x args={"queries": ["alpha"]}\n'
+        )
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=_search_tool_definitions(),
+            placement=Placement(turn_index=0),
+        )
+        assert len(tool_calls) == 1
+
+    def test_skips_unparseable_required_args(self) -> None:
+        response_text = "[Tool Call] name=internal_search id=x args=not-json"
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=_search_tool_definitions(),
+            placement=Placement(turn_index=0),
+        )
+        assert tool_calls == []
+
+    def test_extracts_zero_arg_call(self) -> None:
+        tool_definitions = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        response_text = "[Tool Call] name=get_time id=x args={}"
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=tool_definitions,
+            placement=Placement(turn_index=0),
+        )
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_args == {}
+
+    def test_direct_helper_requires_known_name(self) -> None:
+        matched = _extract_text_tool_calls_from_response_text(
+            response_text='[Tool Call] name=internal_search id=x args={"queries": ["a"]}',
+            tool_name_to_def={},
+        )
+        assert matched == []
+
+
+class TestTextToolCallContentFilter:
+    def test_suppresses_single_line_call(self) -> None:
+        content_filter = _TextToolCallContentFilter({"internal_search"})
+        content = (
+            "Searching now.\n"
+            '[Tool Call] name=internal_search id=x args={"queries": ["alpha"]}\n'
+            "Found things.\n"
+        )
+        assert content_filter.process(content) == "Searching now.\nFound things.\n"
+        assert content_filter.flush() == ""
+
+    def test_suppresses_multi_line_args_block(self) -> None:
+        content_filter = _TextToolCallContentFilter({"internal_search"})
+        content = (
+            "Before.\n"
+            "[Tool Call] name=internal_search id=x args=\n"
+            "{\n"
+            '  "queries": ["alpha"]\n'
+            "}\n"
+            "After.\n"
+        )
+        assert content_filter.process(content) == "Before.\nAfter.\n"
+
+    def test_keeps_prose_with_similar_marker(self) -> None:
+        content_filter = _TextToolCallContentFilter({"internal_search"})
+        content = "The log said [Tool Call] but had no name= field.\n"
+        assert content_filter.process(content) == content
+
+    def test_keeps_unknown_tool_lines(self) -> None:
+        content_filter = _TextToolCallContentFilter({"internal_search"})
+        content = '[Tool Call] name=mystery_tool id=x args={"a": 1}\n'
+        assert content_filter.process(content) == content
+
+    def test_keeps_code_fence_examples(self) -> None:
+        content_filter = _TextToolCallContentFilter({"internal_search"})
+        content = (
+            "Example:\n"
+            "```text\n"
+            '[Tool Call] name=internal_search id=x args={"queries": ["alpha"]}\n'
+            "```\n"
+            '[Tool Call] name=internal_search id=x args={"queries": ["alpha"]}\n'
+        )
+        assert content_filter.process(content) == (
+            "Example:\n"
+            "```text\n"
+            '[Tool Call] name=internal_search id=x args={"queries": ["alpha"]}\n'
+            "```\n"
+        )
+
+    def test_suppresses_tool_result_marker_line(self) -> None:
+        content_filter = _TextToolCallContentFilter({"internal_search"})
+        content = "[Tool Result] id=fake-123\n"
+        assert content_filter.process(content) == ""
+
+    def test_flush_emits_unterminated_block(self) -> None:
+        content_filter = _TextToolCallContentFilter({"internal_search"})
+        content = (
+            'Before.\n[Tool Call] name=internal_search id=x args={"queries": ["alpha"\n'
+        )
+        emitted = content_filter.process(content)
+        assert emitted == "Before.\n"
+        # Stream ended mid-block; held text is surfaced rather than dropped.
+        assert 'args={"queries": ["alpha"' in content_filter.flush()
+
+    def test_chunk_boundaries_do_not_change_output(self) -> None:
+        content = (
+            "Prose line.\n"
+            '[Tool Call] name=internal_search id=x args={"queries": ["alpha"]}\n'
+            "Tail line."
+        )
+        baseline = _TextToolCallContentFilter({"internal_search"})
+        expected = baseline.process(content) + baseline.flush()
+
+        chunked_filter = _TextToolCallContentFilter({"internal_search"})
+        pieces = [content[i : i + 7] for i in range(0, len(content), 7)]
+        outputs = [chunked_filter.process(piece) for piece in pieces]
+        outputs.append(chunked_filter.flush())
+        assert "".join(outputs) == expected
+
+    def test_no_tools_passthrough(self) -> None:
+        content_filter = _TextToolCallContentFilter(set())
+        content = "[Tool Call] name=anything id=x args={}\n"
+        assert content_filter.process(content) == content

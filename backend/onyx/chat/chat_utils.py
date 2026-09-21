@@ -730,6 +730,126 @@ def _build_tool_call_response_history_message(
     return TOOL_CALL_RESPONSE_CROSS_MESSAGE
 
 
+def build_parallel_tool_call_messages(
+    tool_calls: list[ToolCallSimple],
+    response_texts: list[str],
+    token_counter: Callable[[str], int],
+    assistant_message: str = "",
+    image_files_by_tool_call_id: dict[str, list[ChatLoadedFile]] | None = None,
+) -> list[ChatMessageSimple]:
+    """Build the OpenAI parallel tool calling history shape.
+
+    This is the canonical builder shared by the in-turn path (``run_llm_loop``)
+    and the cross-turn path (``convert_chat_history``):
+
+    1. ONE ASSISTANT message carrying the tool_calls array (plus any assistant
+       text produced in the same cycle via ``assistant_message``).
+    2. One TOOL_CALL_RESPONSE message per tool call, in call order.
+
+    The result-retention policy lives with the caller: it decides
+    ``response_texts`` (verbatim results in-turn; tombstones or full results
+    cross-turn) and ``image_files_by_tool_call_id`` (tool-produced images are
+    only replayed in-turn).
+
+    Args:
+        tool_calls: Tool calls for one cycle, with token counts already set.
+        response_texts: LLM-facing response text per tool call (parallel list).
+        token_counter: Token counter for the response texts.
+        assistant_message: Assistant text produced in the same cycle, replayed
+            cycle-aligned on the tool-call message instead of after all tool
+            groups.
+        image_files_by_tool_call_id: Optional tool-produced images to attach to
+            each response message.
+
+    Returns:
+        The assistant message followed by the tool response messages.
+    """
+    if len(tool_calls) != len(response_texts):
+        raise ValueError(
+            "Each tool call needs exactly one response text: "
+            f"{len(tool_calls)} calls, {len(response_texts)} responses"
+        )
+
+    assistant_token_count = sum(tc.token_count for tc in tool_calls)
+    if assistant_message:
+        assistant_token_count += token_counter(assistant_message)
+
+    assistant_with_tools = ChatMessageSimple(
+        message=assistant_message,
+        token_count=assistant_token_count,
+        message_type=MessageType.ASSISTANT,
+        tool_calls=tool_calls,
+        image_files=None,
+    )
+
+    image_files_map = image_files_by_tool_call_id or {}
+    messages: list[ChatMessageSimple] = [assistant_with_tools]
+    for tool_call, response_text in zip(tool_calls, response_texts, strict=True):
+        messages.append(
+            ChatMessageSimple(
+                message=response_text,
+                token_count=token_counter(response_text),
+                message_type=MessageType.TOOL_CALL_RESPONSE,
+                tool_call_id=tool_call.tool_call_id,
+                image_files=image_files_map.get(tool_call.tool_call_id),
+            )
+        )
+    return messages
+
+
+def _recent_turn_full_response_ids(
+    chat_history: list[ChatMessage],
+    token_counter: Callable[[str], int],
+    tool_id_to_name_map: dict[int, str],
+    max_recent_tool_response_tokens: int | None,
+) -> tuple[ChatMessage | None, set[str]]:
+    """Pick the tool calls whose results are replayed in full cross-turn.
+
+    The most recent tool-using assistant turn keeps its results verbatim — the
+    model just produced them and is the most likely to keep working from them —
+    while every older turn is tombstoned. Within the retained turn, results are
+    kept newest-first until ``max_recent_tool_response_tokens`` is spent, so the
+    retention stays bounded: replayed history still fits alongside the
+    compression trigger's headroom (COMPRESSION_TRIGGER_RATIO). Image
+    generation responses are exempt from the cap: they replay their image
+    references at any age.
+
+    Returns the retained assistant message (None when history has no tool
+    calls) and the set of tool_call_ids to replay in full.
+    """
+    recent_tool_message: ChatMessage | None = None
+    for chat_message in reversed(chat_history):
+        if (
+            chat_message.message_type == MessageType.ASSISTANT
+            and chat_message.tool_calls
+        ):
+            recent_tool_message = chat_message
+            break
+
+    if recent_tool_message is None:
+        return None, set()
+
+    full_response_ids: set[str] = set()
+    tokens_remaining = max_recent_tool_response_tokens
+    for tool_call in reversed(recent_tool_message.tool_calls or []):
+        tool_name = tool_id_to_name_map.get(tool_call.tool_id, "unknown")
+        if tool_name == IMAGE_GENERATION_TOOL_NAME:
+            full_response_ids.add(tool_call.tool_call_id)
+            continue
+
+        if tokens_remaining is not None:
+            response_cost = token_counter(tool_call.tool_call_response or "")
+            if response_cost > tokens_remaining:
+                # Newest results claim the budget first; anything older that
+                # no longer fits is tombstoned.
+                break
+            tokens_remaining -= response_cost
+
+        full_response_ids.add(tool_call.tool_call_id)
+
+    return recent_tool_message, full_response_ids
+
+
 def convert_chat_history(
     chat_history: list[ChatMessage],
     files: list[ChatLoadedFile],
@@ -737,6 +857,7 @@ def convert_chat_history(
     additional_context: str | None,
     token_counter: Callable[[str], int],
     tool_id_to_name_map: dict[int, str],
+    max_recent_tool_response_tokens: int | None = None,
 ) -> ChatHistoryResult:
     """Convert ChatMessage history to ChatMessageSimple format.
 
@@ -744,6 +865,13 @@ def convert_chat_history(
     For assistant messages with tool calls: creates ONE ASSISTANT message with tool_calls array,
         followed by N TOOL_CALL_RESPONSE messages (OpenAI parallel tool calling format)
     For assistant messages without tool calls: creates a simple ASSISTANT message
+
+    Tool results are replayed with a recency retention policy: the most recent
+    tool-using turn keeps its results in full (bounded by
+    ``max_recent_tool_response_tokens`` when set), while older turns are
+    tombstoned to TOOL_CALL_RESPONSE_CROSS_MESSAGE — the results were visible to
+    the model when it produced that turn's answer, and replaying every result
+    forever floods the context window.
 
     Every injected text-file message is tagged with ``file_id`` and its
     metadata is collected in ``ChatHistoryResult.all_injected_file_metadata``.
@@ -756,6 +884,13 @@ def convert_chat_history(
 
     # Create a mapping of file IDs to loaded files for quick lookup
     file_map = {str(f.file_id): f for f in files}
+
+    recent_tool_message, full_response_ids = _recent_turn_full_response_ids(
+        chat_history=chat_history,
+        token_counter=token_counter,
+        tool_id_to_name_map=tool_id_to_name_map,
+        max_recent_tool_response_tokens=max_recent_tool_response_tokens,
+    )
 
     # Find the index of the last USER message
     last_user_message_idx = None
@@ -839,6 +974,7 @@ def convert_chat_history(
             # 1. Group tool calls by turn_number
             # 2. For each turn: ONE ASSISTANT message with tool_calls array
             # 3. Followed by N TOOL_CALL_RESPONSE messages (one per tool call)
+            is_recent_tool_turn = chat_message is recent_tool_message
             if chat_message.tool_calls:
                 # Group tool calls by turn number
                 tool_calls_by_turn: dict[int, list] = {}
@@ -853,8 +989,11 @@ def convert_chat_history(
                     # Sort by tool_id within the turn for consistent ordering
                     turn_tool_calls.sort(key=lambda tc: tc.tool_id)
 
-                    # Build ToolCallSimple list for this turn
+                    # Build ToolCallSimple list for this turn, choosing each
+                    # response text per the retention policy: full results for
+                    # the retained recent turn, tombstones elsewhere.
                     tool_calls_simple: list[ToolCallSimple] = []
+                    response_texts: list[str] = []
                     for tool_call in turn_tool_calls:
                         tool_name = tool_id_to_name_map.get(
                             tool_call.tool_id, "unknown"
@@ -867,42 +1006,30 @@ def convert_chat_history(
                                 token_count=tool_call.tool_call_tokens,
                             )
                         )
+                        if (
+                            is_recent_tool_turn
+                            and tool_call.tool_call_id in full_response_ids
+                        ):
+                            response_texts.append(
+                                tool_call.tool_call_response
+                                or TOOL_CALL_RESPONSE_CROSS_MESSAGE
+                            )
+                        else:
+                            response_texts.append(
+                                _build_tool_call_response_history_message(
+                                    tool_name=tool_name,
+                                    generated_images=tool_call.generated_images,
+                                    tool_call_response=tool_call.tool_call_response,
+                                )
+                            )
 
-                    # Create ONE ASSISTANT message with all tool calls for this turn
-                    total_tool_call_tokens = sum(
-                        tc.token_count for tc in tool_calls_simple
-                    )
-                    simple_messages.append(
-                        ChatMessageSimple(
-                            message="",  # No text content when making tool calls
-                            token_count=total_tool_call_tokens,
-                            message_type=MessageType.ASSISTANT,
+                    simple_messages.extend(
+                        build_parallel_tool_call_messages(
                             tool_calls=tool_calls_simple,
-                            image_files=None,
+                            response_texts=response_texts,
+                            token_counter=token_counter,
                         )
                     )
-
-                    # Add TOOL_CALL_RESPONSE messages for each tool call in this turn
-                    for tool_call in turn_tool_calls:
-                        tool_name = tool_id_to_name_map.get(
-                            tool_call.tool_id, "unknown"
-                        )
-                        tool_response_message = (
-                            _build_tool_call_response_history_message(
-                                tool_name=tool_name,
-                                generated_images=tool_call.generated_images,
-                                tool_call_response=tool_call.tool_call_response,
-                            )
-                        )
-                        simple_messages.append(
-                            ChatMessageSimple(
-                                message=tool_response_message,
-                                token_count=token_counter(tool_response_message),
-                                message_type=MessageType.TOOL_CALL_RESPONSE,
-                                tool_call_id=tool_call.tool_call_id,
-                                image_files=None,
-                            )
-                        )
 
             # Add the assistant message itself (the final answer)
             simple_messages.append(
@@ -978,17 +1105,8 @@ def create_tool_call_failure_messages(
 ) -> list[ChatMessageSimple]:
     """Create ChatMessageSimple objects for failed tool calls.
 
-    Creates messages using OpenAI parallel tool calling format:
-    1. An ASSISTANT message with tool_calls field containing all failed tool calls
-    2. A TOOL_CALL_RESPONSE failure message for each tool call
-
-    Args:
-        tool_calls: List of ToolCallKickoff objects representing the failed tool calls
-        token_counter: Function to count tokens in a message string
-
-    Returns:
-        List containing ChatMessageSimple objects: one assistant message with all tool calls
-        followed by a failure response for each tool call
+    Uses the shared parallel tool calling builder: an ASSISTANT message with
+    all failed tool calls, followed by a failure response for each.
     """
     if not tool_calls:
         return []
@@ -1006,31 +1124,11 @@ def create_tool_call_failure_messages(
             )
         )
 
-    total_token_count = sum(tc.token_count for tc in tool_calls_simple)
-
-    # Create ONE ASSISTANT message with all tool_calls (OpenAI format)
-    assistant_msg = ChatMessageSimple(
-        message="",  # No text content when making tool calls
-        token_count=total_token_count,
-        message_type=MessageType.ASSISTANT,
+    return build_parallel_tool_call_messages(
         tool_calls=tool_calls_simple,
-        image_files=None,
+        response_texts=[TOOL_CALL_FAILURE_PROMPT] * len(tool_calls),
+        token_counter=token_counter,
     )
-
-    messages: list[ChatMessageSimple] = [assistant_msg]
-
-    # Create a TOOL_CALL_RESPONSE failure message for each tool call
-    for tool_call in tool_calls:
-        failure_response_msg = ChatMessageSimple(
-            message=TOOL_CALL_FAILURE_PROMPT,
-            token_count=50,  # Tiny overestimate
-            message_type=MessageType.TOOL_CALL_RESPONSE,
-            tool_call_id=tool_call.tool_call_id,
-            image_files=None,
-        )
-        messages.append(failure_response_msg)
-
-    return messages
 
 
 def build_python_chat_files_from_search_docs(

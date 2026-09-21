@@ -72,7 +72,10 @@ from onyx.chat.stop_signal_checker import is_connected as check_stop_signal
 from onyx.chat.stop_signal_checker import reset_cancel_status
 from onyx.chat.stream_buffer import StreamBufferWriter
 from onyx.configs.app_configs import DEV_MODE, DISABLE_VECTOR_DB, INTEGRATION_TESTS_MODE
-from onyx.configs.chat_configs import CHAT_HEARTBEAT_INTERVAL_S
+from onyx.configs.chat_configs import (
+    CHAT_HEARTBEAT_INTERVAL_S,
+    COMPRESSION_TRIGGER_RATIO,
+)
 from onyx.configs.constants import (
     DEFAULT_PERSONA_ID,
     DocumentSource,
@@ -998,6 +1001,18 @@ def build_chat_turn(
         tool.in_code_tool_id == FILE_READER_TOOL_ID for tool in persona.tools
     )
 
+    # Bound the most recent turn's full tool results to the compression
+    # headroom: compression triggers at COMPRESSION_TRIGGER_RATIO of the
+    # available window, so retained results beyond the remaining share would
+    # push every later turn over the compression trigger on their own.
+    max_recent_tool_response_tokens = max(
+        0,
+        int(
+            (llm_max_context_window - reserved_token_count)
+            * (1 - COMPRESSION_TRIGGER_RATIO)
+        ),
+    )
+
     chat_history_result = convert_chat_history(
         chat_history=chat_history,
         files=files,
@@ -1005,6 +1020,7 @@ def build_chat_turn(
         additional_context=additional_context or new_msg_req.additional_context,
         token_counter=token_counter,
         tool_id_to_name_map=tool_id_to_name_map,
+        max_recent_tool_response_tokens=max_recent_tool_response_tokens,
     )
     simple_chat_history = chat_history_result.simple_messages
 
@@ -1439,6 +1455,11 @@ def _run_models(
             model_errored[model_idx] = True
             model_error_info[model_idx] = litellm_exception_to_safe_error(
                 e, model_llm, fallback_to_error_msg=True
+            )
+            logger.exception(
+                "LLM call failed for model %d (%s)",
+                model_idx,
+                setup.model_display_names[model_idx],
             )
             merged_queue.put((model_idx, e))
 

@@ -10,6 +10,7 @@ from onyx.chat.llm_loop import (
     _REFUSAL_FINISH_REASONS,
     EmptyLLMResponseError,
     _build_empty_llm_response_error,
+    _cycle_history_token_budget,
     _try_fallback_tool_extraction,
     construct_message_history,
     count_message_replay_tokens,
@@ -29,9 +30,11 @@ from onyx.configs.constants import MessageType
 from onyx.file_store.models import ChatFileType
 from onyx.llm.interfaces import LLMConfig, ToolChoiceOptions
 from onyx.prompts.chat_prompts import IMAGE_GEN_REMINDER, OPEN_URL_REMINDER
+from onyx.prompts.tool_prompts import TOOL_CALL_MERGED_PROMPT
 from onyx.server.query_and_chat.placement import Placement
 from onyx.tools.constants import FILE_READER_TOOL_NAME
-from onyx.tools.models import ToolCallKickoff
+from onyx.tools.interface import Tool
+from onyx.tools.models import ToolCallKickoff, ToolResponse
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
 
 
@@ -1368,23 +1371,65 @@ class TestFallbackToolExtraction:
             }
         ]
 
-    def test_noop_if_fallback_was_already_attempted(self) -> None:
+    def test_extracts_text_format_tool_call_under_auto(self) -> None:
+        """Imitated flattened-history lines are parsed and executed.
+
+        The model may echo the former `[Tool Call]` history format as content
+        under tool_choice=AUTO; that must trigger extraction like XML does.
+        """
         llm_step_result = LlmStepResult(
             reasoning=None,
-            answer='{"name":"internal_search","arguments":{"queries":["alpha"]}}',
+            answer=None,
+            raw_answer=(
+                "Let me search for that.\n"
+                "[Tool Call] name=internal_search id=9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d"
+                ' args={"queries": ["alpha"]}\n'
+                "[Tool Result] id=9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d\n"
+                "some fabricated result"
+            ),
             tool_calls=None,
         )
 
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
-            tool_choice=ToolChoiceOptions.REQUIRED,
-            fallback_extraction_attempted=True,
+            tool_choice=ToolChoiceOptions.AUTO,
+            tool_defs=self._tool_defs(),
+            turn_index=1,
+        )
+
+        assert attempted is True
+        assert result.tool_calls is not None
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].tool_name == "internal_search"
+        assert result.tool_calls[0].tool_args == {"queries": ["alpha"]}
+        assert result.tool_calls[0].tool_call_id.startswith("extracted_")
+
+    def test_does_not_trigger_when_native_tool_calls_exist(self) -> None:
+        """Imitation text alongside native calls is left as prose."""
+        llm_step_result = LlmStepResult(
+            reasoning=None,
+            answer=(
+                '[Tool Call] name=internal_search id=fake args={"queries": ["alpha"]}'
+            ),
+            tool_calls=[
+                ToolCallKickoff(
+                    tool_call_id="native-1",
+                    tool_name="internal_search",
+                    tool_args={"queries": ["native"]},
+                    placement=Placement(turn_index=0),
+                )
+            ],
+        )
+
+        result, attempted = _try_fallback_tool_extraction(
+            llm_step_result=llm_step_result,
+            tool_choice=ToolChoiceOptions.AUTO,
             tool_defs=self._tool_defs(),
             turn_index=0,
         )
 
-        assert result is llm_step_result
         assert attempted is False
+        assert result is llm_step_result
 
     def test_extracts_from_answer_when_required_and_no_tool_calls(self) -> None:
         llm_step_result = LlmStepResult(
@@ -1396,7 +1441,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=3,
         )
@@ -1418,7 +1462,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=5,
         )
@@ -1445,7 +1488,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=7,
         )
@@ -1476,7 +1518,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=9,
         )
@@ -1506,7 +1547,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=10,
         )
@@ -1530,7 +1570,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=2,
         )
@@ -1548,7 +1587,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=1,
         )
@@ -1573,7 +1611,6 @@ class TestFallbackToolExtraction:
         result, attempted = _try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
-            fallback_extraction_attempted=False,
             tool_defs=self._tool_defs(),
             turn_index=0,
         )
@@ -1723,3 +1760,271 @@ class TestSelectReminderText:
             ran_image_gen=True, just_ran_web_search=True, has_open_url_tool=True
         )
         assert result == IMAGE_GEN_REMINDER
+
+
+class _FakeLoopTool(Tool):
+    """Minimal Tool for run_llm_loop tests: always succeeds, never searches."""
+
+    def __init__(self, name: str, tool_id: int = 1) -> None:
+        super().__init__(emitter=Mock())
+        self._name = name
+        self._id = tool_id
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return "fake tool"
+
+    @property
+    def display_name(self) -> str:
+        return "Fake"
+
+    def tool_definition(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self._name,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"queries": {"type": "array"}},
+                },
+            },
+        }
+
+    def emit_start(self, placement: Placement) -> None:  # noqa: ARG002
+        return None
+
+    def run(
+        self,
+        placement: Placement,  # noqa: ARG002
+        override_kwargs: Any = None,  # noqa: ARG002
+        **llm_kwargs: Any,  # noqa: ARG002
+    ) -> ToolResponse:
+        return ToolResponse(rich_response=None, llm_facing_response="tool result")
+
+
+def _kickoff(tool_call_id: str, tool_name: str) -> ToolCallKickoff:
+    return ToolCallKickoff(
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        tool_args={"queries": [tool_call_id]},
+        placement=Placement(turn_index=0, tab_index=0),
+    )
+
+
+class TestCycleHistoryTokenBudget:
+    """The per-cycle history budget reserves later cycles' worst-case output so
+    mid-turn truncation does not slide the request prefix (Ollama/vLLM prefix
+    cache friendliness)."""
+
+    def _budget(
+        self,
+        simple_chat_history: list[ChatMessageSimple],
+        available_tokens: int = 1000,
+        tool_token_budget: int = 0,
+        remaining_cycles: int = 5,
+        worst_case_cycle_tokens: int = 100,
+        extra_reserved_tokens: int = 10,
+    ) -> int:
+        return _cycle_history_token_budget(
+            available_tokens=available_tokens,
+            tool_token_budget=tool_token_budget,
+            remaining_cycles=remaining_cycles,
+            worst_case_cycle_tokens=worst_case_cycle_tokens,
+            simple_chat_history=simple_chat_history,
+            image_files_replayed_as_markers=False,
+            token_counter=None,
+            extra_reserved_tokens=extra_reserved_tokens,
+        )
+
+    def test_no_reserve_before_tool_history_exists(self) -> None:
+        """A plain single-cycle turn keeps the full budget — no worst-case
+        penalty for history the turn will never use."""
+        history = [
+            create_message("Hello", MessageType.USER, 10),
+            create_message("Hi", MessageType.ASSISTANT, 10),
+            create_message("Follow-up", MessageType.USER, 10),
+        ]
+        assert self._budget(history) == 1000
+
+    def test_reserve_applied_once_tool_history_exists(self) -> None:
+        history = [
+            create_message("Hello", MessageType.USER, 10),
+            create_assistant_with_tool_call("tc_1", "tool", 20),
+            create_tool_response("tc_1", "result", 30),
+        ]
+        # Tail = 60 history tokens + 10 fixed prompt tokens = 70.
+        # Headroom = 930; per-cycle share = 155; reserve = min(5*100, 5*155) = 500.
+        assert self._budget(history) == 1000 - 500
+
+    def test_budget_grows_monotonically_across_cycles(self) -> None:
+        history = [
+            create_message("Hello", MessageType.USER, 10),
+            create_assistant_with_tool_call("tc_1", "tool", 20),
+            create_tool_response("tc_1", "result", 30),
+        ]
+        budgets = [
+            self._budget(history, remaining_cycles=remaining)
+            for remaining in (5, 4, 3, 2, 1, 0)
+        ]
+
+        assert budgets == sorted(budgets)
+        # The final cycle reserves nothing and offers the full budget.
+        assert budgets[-1] == 1000
+
+    def test_reserve_never_breaks_the_must_keep_tail(self) -> None:
+        """A tool response larger than the budget leaves no headroom, so the
+        reserve is zero and the must-keep tail still fits."""
+        history = [
+            create_message("Hello", MessageType.USER, 10),
+            create_assistant_with_tool_call("tc_1", "tool", 20),
+            create_tool_response("tc_1", "result", 970),
+        ]
+        # Tail = 1000 history + 10 fixed = 1010 > budget; headroom <= 0.
+        assert self._budget(history) == 1000
+
+    def test_zero_worst_case_output_disables_reserve(self) -> None:
+        history = [
+            create_message("Hello", MessageType.USER, 10),
+            create_assistant_with_tool_call("tc_1", "tool", 20),
+            create_tool_response("tc_1", "result", 30),
+        ]
+        assert self._budget(history, worst_case_cycle_tokens=0) == 1000
+
+    def test_no_reserve_on_the_final_cycle(self) -> None:
+        history = [
+            create_message("Hello", MessageType.USER, 10),
+            create_assistant_with_tool_call("tc_1", "tool", 20),
+            create_tool_response("tc_1", "result", 30),
+        ]
+        assert self._budget(history, remaining_cycles=0) == 1000
+
+
+class TestRunLlmLoopCycleAlignedHistory:
+    """The in-turn history must be truthful: this cycle's answer text is
+    replayed cycle-aligned on its own tool-call message, and dropped tool
+    calls answer with tombstones instead of vanishing."""
+
+    def _run_loop(
+        self, steps: list[tuple[LlmStepResult, bool]], tools: list[Tool]
+    ) -> Any:
+        """Run run_llm_loop with two mocked LLM steps; returns the step mock."""
+        llm = Mock()
+        llm.config = LLMConfig(
+            model_provider="openai",
+            model_name="text-model",
+            temperature=0,
+            max_input_tokens=24000,
+        )
+        with (
+            patch("onyx.chat.llm_loop.trace", return_value=nullcontext()),
+            patch("onyx.llm.litellm_singleton.config.initialize_litellm"),
+            patch(
+                "onyx.chat.llm_loop.get_session_with_current_tenant",
+                return_value=nullcontext(),
+            ),
+            patch("onyx.chat.llm_loop.get_default_base_system_prompt", return_value=""),
+            patch("onyx.chat.llm_loop.select_reminder_text", return_value=""),
+            patch("onyx.chat.llm_loop.run_llm_step", side_effect=steps) as step,
+        ):
+            run_llm_loop(
+                emitter=Mock(),
+                state_container=Mock(),
+                simple_chat_history=[
+                    create_message("Find the thing", MessageType.USER, 10)
+                ],
+                tools=tools,
+                custom_agent_prompt=None,
+                context_files=create_context_files(),
+                persona=None,
+                user_memory_context=None,
+                llm=llm,
+                token_counter=lambda s: max(1, len(s) // 4),
+            )
+        return step
+
+    def test_cycle_text_rides_on_its_own_tool_call_message(self) -> None:
+        steps = [
+            (
+                LlmStepResult(
+                    reasoning=None,
+                    answer="Let me search for that.",
+                    tool_calls=[_kickoff("call_1", "fake_search")],
+                ),
+                False,
+            ),
+            (
+                LlmStepResult(reasoning=None, answer="Final answer.", tool_calls=None),
+                False,
+            ),
+        ]
+        step = self._run_loop(steps, tools=[_FakeLoopTool("fake_search")])
+
+        second_history = step.call_args_list[1].kwargs["history"]
+        assistant_with_tools = [
+            m
+            for m in second_history
+            if m.message_type == MessageType.ASSISTANT and m.tool_calls
+        ]
+        assert len(assistant_with_tools) == 1
+        assert assistant_with_tools[0].message == "Let me search for that."
+        assert assistant_with_tools[0].tool_calls is not None
+        assert [tc.tool_call_id for tc in assistant_with_tools[0].tool_calls] == [
+            "call_1"
+        ]
+        # The tool response pairs with the call.
+        tool_responses = [
+            m
+            for m in second_history
+            if m.message_type == MessageType.TOOL_CALL_RESPONSE
+        ]
+        assert [m.tool_call_id for m in tool_responses] == ["call_1"]
+        assert tool_responses[0].message == "tool result"
+
+    def test_merged_call_keeps_a_tombstone_response_in_history(self) -> None:
+        """Two parallel calls to a mergeable tool collapse into one execution;
+        the merged-away call stays in history with an explicit tombstone."""
+        steps = [
+            (
+                LlmStepResult(
+                    reasoning=None,
+                    answer=None,
+                    tool_calls=[
+                        _kickoff("call_1", SearchTool.NAME),
+                        _kickoff("call_2", SearchTool.NAME),
+                    ],
+                ),
+                False,
+            ),
+            (
+                LlmStepResult(reasoning=None, answer="Final answer.", tool_calls=None),
+                False,
+            ),
+        ]
+        step = self._run_loop(steps, tools=[_FakeLoopTool(SearchTool.NAME)])
+
+        second_history = step.call_args_list[1].kwargs["history"]
+        assistant_with_tools = next(
+            m
+            for m in second_history
+            if m.message_type == MessageType.ASSISTANT and m.tool_calls
+        )
+        # Both emitted calls stay in the assistant tool_calls array.
+        assert [tc.tool_call_id for tc in assistant_with_tools.tool_calls or []] == [
+            "call_1",
+            "call_2",
+        ]
+        tool_responses = {
+            m.tool_call_id: m.message
+            for m in second_history
+            if m.message_type == MessageType.TOOL_CALL_RESPONSE
+        }
+        assert tool_responses["call_1"] == "tool result"
+        assert tool_responses["call_2"] == TOOL_CALL_MERGED_PROMPT

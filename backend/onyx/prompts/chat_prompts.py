@@ -40,6 +40,9 @@ Organization description: {company_description}
 REQUIRE_CITATION_GUIDANCE = """
 
 CRITICAL: If referencing knowledge from searches, cite relevant statements INLINE using the format [1], [2], [3], etc. to reference the "document" field. \
+Cite only the document that actually supports the statement, and use that document's own number from its "document" field. \
+Never cite a document merely because it appeared in search results — if no document supports a statement, leave it uncited. \
+Do not cite tool results that are not search documents (images, downloaded files, or their annotations). \
 DO NOT provide any links following the citations. Cite inline as opposed to leaving all citations until the very end of the response.
 """
 

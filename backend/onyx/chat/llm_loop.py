@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from onyx.chat.chat_state import ChatStateContainer
 from onyx.chat.chat_utils import (
+    build_parallel_tool_call_messages,
     build_python_chat_files_from_search_docs,
     create_tool_call_failure_messages,
 )
@@ -17,11 +18,13 @@ from onyx.chat.citation_processor import (
 from onyx.chat.citation_utils import update_citation_processor_from_tool_response
 from onyx.chat.emitter import Emitter
 from onyx.chat.llm_step import (
+    _looks_like_text_tool_call_payload,
     _looks_like_xml_tool_call_payload,
     extract_tool_calls_from_response_text,
     run_llm_step,
 )
 from onyx.chat.models import (
+    ChatLoadedFile,
     ChatMessageSimple,
     ContextFileMetadata,
     ExtractedContextFiles,
@@ -77,6 +80,12 @@ from onyx.tools.models import (
     ToolCallKickoff,
     ToolResponse,
 )
+from onyx.tools.tool_implementations.download.download_tool import (
+    DownloadToolRichResponse,
+)
+from onyx.tools.tool_implementations.image_analysis.analyze_image_tool import (
+    AnalyzeImageToolRichResponse,
+)
 from onyx.tools.tool_implementations.images.models import FinalImageGenerationResponse
 from onyx.tools.tool_implementations.memory.models import MemoryToolResponse
 from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
@@ -85,7 +94,7 @@ from onyx.tools.tool_implementations.search.search_tool import SearchTool
 from onyx.tools.tool_implementations.web_search.utils import extract_url_snippet_map
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
 from onyx.tools.tool_runner import run_tool_calls
-from onyx.tools.utils import compute_all_tool_tokens
+from onyx.tools.utils import compute_all_tool_tokens, tool_response_generated_files
 from onyx.tracing.framework.create import ChatTraceMetadata, trace
 from onyx.utils.logger import setup_logger
 from shared_configs.contextvars import get_current_incognito_record_mode
@@ -217,7 +226,6 @@ def _build_empty_llm_response_error(
 def _try_fallback_tool_extraction(
     llm_step_result: LlmStepResult,
     tool_choice: ToolChoiceOptions,
-    fallback_extraction_attempted: bool,
     tool_defs: list[dict],
     turn_index: int,
 ) -> tuple[LlmStepResult, bool]:
@@ -230,16 +238,12 @@ def _try_fallback_tool_extraction(
     Args:
         llm_step_result: The result from the LLM step
         tool_choice: The tool choice option used for this step
-        fallback_extraction_attempted: Whether fallback extraction was already attempted
         tool_defs: List of tool definitions
         turn_index: The current turn index for placement
 
     Returns:
         Tuple of (possibly updated LlmStepResult, whether fallback was attempted this call)
     """
-    if fallback_extraction_attempted:
-        return llm_step_result, False
-
     no_tool_calls = (
         not llm_step_result.tool_calls or len(llm_step_result.tool_calls) == 0
     )
@@ -251,10 +255,16 @@ def _try_fallback_tool_extraction(
         or _looks_like_xml_tool_call_payload(llm_step_result.raw_answer)
         or _looks_like_xml_tool_call_payload(llm_step_result.reasoning)
     )
+    text_tool_call_text_detected = no_tool_calls and (
+        _looks_like_text_tool_call_payload(llm_step_result.answer)
+        or _looks_like_text_tool_call_payload(llm_step_result.raw_answer)
+        or _looks_like_text_tool_call_payload(llm_step_result.reasoning)
+    )
     should_try_fallback = (
         (tool_choice == ToolChoiceOptions.REQUIRED and no_tool_calls)
         or reasoning_but_no_answer_or_tools
         or xml_tool_call_text_detected
+        or text_tool_call_text_detected
     )
 
     if not should_try_fallback:
@@ -630,6 +640,104 @@ def construct_message_history(
     return _drop_orphaned_tool_call_responses(result)
 
 
+def _has_tool_history_after_last_user(
+    simple_chat_history: list[ChatMessageSimple],
+) -> bool:
+    """True when the current turn has already produced tool messages.
+
+    The turn is multi-cycle capable only once the model has made a tool call;
+    until then, single-cycle turns keep the full history budget."""
+    for msg in reversed(simple_chat_history):
+        if msg.message_type == MessageType.USER:
+            return False
+        if msg.message_type == MessageType.TOOL_CALL_RESPONSE:
+            return True
+        if msg.message_type == MessageType.ASSISTANT and msg.tool_calls:
+            return True
+    return False
+
+
+def _must_keep_tail_tokens(
+    simple_chat_history: list[ChatMessageSimple],
+    *,
+    image_files_replayed_as_markers: bool,
+    token_counter: Callable[[str], int] | None,
+    extra_reserved_tokens: int,
+) -> int:
+    """Tokens that cannot be traded away: the last user message onward (what
+    construct_message_history refuses to drop) plus the fixed per-request
+    messages subtracted there before the history budget applies."""
+    replay_count = partial(
+        count_message_replay_tokens,
+        image_files_replayed_as_markers=image_files_replayed_as_markers,
+        token_counter=token_counter,
+    )
+    last_user_idx = None
+    for i in range(len(simple_chat_history) - 1, -1, -1):
+        if simple_chat_history[i].message_type == MessageType.USER:
+            last_user_idx = i
+            break
+    tail_tokens = (
+        sum(replay_count(msg) for msg in simple_chat_history[last_user_idx:])
+        if last_user_idx is not None
+        else 0
+    )
+    return tail_tokens + max(0, extra_reserved_tokens)
+
+
+def _cycle_history_token_budget(
+    *,
+    available_tokens: int,
+    tool_token_budget: int,
+    remaining_cycles: int,
+    worst_case_cycle_tokens: int,
+    simple_chat_history: list[ChatMessageSimple],
+    image_files_replayed_as_markers: bool,
+    token_counter: Callable[[str], int] | None,
+    extra_reserved_tokens: int,
+) -> int:
+    """History token budget for one cycle, reserving later cycles' output.
+
+    Without a reserve, history grows cycle by cycle until it overflows the
+    budget; truncation then drops the oldest messages mid-turn and shifts the
+    request prefix, which defeats Ollama/vLLM prefix caching for every later
+    request in the turn. Reserving each remaining cycle's worst-case output
+    (assistant text and tool-call arguments, bounded by the model's per-cycle
+    output allowance) makes the budget grow monotonically as cycles are
+    consumed, so truncation happens once, early, instead of sliding.
+
+    The reserve draws each cycle an equal share of the discretionary headroom
+    (budget minus the must-keep tail), so the tail always fits and the budget
+    never goes below what the current request needs. Tool responses are not
+    reserved — they are not model output and are already bounded only by the
+    budget itself.
+    """
+    budget = available_tokens - tool_token_budget
+    if (
+        remaining_cycles <= 0
+        or worst_case_cycle_tokens <= 0
+        or not _has_tool_history_after_last_user(simple_chat_history)
+    ):
+        return max(0, budget)
+
+    headroom = max(
+        0,
+        budget
+        - _must_keep_tail_tokens(
+            simple_chat_history,
+            image_files_replayed_as_markers=image_files_replayed_as_markers,
+            token_counter=token_counter,
+            extra_reserved_tokens=extra_reserved_tokens,
+        ),
+    )
+    per_cycle_share = headroom // MAX_LLM_CYCLES
+    reserve = min(
+        remaining_cycles * worst_case_cycle_tokens,
+        remaining_cycles * per_cycle_share,
+    )
+    return max(0, budget - reserve)
+
+
 def _drop_orphaned_tool_call_responses(
     messages: list[ChatMessageSimple],
 ) -> list[ChatMessageSimple]:
@@ -811,6 +919,67 @@ def select_reminder_text(
     )
 
 
+# Tool-produced images replayed to the LLM per tool response, when the chat
+# model accepts images. Tool-level caps already bound this list; this is a
+# final guard so one call cannot flood the context with image blocks.
+MAX_TOOL_IMAGES_FOR_REPLAY = 5
+
+
+def _tool_response_image_files(
+    tool_response: ToolResponse,
+    llm: LLM,
+) -> list[ChatLoadedFile] | None:
+    """Tool-produced images as history image_files, for direct replay to the
+    model.
+
+    Only vision-capable models get pixels — for others the captions in the
+    tool response text carry the analysis, and image blocks would 400. Returns
+    None when there is nothing to replay."""
+    rich_response = tool_response.rich_response
+    if not isinstance(
+        rich_response,
+        (
+            PythonToolRichResponse,
+            DownloadToolRichResponse,
+            AnalyzeImageToolRichResponse,
+        ),
+    ):
+        return None
+
+    tool_images = rich_response.tool_images
+    if not tool_images:
+        return None
+
+    llm_config = llm.config
+    if not model_supports_image_input(
+        llm_config.model_name,
+        llm_config.model_provider,
+        llm_config.deployment_name,
+    ):
+        return None
+
+    if len(tool_images) > MAX_TOOL_IMAGES_FOR_REPLAY:
+        logger.warning(
+            "Capping tool images replayed to the LLM at %d of %d",
+            MAX_TOOL_IMAGES_FOR_REPLAY,
+            len(tool_images),
+        )
+        # Most recent images win: they are the most likely to be relevant.
+        tool_images = tool_images[-MAX_TOOL_IMAGES_FOR_REPLAY:]
+
+    return [
+        ChatLoadedFile(
+            file_id=image.file_id,
+            content=image.content,
+            file_type=ChatFileType.IMAGE,
+            filename=image.filename,
+            content_text=None,
+            token_count=0,
+        )
+        for image in tool_images
+    ]
+
+
 def run_llm_loop(
     emitter: Emitter,
     state_container: ChatStateContainer,
@@ -883,6 +1052,13 @@ def run_llm_loop(
 
         token_budget = resolve_chat_token_budget(llm)
         available_tokens = token_budget.input_tokens
+        # Worst-case tokens one cycle can add to the history: the model's full
+        # output for that cycle (text plus tool-call arguments), bounded by the
+        # per-request output cap. Zero when the model's limits are unknown,
+        # which disables the cycle-budget reserve.
+        worst_case_cycle_tokens = (
+            token_budget.output_allowance(estimated_input_tokens=0) or 0
+        )
         # When the model takes no image input, history images are replayed as
         # short text markers (translate_history_to_llm_format) — budget them
         # as markers too, not at their stored image token cost.
@@ -910,7 +1086,6 @@ def run_llm_loop(
         has_open_url_tool: bool = any(isinstance(tool, OpenURLTool) for tool in tools)
         has_called_search_tool: bool = False
         code_interpreter_file_generated: bool = False
-        fallback_extraction_attempted: bool = False
         # Candidate document ids seen by earlier searches in this user turn; receipts
         # report new vs repeated candidates against it. Never shared across turns.
         seen_search_document_ids: set[str] = set()
@@ -1095,13 +1270,35 @@ def run_llm_loop(
             )
 
             tool_token_budget = compute_all_tool_tokens(final_tools, token_counter)
+            # Fixed per-request messages that construct_message_history
+            # subtracts before the history budget applies; they must fit
+            # alongside the must-keep tail when reserving cycle budget.
+            fixed_prompt_tokens = (
+                (system_prompt.token_count if system_prompt else 0)
+                + (
+                    custom_agent_prompt_msg.token_count
+                    if custom_agent_prompt_msg
+                    else 0
+                )
+                + (reminder_msg.token_count if reminder_msg else 0)
+            )
+            cycle_history_budget = _cycle_history_token_budget(
+                available_tokens=available_tokens,
+                tool_token_budget=tool_token_budget,
+                remaining_cycles=MAX_LLM_CYCLES - llm_cycle_count - 1,
+                worst_case_cycle_tokens=worst_case_cycle_tokens,
+                simple_chat_history=simple_chat_history,
+                image_files_replayed_as_markers=image_files_replayed_as_markers,
+                token_counter=token_counter,
+                extra_reserved_tokens=fixed_prompt_tokens,
+            )
             truncated_message_history = construct_message_history(
                 system_prompt=system_prompt,
                 custom_agent_prompt=custom_agent_prompt_msg,
                 simple_chat_history=simple_chat_history,
                 reminder_message=reminder_msg,
                 context_files=context_files,
-                available_tokens=max(0, available_tokens - tool_token_budget),
+                available_tokens=cycle_history_budget,
                 token_counter=token_counter,
                 all_injected_file_metadata=all_injected_file_metadata,
                 image_files_replayed_as_markers=image_files_replayed_as_markers,
@@ -1150,17 +1347,17 @@ def run_llm_loop(
                 reasoning_cycles += 1
 
             # Fallback extraction for LLMs that don't support tool calling natively or are lower quality
-            # and might incorrectly output tool calls in other channels
-            llm_step_result, attempted = _try_fallback_tool_extraction(
+            # and might incorrectly output tool calls in other channels.
+            # Runs every cycle: extraction is a cheap regex pass over
+            # already-generated text, and an early benign trigger (e.g.
+            # reasoning without an answer) must not consume the budget for a
+            # genuine text-format tool call in a later cycle.
+            llm_step_result, _ = _try_fallback_tool_extraction(
                 llm_step_result=llm_step_result,
                 tool_choice=tool_choice,
-                fallback_extraction_attempted=fallback_extraction_attempted,
                 tool_defs=tool_defs,
                 turn_index=llm_cycle_count + reasoning_cycles,
             )
-            if attempted:
-                # To prevent the case of excessive looping with bad models, we only allow one fallback attempt
-                fallback_extraction_attempted = True
 
             # Save citation mapping after each LLM step for incremental state updates
             state_container.set_citation_mapping(citation_processor.citation_to_doc)
@@ -1313,12 +1510,9 @@ def run_llm_loop(
                 ):
                     generated_images = tool_response.rich_response.generated_images
 
-                # Extract generated_files if this is a code interpreter response
-                generated_files = None
-                if isinstance(tool_response.rich_response, PythonToolRichResponse):
-                    generated_files = (
-                        tool_response.rich_response.generated_files or None
-                    )
+                # Files the tool produced (code interpreter, download_file,
+                # analyze_image), persisted on the tool call and shown to the user
+                generated_files = tool_response_generated_files(tool_response)
 
                 # Custom tools save image/CSV blobs and return their ids.
                 generated_file_ids = None
@@ -1407,10 +1601,11 @@ def run_llm_loop(
                     tool_response, citation_processor
                 )
 
-            # After processing all tool responses for this turn, add messages to history
-            # using OpenAI parallel tool calling format:
-            # 1. ONE ASSISTANT message with tool_calls array
-            # 2. N TOOL_CALL_RESPONSE messages (one per tool call)
+            # After processing all tool responses for this turn, add messages to
+            # history through the shared parallel tool calling builder (same
+            # shape as the cross-turn path). This cycle's answer text rides on
+            # the tool-call assistant message, so later cycles replay it
+            # cycle-aligned instead of the model losing its own narration.
             if tool_responses:
                 # Filter to only responses with valid tool_call references
                 valid_tool_responses = [
@@ -1419,6 +1614,8 @@ def run_llm_loop(
 
                 # Build ToolCallSimple list for all tool calls in this turn
                 tool_calls_simple: list[ToolCallSimple] = []
+                response_texts: list[str] = []
+                image_files_by_tool_call_id: dict[str, list[ChatLoadedFile]] = {}
                 for tool_response in valid_tool_responses:
                     tc = tool_response.tool_call
                     assert (
@@ -1436,34 +1633,24 @@ def run_llm_loop(
                             token_count=tool_call_token_count,
                         )
                     )
-
-                # Create ONE ASSISTANT message with all tool calls for this turn
-                total_tool_call_tokens = sum(tc.token_count for tc in tool_calls_simple)
-                assistant_with_tools = ChatMessageSimple(
-                    message="",  # No text content when making tool calls
-                    token_count=total_tool_call_tokens,
-                    message_type=MessageType.ASSISTANT,
-                    tool_calls=tool_calls_simple,
-                    image_files=None,
-                )
-                simple_chat_history.append(assistant_with_tools)
-
-                # Add TOOL_CALL_RESPONSE messages for each tool call
-                for tool_response in valid_tool_responses:
-                    tc = tool_response.tool_call
-                    assert tc is not None  # Already filtered above
-
-                    tool_response_message = tool_response.llm_facing_response
-                    tool_response_token_count = token_counter(tool_response_message)
-
-                    tool_response_msg = ChatMessageSimple(
-                        message=tool_response_message,
-                        token_count=tool_response_token_count,
-                        message_type=MessageType.TOOL_CALL_RESPONSE,
-                        tool_call_id=tc.tool_call_id,
-                        image_files=None,
+                    response_texts.append(tool_response.llm_facing_response)
+                    response_image_files = _tool_response_image_files(
+                        tool_response, llm
                     )
-                    simple_chat_history.append(tool_response_msg)
+                    if response_image_files:
+                        image_files_by_tool_call_id[tc.tool_call_id] = (
+                            response_image_files
+                        )
+
+                simple_chat_history.extend(
+                    build_parallel_tool_call_messages(
+                        tool_calls=tool_calls_simple,
+                        response_texts=response_texts,
+                        token_counter=token_counter,
+                        assistant_message=llm_step_result.answer or "",
+                        image_files_by_tool_call_id=image_files_by_tool_call_id,
+                    )
+                )
 
             # If no tool calls, then it must have answered, wrap up
             if not llm_step_result.tool_calls or len(llm_step_result.tool_calls) == 0:
