@@ -1098,7 +1098,12 @@ def build_chat_turn(
     try:
         db_session.commit()
     except Exception:
-        set_processing_status(chat_session_id=chat_session.id, cache=cache, value=False)
+        set_processing_status(
+            chat_session_id=chat_session.id,
+            cache=cache,
+            value=False,
+            run_id=processing_run_id,
+        )
         raise
 
     return ChatTurnSetup(
@@ -1347,6 +1352,7 @@ def _run_models(
                 chat_session_id=setup.chat_session_id,
                 cache=setup.cache,
                 value=False,
+                run_id=setup.processing_run_id,
             )
         except Exception:
             logger.exception("post-steps processing status reset failed")
@@ -1919,6 +1925,7 @@ def _stream_chat_turn(
                     chat_session_id=setup.chat_session_id,
                     cache=setup.cache,
                     value=False,
+                    run_id=setup.processing_run_id,
                 )
         except Exception:
             logger.exception("Error in setting processing status")

@@ -1830,6 +1830,7 @@ def run_llm_step_pkt_generator(
     # Note: Content (AgentResponseDelta) doesn't need an explicit end packet - OverallStop handles it
     # Tool calls are handled by tool execution code and emit their own packets (e.g., SectionEnd)
     if LOG_ONYX_MODEL_INTERACTIONS and current_turn_persists_content():
+        logger.info("Terminal finish_reason: %s", terminal_finish_reason)
         logger.info("Accumulated reasoning: %s", accumulated_reasoning)
         logger.info("Accumulated answer: %s", accumulated_answer)
 

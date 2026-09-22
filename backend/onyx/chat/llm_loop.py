@@ -165,6 +165,19 @@ def _build_empty_llm_response_error(
     model = llm.config.model_name
     finish_reason = llm_step_result.finish_reason
 
+    # One structured line at the raise site: the surfaced message below only
+    # carries finish_reason, while triage needs the channel sizes too.
+    logger.error(
+        "Empty LLM response from %s/%s: finish_reason=%s, reasoning_chars=%d, "
+        "answer_chars=%d, tool_calls=%d",
+        provider,
+        model,
+        finish_reason,
+        len(llm_step_result.reasoning or ""),
+        len(llm_step_result.answer or ""),
+        len(llm_step_result.tool_calls or []),
+    )
+
     # A refusal/content-filter stop is a deliberate model decision (HTTP 200
     # with no content), not a transport failure — retrying the same request
     # against the same model will not help.
@@ -217,7 +230,7 @@ def _build_empty_llm_response_error(
         client_error_msg=(
             "The selected model returned no final answer before the stream "
             "completed. No text or tool calls were received from the upstream "
-            "provider."
+            f"provider (finish_reason={finish_reason or 'unknown'})."
         ),
         finish_reason=finish_reason,
     )

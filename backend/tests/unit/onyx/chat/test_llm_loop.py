@@ -1672,6 +1672,40 @@ class TestEmptyLlmResponseClassification:
         assert err.is_retryable is True
         assert "quota" not in err.client_error_msg.lower()
 
+    def test_generic_empty_response_message_includes_finish_reason(self) -> None:
+        """Mode-A triage: a reasoning-only `length` stop must be distinguishable
+        from a silent stream cut via the surfaced message."""
+        err = _build_empty_llm_response_error(
+            llm=self._make_llm(provider="ollama_chat", model="ornith-1.5:9b"),
+            llm_step_result=LlmStepResult(
+                reasoning="scratchpad only",
+                answer=None,
+                tool_calls=None,
+                raw_answer=None,
+                finish_reason="length",
+            ),
+            tool_choice=ToolChoiceOptions.AUTO,
+        )
+
+        assert "finish_reason=length" in err.client_error_msg
+        assert err.finish_reason == "length"
+
+    def test_generic_empty_response_message_handles_missing_finish_reason(
+        self,
+    ) -> None:
+        err = _build_empty_llm_response_error(
+            llm=self._make_llm(provider="ollama_chat", model="ornith-1.5:9b"),
+            llm_step_result=LlmStepResult(
+                reasoning="scratchpad only",
+                answer=None,
+                tool_calls=None,
+                raw_answer=None,
+            ),
+            tool_choice=ToolChoiceOptions.AUTO,
+        )
+
+        assert "finish_reason=unknown" in err.client_error_msg
+
     def test_refusal_finish_reason_is_classified_as_model_refusal(self) -> None:
         """Anthropic refusal: HTTP 200, stop_reason="refusal" (normalized by
         LiteLLM to "content_filter"), no text or tool calls. Must surface as a

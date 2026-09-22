@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from onyx.cache.interface import CacheBackend, CacheLock
 from onyx.chat.chat_processing_checker import (
+    get_processing_run_id,
     is_chat_session_processing,
     set_processing_status,
 )
@@ -168,6 +169,44 @@ class TestSetProcessingStatus:
         set_processing_status(sid, cache, True)
         set_processing_status(sid, cache, False)
         assert not is_chat_session_processing(sid, cache)
+
+    def test_older_run_refresh_never_moves_fence_backward(self) -> None:
+        """Two runs on one session refresh the same fence key; resume readers
+        must keep seeing the newest run's buffer (chat 4dc4f5a9: runs 251/257
+        flip-flopped the fence)."""
+        cache = _MemoryCacheBackend()
+        sid = uuid4()
+        set_processing_status(sid, cache, True, run_id=257)
+        set_processing_status(sid, cache, True, run_id=251)
+        assert get_processing_run_id(sid, cache) == 257
+
+    def test_older_run_end_does_not_clear_newer_fence(self) -> None:
+        cache = _MemoryCacheBackend()
+        sid = uuid4()
+        set_processing_status(sid, cache, True, run_id=257)
+        set_processing_status(sid, cache, False, run_id=251)
+        assert is_chat_session_processing(sid, cache)
+        assert get_processing_run_id(sid, cache) == 257
+
+    def test_newest_run_end_clears_fence(self) -> None:
+        cache = _MemoryCacheBackend()
+        sid = uuid4()
+        set_processing_status(sid, cache, True, run_id=257)
+        set_processing_status(sid, cache, False, run_id=257)
+        assert not is_chat_session_processing(sid, cache)
+
+    def test_newer_run_end_falls_back_to_older_active_run(self) -> None:
+        """The newer run can finish first (run 257 errored while 251 ran on).
+        Its clear leaves a transient window with no fence; the older run's next
+        refresh re-arms the fence with its own run id."""
+        cache = _MemoryCacheBackend()
+        sid = uuid4()
+        set_processing_status(sid, cache, True, run_id=251)
+        set_processing_status(sid, cache, True, run_id=257)
+        set_processing_status(sid, cache, False, run_id=257)
+        assert get_processing_run_id(sid, cache) is None
+        set_processing_status(sid, cache, True, run_id=251)
+        assert get_processing_run_id(sid, cache) == 251
 
 
 class TestIsChatSessionProcessing:

@@ -285,6 +285,10 @@ export default function useChatSessionController({
         // Added and deleted in this function only, so an entry can never
         // outlive its tail.
         resumingRuns.add(runId);
+        // A run is in flight: restore the streaming state so the input bar
+        // shows the stop button (which fences the session server-side) and
+        // enqueues follow-ups instead of starting a second concurrent run.
+        useChatSessionStore.getState().updateChatState(sessionId, "streaming");
         // The reserved row's placeholder text would render above the live
         // timeline.
         node.message = "";
@@ -317,6 +321,13 @@ export default function useChatSessionController({
             if (!stillCurrent()) {
               return;
             }
+            // Re-assert on every received line (heartbeats included): navigating
+            // away and back re-initializes the session store with chatState
+            // "input" while this tail is live. During quiet phases heartbeats
+            // are the only traffic.
+            useChatSessionStore
+              .getState()
+              .updateChatState(sessionId, "streaming");
             if (!Object.hasOwn(rawPacket, "obj")) {
               continue;
             }
@@ -350,6 +361,9 @@ export default function useChatSessionController({
           }
           resumingRuns.delete(runId);
           if (stillCurrent()) {
+            // The tail ended: release the streaming state so the input bar
+            // stops offering stop and accepts normal sends again.
+            useChatSessionStore.getState().updateChatState(sessionId, "input");
             flush();
             // Settle final state (message text, citations, documents) from
             // the persisted session.
