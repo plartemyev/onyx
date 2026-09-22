@@ -27,7 +27,10 @@ import { transformLinkUri } from "@/lib/utils";
 import { rehypeDirection } from "@/lib/rehypeDirection";
 import { cn } from "@opal/utils";
 import { InMessageImage } from "@/app/app/components/files/images/InMessageImage";
-import { extractChatImageFileId } from "@/app/app/components/files/images/utils";
+import {
+  extractChatFileId,
+  extractChatImageFileId,
+} from "@/app/app/components/files/images/utils";
 
 /** Table wrapper that detects horizontal overflow and shows a fade + scrollbar. */
 interface ScrollableTableProps extends React.TableHTMLAttributes<HTMLTableElement> {
@@ -187,9 +190,30 @@ export const useMarkdownComponents = (
     ]
   );
 
+  const imageCallback = useCallback(
+    (props: React.ComponentProps<"img"> & ExtraProps) => {
+      const src = typeof props.src === "string" ? props.src : undefined;
+      const fileId = extractChatFileId(src);
+      if (fileId) {
+        return (
+          <InMessageImage fileId={fileId} fileName={props.alt || undefined} />
+        );
+      }
+      // Older messages embed the literal placeholder the model copied from
+      // the tool notice. The artifact row under the message shows the real
+      // file, so render nothing rather than a broken image.
+      if (src === "file_link") {
+        return null;
+      }
+      return <img src={src} alt={props.alt ?? ""} />;
+    },
+    []
+  );
+
   const markdownComponents = useMemo<Components>(
     () => ({
       a: anchorCallback,
+      img: imageCallback,
       p: paragraphCallback,
       pre: ({ node, className, children }) => {
         // Don't render the pre wrapper - CodeBlock handles its own wrapper
@@ -236,7 +260,7 @@ export const useMarkdownComponents = (
         );
       },
     }),
-    [anchorCallback, paragraphCallback, processedContent]
+    [anchorCallback, imageCallback, paragraphCallback, processedContent]
   );
 
   return markdownComponents;

@@ -284,6 +284,7 @@ const ChatUI = React.memo(
                     rawPackets={message.packets}
                     packetCount={message.packetCount}
                     chatState={chatStateData}
+                    files={message.files}
                     nodeId={message.nodeId}
                     messageId={message.messageId}
                     currentFeedback={message.currentFeedback}

@@ -10,7 +10,7 @@ import React, {
 import { Packet, StopReason } from "@/app/app/services/streamingModels";
 import CustomToolAuthCard from "@/app/app/message/messageComponents/CustomToolAuthCard";
 import { FullChatState } from "@/app/app/message/messageComponents/interfaces";
-import { FeedbackType } from "@/app/app/interfaces";
+import { FeedbackType, FileDescriptor } from "@/app/app/interfaces";
 import { handleCopy } from "@/app/app/message/copyingUtils";
 import { useAuthErrors } from "@/app/app/message/messageComponents/hooks/useAuthErrors";
 import { useMessageSwitching } from "@/app/app/message/messageComponents/hooks/useMessageSwitching";
@@ -21,6 +21,7 @@ import MessageToolbar from "@/app/app/message/messageComponents/MessageToolbar";
 import { LlmDescriptor, LlmManager } from "@/lib/hooks";
 import { Message } from "@/app/app/interfaces";
 import Text from "@/refresh-components/texts/Text";
+import FileDisplay from "@/app/app/message/FileDisplay";
 import { AgentTimeline } from "@/app/app/message/messageComponents/timeline/AgentTimeline";
 import { useVoiceMode } from "@/providers/VoiceModeProvider";
 import { getTextContent } from "@/app/app/services/packetUtils";
@@ -57,6 +58,9 @@ export interface AgentMessageProps {
   disableTTS?: boolean;
   /** When on, drop the message's reading-width padding so it sits flush with the chat edge. */
   fullWidthChat?: boolean;
+  /** Files attached to the message (e.g. code interpreter artifacts). Rendered
+   * as an artifact row under the answer. */
+  files?: FileDescriptor[];
 }
 
 // TODO: Consider more robust comparisons:
@@ -86,7 +90,8 @@ function arePropsEqual(
       next.llmManager?.isLoadingProviders &&
     prev.processingDurationSeconds === next.processingDurationSeconds &&
     prev.hideFooter === next.hideFooter &&
-    prev.fullWidthChat === next.fullWidthChat
+    prev.fullWidthChat === next.fullWidthChat &&
+    prev.files === next.files
     // Skip: chatState.regenerate, chatState.setPresentingDocument,
     //       most of llmManager, onMessageSelection (function/object props)
   );
@@ -108,6 +113,7 @@ const AgentMessage = React.memo(function AgentMessage({
   hideFooter,
   disableTTS,
   fullWidthChat,
+  files,
 }: AgentMessageProps) {
   const t = useTranslations("chat.messages");
   const markdownRef = useRef<HTMLDivElement>(null);
@@ -361,6 +367,15 @@ const AgentMessage = React.memo(function AgentMessage({
             </Text>
           )}
       </div>
+
+      {/* Artifact row: files produced for this answer (code interpreter
+          artifacts). Visible after save; while streaming, files surface
+          inside their tool steps instead. */}
+      {files && files.length > 0 && (
+        <div className={cn(!fullWidthChat && "px-3")}>
+          <FileDisplay files={files} align="start" />
+        </div>
+      )}
 
       {/* Feedback buttons - only show when streaming and rendering complete */}
       {isComplete && !hideFooter && (

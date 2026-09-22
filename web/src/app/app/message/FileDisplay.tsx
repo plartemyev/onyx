@@ -14,24 +14,34 @@ interface FileContainerProps {
   children: ReactNode;
   className?: string;
   id?: string;
+  align: "start" | "end";
 }
 
 interface FileDisplayProps {
   files: FileDescriptor[];
+  /** Cross-axis alignment of each file row. Defaults to "end" (user bubbles). */
+  align?: "start" | "end";
 }
 
-function FileContainer({ children, className, id }: FileContainerProps) {
+function FileContainer({ children, className, id, align }: FileContainerProps) {
   return (
     <div
       id={id}
-      className={cn("flex w-full flex-col items-end gap-2 py-2", className)}
+      className={cn(
+        "flex w-full flex-col gap-2 py-2",
+        align === "end" ? "items-end" : "items-start",
+        className
+      )}
     >
       {children}
     </div>
   );
 }
 
-export default function FileDisplay({ files }: FileDisplayProps) {
+export default function FileDisplay({
+  files,
+  align = "end",
+}: FileDisplayProps) {
   const [close, setClose] = useState(true);
   const [previewingFile, setPreviewingFile] = useState<FileDescriptor | null>(
     null
@@ -61,7 +71,7 @@ export default function FileDisplay({ files }: FileDisplayProps) {
       )}
 
       {textFiles.length > 0 && (
-        <FileContainer id="onyx-file">
+        <FileContainer id="onyx-file" align={align}>
           {textFiles.map((file) => (
             <Attachment
               key={file.id}
@@ -73,7 +83,7 @@ export default function FileDisplay({ files }: FileDisplayProps) {
       )}
 
       {imageFiles.length > 0 && (
-        <FileContainer id="onyx-image">
+        <FileContainer id="onyx-image" align={align}>
           {imageFiles.map((file) => (
             <InMessageImage key={file.id} fileId={file.id} />
           ))}
@@ -81,7 +91,7 @@ export default function FileDisplay({ files }: FileDisplayProps) {
       )}
 
       {tabularFiles.length > 0 && (
-        <FileContainer className="overflow-auto">
+        <FileContainer className="overflow-auto" align={align}>
           {tabularFiles.map((file) =>
             close ? (
               <ExpandableContentWrapper

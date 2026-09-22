@@ -198,6 +198,7 @@ export default function SharedChatDisplay({
                             ? modelProviderLookup.get(message.modelDisplayName)
                             : undefined,
                         }}
+                        files={message.files}
                         nodeId={message.nodeId}
                         llmManager={null}
                         otherMessagesCanSwitchTo={undefined}

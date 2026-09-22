@@ -13,6 +13,16 @@ export function isImageFileName(filename: string): boolean {
 }
 
 /**
+ * If `href` points to a chat file, returns the file ID regardless of the
+ * link text. Otherwise returns null.
+ */
+export function extractChatFileId(href: string | undefined): string | null {
+  if (!href) return null;
+  const match = CHAT_FILE_URL_REGEX.exec(href);
+  return match?.[1] ?? null;
+}
+
+/**
  * If `href` points to a chat file and `linkText` ends with an image extension,
  * returns the file ID. Otherwise returns null.
  */
@@ -20,9 +30,8 @@ export function extractChatImageFileId(
   href: string | undefined,
   linkText: string
 ): string | null {
-  if (!href) return null;
-  const match = CHAT_FILE_URL_REGEX.exec(href);
-  if (!match?.[1]) return null;
+  const fileId = extractChatFileId(href);
+  if (!fileId) return null;
   if (!IMAGE_EXTENSIONS.test(linkText)) return null;
-  return match[1];
+  return fileId;
 }

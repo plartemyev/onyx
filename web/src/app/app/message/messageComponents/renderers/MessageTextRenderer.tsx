@@ -28,7 +28,10 @@ import {
 import { extractCodeText } from "@/app/app/message/codeUtils";
 import { CodeBlock } from "@/app/app/message/CodeBlock";
 import { InMessageImage } from "@/app/app/components/files/images/InMessageImage";
-import { extractChatImageFileId } from "@/app/app/components/files/images/utils";
+import {
+  extractChatFileId,
+  extractChatImageFileId,
+} from "@/app/app/components/files/images/utils";
 import { transformLinkUri } from "@/lib/utils";
 import { rehypeDirection } from "@/lib/rehypeDirection";
 import { cn } from "@opal/utils";
@@ -379,6 +382,20 @@ export const MessageTextRenderer: MessageRenderer<
             {children}
           </MemoizedAnchor>
         );
+      },
+      img: ({ src, alt }) => {
+        const url = typeof src === "string" ? src : undefined;
+        const fileId = extractChatFileId(url);
+        if (fileId) {
+          return <InMessageImage fileId={fileId} fileName={alt || undefined} />;
+        }
+        // Older messages embed the literal placeholder the model copied from
+        // the tool notice. The artifact row under the message shows the real
+        // file, so render nothing rather than a broken image.
+        if (url === "file_link") {
+          return null;
+        }
+        return <img src={url} alt={alt ?? ""} />;
       },
       p: ({ children, dir }) => (
         <MemoizedParagraph dir={dir} className="font-main-content-body">
