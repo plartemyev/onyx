@@ -57,5 +57,5 @@ services:
     environment:
       - LLM_SOCKET_READ_TIMEOUT=1200
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
-      - MAX_LLM_CYCLES=12
+      - MAX_LLM_CYCLES=22
       - MAX_CHUNKS_FED_TO_CHAT=50
