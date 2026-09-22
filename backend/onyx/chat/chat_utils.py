@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import re
 from collections.abc import Callable
 from typing import cast
@@ -64,6 +65,7 @@ from onyx.prompts.chat_prompts import (
     TOOL_CALL_RESPONSE_CROSS_MESSAGE,
 )
 from onyx.prompts.tool_prompts import TOOL_CALL_FAILURE_PROMPT
+from onyx.server.query_and_chat.chat_utils import mime_type_to_chat_file_type
 from onyx.server.query_and_chat.models import ChatSessionCreationRequest
 from onyx.server.query_and_chat.streaming_models import CitationInfo
 from onyx.tools.models import ChatFile, ToolCallKickoff
@@ -603,6 +605,41 @@ def load_chat_file(
 
 
 _MAX_PARALLEL_CHAT_FILE_LOADS = 16
+
+
+def dedupe_generated_files_latest_by_filename(
+    generated_files: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Collapse repeated saves of the same filename to the newest file id.
+
+    Each code interpreter execution saves its outputs as new file records.
+    When one filename is written several times in a turn, the last save is
+    the version the final answer refers to. First-appearance order is kept.
+    """
+    latest_by_filename: dict[str, str] = {}
+    ordered_filenames: list[str] = []
+    for filename, file_id in generated_files:
+        if filename not in latest_by_filename:
+            ordered_filenames.append(filename)
+        latest_by_filename[filename] = file_id
+    return [(filename, latest_by_filename[filename]) for filename in ordered_filenames]
+
+
+def file_descriptors_from_generated_files(
+    generated_files: list[tuple[str, str]],
+) -> list[FileDescriptor]:
+    """Build FileDescriptors from (filename, file_id) pairs of generated files."""
+    descriptors: list[FileDescriptor] = []
+    for filename, file_id in generated_files:
+        mime_type, _ = mimetypes.guess_type(filename)
+        descriptors.append(
+            FileDescriptor(
+                id=file_id,
+                type=mime_type_to_chat_file_type(mime_type),
+                name=filename,
+            )
+        )
+    return descriptors
 
 
 def load_all_chat_files(

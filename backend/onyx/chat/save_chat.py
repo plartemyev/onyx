@@ -1,10 +1,14 @@
 import json
-import mimetypes
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from onyx.chat.chat_state import ChatStateContainer, SearchDocKey
+from onyx.chat.chat_utils import (
+    dedupe_generated_files_latest_by_filename,
+    file_descriptors_from_generated_files,
+)
 from onyx.configs.constants import DocumentSource
 from onyx.context.search.models import SearchDoc
 from onyx.db.chat import (
@@ -16,37 +20,110 @@ from onyx.db.models import ChatMessage, ToolCall
 from onyx.db.tools import create_tool_call_no_commit
 from onyx.file_store.models import FileDescriptor
 from onyx.natural_language_processing.utils import BaseTokenizer, get_tokenizer
-from onyx.server.query_and_chat.chat_utils import mime_type_to_chat_file_type
-from onyx.tools.models import ToolCallInfo
+from onyx.tools.models import PythonExecutionFile, ToolCallInfo
 from onyx.utils.logger import setup_logger
 from onyx.utils.postgres_sanitization import sanitize_string
 
 logger = setup_logger()
+
+# Link target models copy verbatim from the tool notices when they fail to
+# substitute the real URL, e.g. ![chart.png](file_link).
+_PLACEHOLDER_FILE_LINK = "file_link"
+_PLACEHOLDER_LINK_PATTERN = re.compile(r"(!?\[[^\]]*\])\(\s*file_link\s*\)")
+
+
+def _rewrite_placeholder_file_links(
+    message_text: str,
+    generated_files: list[PythonExecutionFile],
+) -> str:
+    """Resolve `](file_link)` placeholder links to real generated-file URLs.
+
+    Models sometimes copy the placeholder from the tool notices verbatim
+    (e.g. `![chart.png](file_link)`). A bracket name maps to the newest save
+    of that filename; with a single generated file any placeholder resolves
+    to it. Unresolvable placeholders stay unchanged.
+    """
+    if _PLACEHOLDER_FILE_LINK not in message_text or not generated_files:
+        return message_text
+
+    links_by_filename: dict[str, str] = {}
+    for gen_file in generated_files:
+        if gen_file.file_link:
+            links_by_filename[gen_file.filename] = gen_file.file_link
+
+    def _resolve(match: re.Match[str]) -> str:
+        bracket = match.group(1)
+        inner = bracket.lstrip("!").strip()
+        name = inner[1:-1] if inner.startswith("[") and inner.endswith("]") else ""
+        link = links_by_filename.get(name)
+        if not link and name not in links_by_filename and len(generated_files) == 1:
+            # One generated file: any placeholder resolves to it.
+            link = generated_files[0].file_link
+        if not link:
+            return match.group(0)
+        return f"{bracket}({link})"
+
+    return _PLACEHOLDER_LINK_PATTERN.sub(_resolve, message_text)
 
 
 def _extract_referenced_file_descriptors(
     tool_calls: list[ToolCallInfo],
     message_text: str,
 ) -> list[FileDescriptor]:
-    """Extract FileDescriptors for code interpreter files referenced in the message text."""
-    descriptors: list[FileDescriptor] = []
+    """Extract FileDescriptors for code interpreter files to attach to the message.
+
+    A generated file is attached when the message references it by file id or
+    by filename (models embed artifacts with markdown like
+    ![name](file_link) or [name](https://host/api/chat/file/<id>)). When
+    nothing is referenced, all generated files are attached so produced
+    artifacts stay visible and downloadable. Repeated saves of one filename
+    collapse to the newest file id.
+    """
+    generated: list[tuple[str, str]] = []
     for tool_call_info in tool_calls:
-        if not tool_call_info.generated_files:
-            continue
-        for gen_file in tool_call_info.generated_files:
+        for gen_file in tool_call_info.generated_files or []:
             file_id = (
                 gen_file.file_link.rsplit("/", 1)[-1] if gen_file.file_link else ""
             )
-            if file_id and file_id in message_text:
-                mime_type, _ = mimetypes.guess_type(gen_file.filename)
-                descriptors.append(
-                    FileDescriptor(
-                        id=file_id,
-                        type=mime_type_to_chat_file_type(mime_type),
-                        name=gen_file.filename,
-                    )
-                )
-    return descriptors
+            if file_id and gen_file.filename:
+                generated.append((gen_file.filename, file_id))
+    if not generated:
+        return []
+
+    referenced_file_ids = {
+        file_id for _, file_id in generated if file_id in message_text
+    }
+    referenced_filenames = {
+        filename for filename, _ in generated if filename in message_text
+    }
+
+    # Exact file-id references win over filename collapsing: an explicit link
+    # to an earlier version of a file must keep pointing at that version, and
+    # must not also pull in the newest save of the same filename.
+    selected: list[tuple[str, str]] = []
+    seen_file_ids: set[str] = set()
+    matched_filenames: set[str] = set()
+    for filename, file_id in generated:
+        if file_id in referenced_file_ids:
+            selected.append((filename, file_id))
+            seen_file_ids.add(file_id)
+            matched_filenames.add(filename)
+    if matched_filenames or referenced_filenames:
+        for filename, file_id in dedupe_generated_files_latest_by_filename(generated):
+            if (
+                filename in referenced_filenames
+                and filename not in matched_filenames
+                and file_id not in seen_file_ids
+            ):
+                selected.append((filename, file_id))
+                seen_file_ids.add(file_id)
+
+    if not selected:
+        # Nothing referenced (e.g. the model mangled the link): attach the
+        # artifacts anyway so they remain listed and downloadable.
+        selected = dedupe_generated_files_latest_by_filename(generated)
+
+    return file_descriptors_from_generated_files(selected)
 
 
 def _create_and_link_tool_calls(
@@ -212,6 +289,15 @@ def save_chat_turn(
     # A content-free turn keeps the row and its token count, which comes from
     # the real answer, but none of the conversation-derived parts.
     if persist_content:
+        generated_files = [
+            gen_file
+            for tool_call_info in tool_calls
+            for gen_file in tool_call_info.generated_files or []
+        ]
+        if generated_files:
+            sanitized_message_text = _rewrite_placeholder_file_links(
+                sanitized_message_text, generated_files
+            )
         assistant_message.message = sanitized_message_text
         assistant_message.reasoning_tokens = (
             sanitize_string(reasoning_tokens) if reasoning_tokens else reasoning_tokens
@@ -349,9 +435,10 @@ def save_chat_turn(
     # 7. Build citations mapping - use the mapping we already built in step 4
     assistant_message.citations = citation_number_to_search_doc_id or None
 
-    # 8. Attach code interpreter generated files that the assistant actually
-    # referenced in its response, so they are available via load_all_chat_files
-    # on subsequent turns. Files not mentioned are intermediate artifacts.
+    # 8. Attach code interpreter generated files referenced in the response so
+    # they are available via load_all_chat_files on subsequent turns. When the
+    # response references none (e.g. the model mangled the link), attach the
+    # artifacts anyway so produced files stay listed and downloadable.
     if sanitized_message_text:
         referenced = _extract_referenced_file_descriptors(
             tool_calls, sanitized_message_text
