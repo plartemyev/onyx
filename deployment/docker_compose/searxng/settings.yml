@@ -8,19 +8,32 @@ search:
     - html
     # Required by Onyx; requests use format=json.
     - json
+# Browser fetch pool: engine requests go through a masqueraded Chromium
+# (see searx/network/browser.py in the fork). Needs engine timeouts high
+# enough for browser-speed fetches, including challenge warm-up renders.
+outgoing:
+  using_browser: true
+  browser_pool_size: 3
+  request_timeout: 20.0
 # Engine overrides merge by name with the defaults.
 engines:
   - name: google
     disabled: false
+    timeout: 20.0
   - name: bing
     disabled: false
+    timeout: 20.0
   # Spare general-web engines: extra redundancy when a main engine
   # gets CAPTCHA'd or rate-limited.
   - name: qwant
     disabled: false
+    timeout: 20.0
   - name: yahoo
     disabled: false
+    timeout: 20.0
   - name: fireball
     disabled: false
+    timeout: 20.0
   - name: privacywall
     disabled: false
+    timeout: 20.0
