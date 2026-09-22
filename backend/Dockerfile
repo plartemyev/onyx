@@ -66,8 +66,7 @@ founders@onyx.app for more information. Please visit https://github.com/onyx-dot
 
 # DO_NOT_TRACK is used to disable telemetry for Unstructured
 ENV ONYX_RUNNING_IN_DOCKER="true" \
-    DO_NOT_TRACK="true" \
-    PLAYWRIGHT_BROWSERS_PATH="/app/.cache/ms-playwright"
+    DO_NOT_TRACK="true"
 
 # Create non-root user for security best practices
 RUN groupadd -g 1001 onyx && \
@@ -111,22 +110,27 @@ COPY --from=builder \
     /usr/local/bin/playwright \
     /usr/local/bin/
 
-# Install the Chromium build used by Playwright and its OS-level runtime libraries. Must run after
-# the site-packages copy above so the playwright CLI is available.
+# Browser used for tool fetches (open_url / download_file) and the web
+# connector. Must run after the site-packages copy above so the playwright
+# CLI (used by install-deps) is available.
 #
-# `--only-shell` installs the headless shell and skips the full headed Chromium build (~364 MB). Every
-# launch site in the backend passes headless=True with no channel, so Playwright picks the shell.
-# Remove the flag if a call site ever needs a headed browser or a branded channel.
+# The DISTRO Chromium build is deliberately used instead of Playwright's
+# bundled fork (`playwright install chromium`): the bundled build ships
+# automation-friendly defaults that bot detectors fingerprint, and it is not
+# what real users run. Playwright drives the distro binary via
+# executable_path (resolved in onyx/utils/playwright_fetch.py; override with
+# CHROMIUM_EXECUTABLE_PATH). Xvfb provides a virtual display so the browser
+# can run headed — headless Chromium is a strong bot signal.
 #
 # perl-base is part of the base Python Debian image but not needed for Onyx functionality; it is
-# removed for CVE surface reduction (requires --allow-remove-essential). It must be removed AFTER the
-# first `playwright install-deps`, because the font/X11 packages that install-deps pulls in run perl
+# removed for CVE surface reduction (requires --allow-remove-essential). It must be removed AFTER
+# package installs, because the font/X11 packages that install-deps pulls in run perl
 # scripts in their dpkg configure step. The second `playwright install-deps` then restores any
 # chromium runtime libs (libnss3, libnspr4, etc.) that autoremove swept up in the cascade. The
 # runtime image stays perl-free from here on.
 RUN ln -s /usr/local/bin/supervisord /usr/bin/supervisord && \
-    playwright install --only-shell chromium && \
     playwright install-deps chromium && \
+    apt-get install -y --no-install-recommends chromium xvfb && \
     apt-get remove -y --allow-remove-essential perl-base && \
     apt-get autoremove -y && \
     playwright install-deps chromium && \

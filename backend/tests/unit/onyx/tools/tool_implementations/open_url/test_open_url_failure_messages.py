@@ -91,18 +91,28 @@ def test_failure_message_url_without_reason_omits_parens() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_looks_like_cloudflare_challenge_detects_script_src() -> None:
+def test_looks_like_cloudflare_challenge_ignores_script_src() -> None:
+    """Script-tag references to Cloudflare's challenge platform appear on
+    every CF-proxied page — including pages fetched successfully AFTER the
+    challenge resolved — so they alone must not read as a challenge."""
     from onyx.utils.playwright_fetch import looks_like_cloudflare_challenge
 
-    html = '<html><body><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script></body></html>'
-    assert looks_like_cloudflare_challenge(html)
+    html = '<html><head><title>Real Page</title></head><body><p>Content.</p><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script></body></html>'
+    assert not looks_like_cloudflare_challenge(html)
 
 
-def test_looks_like_cloudflare_challenge_detects_jschallenge_path() -> None:
+def test_looks_like_cloudflare_challenge_detects_body_markers() -> None:
+    """Cloudflare-specific strings in the page body (outside <script> tags)
+    mean the challenge interstitial itself was rendered."""
     from onyx.utils.playwright_fetch import looks_like_cloudflare_challenge
 
-    html = '<html><body><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></body></html>'
-    assert looks_like_cloudflare_challenge(html)
+    body_challenge = (
+        "<html><head><title></title></head>"
+        '<body><div class="cf-chl-bypass">challenge</div></body></html>'
+    )
+    assert looks_like_cloudflare_challenge(body_challenge)
+    script_only = '<html><body><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></body></html>'
+    assert not looks_like_cloudflare_challenge(script_only)
 
 
 def test_looks_like_cloudflare_challenge_detects_just_a_moment() -> None:

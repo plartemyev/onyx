@@ -1214,6 +1214,49 @@ OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED = (
     os.environ.get("OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED", "true").lower() == "true"
 )
 
+# Path to a distro-packaged Chromium binary (apt/pacman build) for Playwright to
+# drive, e.g. /usr/bin/chromium. Empty => Playwright's own bundled build. The
+# distro build is preferred: it matches what real users run, while Playwright's
+# fork carries automation-friendly defaults that bot detectors fingerprint.
+CHROMIUM_EXECUTABLE_PATH = os.environ.get("CHROMIUM_EXECUTABLE_PATH", "")
+
+# Run the fetch browser headed instead of headless. Headed Chromium under a
+# virtual framebuffer (Xvfb, auto-started when no DISPLAY exists) is
+# materially harder for bot detectors to flag than headless mode.
+WEB_FETCH_HEADED = os.environ.get("WEB_FETCH_HEADED", "true").lower() == "true"
+
+# Chrome major version claimed by the static (Python-requests fast-path)
+# headers. Keep in sync with the Chromium major packaged in the image
+# (see backend/Dockerfile). The Playwright browser derives its own UA from
+# the real binary version and does not use this.
+WEB_BROWSER_CHROME_MAJOR_VERSION = (
+    os.environ.get("WEB_BROWSER_CHROME_MAJOR_VERSION") or "153"
+)
+
+# User-Agent for the Python-requests fast path. A browser-consistent UA by
+# default: a crawler-branded UA (the old default) is an instant bot signal
+# and poisons the IP's reputation with antibot services even when the fetch
+# itself would succeed.
+WEB_CRAWLER_USER_AGENT = os.environ.get("WEB_CRAWLER_USER_AGENT") or (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    f"(KHTML, like Gecko) Chrome/{WEB_BROWSER_CHROME_MAJOR_VERSION}.0.0.0 Safari/537.36"
+)
+
+# Which fetch path the open_url / download_file tools use for a URL:
+# - "auto" (default): Python-requests fast path first (cheap, works for most
+#   hosts); on bot challenges or unparseable bodies it falls back to a real
+#   browser. The fast path's browser-consistent headers and the known-challenger
+#   memory keep the doomed-attempt count low.
+# - "playwright": every fetch goes through the real browser — no requests
+#   attempt at all. Maximum stealth for TLS-fingerprint-driven bot walls
+#   (Cloudflare, Reddit); costs a live browser per fetch.
+OPEN_URL_FETCH_MODE = os.environ.get("OPEN_URL_FETCH_MODE", "auto").strip().lower()
+if OPEN_URL_FETCH_MODE not in ("auto", "playwright"):
+    raise ValueError(
+        "OPEN_URL_FETCH_MODE must be 'auto' or 'playwright', got "
+        f"'{OPEN_URL_FETCH_MODE}'"
+    )
+
 # Outbound fetch pacing for OnyxWebCrawler (open_url + download_file +
 # analyze_image): requests sharing a provider (imgur, reddit, ...) are
 # serialized and spaced a random gap apart, so image CDNs and search engines
