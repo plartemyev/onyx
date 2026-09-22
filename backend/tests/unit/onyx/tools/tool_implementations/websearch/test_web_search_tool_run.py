@@ -130,6 +130,41 @@ class TestWebSearchToolRunQueryCoercion:
                 f"Single-character query dispatched: {query_arg!r}"
             )
 
+    def test_language_kwarg_forwarded_to_provider(self) -> None:
+        """A language hint from the LLM rides along on every provider call."""
+        mock_provider = MagicMock()
+        mock_provider.search.return_value = [_make_result()]
+        mock_provider.supports_site_filter = False
+        tool = _make_tool(mock_provider)
+
+        placement = Placement(turn_index=0, tab_index=0)
+        override_kwargs = WebSearchToolOverrideKwargs(starting_citation_num=1)
+        tool.run(
+            placement=placement,
+            override_kwargs=override_kwargs,
+            queries=["beste laptop 2026"],
+            language="de",
+        )
+
+        assert mock_provider.search.call_count == 1
+        assert mock_provider.search.call_args.kwargs.get("language") == "de"
+
+    def test_language_absent_passes_none_to_provider(self) -> None:
+        mock_provider = MagicMock()
+        mock_provider.search.return_value = [_make_result()]
+        mock_provider.supports_site_filter = False
+        tool = _make_tool(mock_provider)
+
+        placement = Placement(turn_index=0, tab_index=0)
+        override_kwargs = WebSearchToolOverrideKwargs(starting_citation_num=1)
+        tool.run(
+            placement=placement,
+            override_kwargs=override_kwargs,
+            queries=["best laptop 2026"],
+        )
+
+        assert mock_provider.search.call_args.kwargs.get("language") is None
+
     def test_control_characters_sanitized_before_dispatch(self) -> None:
         """Queries with control chars have those chars removed before dispatch."""
         mock_provider = MagicMock()

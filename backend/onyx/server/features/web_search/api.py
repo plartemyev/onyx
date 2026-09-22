@@ -162,7 +162,7 @@ def _run_web_search(
     results: list[LlmWebSearchResult] = []
     for query in request.queries:
         try:
-            search_results = provider.search(query)
+            search_results = provider.search(query, language=request.language)
         except OnyxError:
             raise
         except Exception as exc:

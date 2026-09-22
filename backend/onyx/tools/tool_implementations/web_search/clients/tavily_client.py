@@ -121,7 +121,10 @@ class TavilyClient(WebSearchProvider):
 
         return results
 
-    def search(self, query: str) -> list[WebSearchResult]:
+    def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
+        # Tavily has no per-query language knob; `language` is accepted for
+        # interface compatibility and ignored.
+        del language
         try:
             return self._search_with_retries(query)
         except RetryableTavilySearchError as exc:

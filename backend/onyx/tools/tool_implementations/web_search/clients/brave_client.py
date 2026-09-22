@@ -63,15 +63,18 @@ class BraveClient(WebSearchProvider):
             allowed_values=BRAVE_FRESHNESS_OPTIONS,
         )
 
-    def _build_search_params(self, query: str) -> dict[str, str]:
+    def _build_search_params(
+        self, query: str, language: str | None = None
+    ) -> dict[str, str]:
         params = {
             "q": query,
             "count": str(self._num_results),
         }
         if self._country:
             params["country"] = self._country
-        if self._search_lang:
-            params["search_lang"] = self._search_lang
+        search_lang = language or self._search_lang
+        if search_lang:
+            params["search_lang"] = search_lang
         if self._ui_lang:
             params["ui_lang"] = self._ui_lang
         if self._safesearch:
@@ -86,8 +89,10 @@ class BraveClient(WebSearchProvider):
         backoff=2,
         exceptions=(RetryableBraveSearchError,),
     )
-    def _search_with_retries(self, query: str) -> list[WebSearchResult]:
-        params = self._build_search_params(query)
+    def _search_with_retries(
+        self, query: str, language: str | None = None
+    ) -> list[WebSearchResult]:
+        params = self._build_search_params(query, language)
 
         try:
             response = requests.get(
@@ -136,9 +141,9 @@ class BraveClient(WebSearchProvider):
 
         return results
 
-    def search(self, query: str) -> list[WebSearchResult]:
+    def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
         try:
-            return self._search_with_retries(query)
+            return self._search_with_retries(query, language)
         except RetryableBraveSearchError as exc:
             raise ValueError(str(exc)) from exc
 

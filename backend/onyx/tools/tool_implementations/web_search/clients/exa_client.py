@@ -149,7 +149,10 @@ class ExaClient(WebSearchProvider, WebContentProvider):
         return results
 
     @retry_builder(tries=3, delay=1, backoff=2)
-    def search(self, query: str) -> list[WebSearchResult]:
+    def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
+        # Exa has no language knob; `language` is accepted for interface
+        # compatibility and ignored.
+        del language
         cleaned_query, full_domains = _extract_site_operators(query)
 
         if full_domains:

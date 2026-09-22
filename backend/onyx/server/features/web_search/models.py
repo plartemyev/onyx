@@ -1,3 +1,5 @@
+import re
+
 from pydantic import BaseModel, Field, field_validator
 
 from onyx.tools.models import LlmOpenUrlResult, LlmWebSearchResult
@@ -16,6 +18,13 @@ class WebSearchToolRequest(BaseModel):
             "Optional cap on number of results to return per query. Defaults to 10."
         ),
     )
+    language: str | None = Field(
+        default=None,
+        description=(
+            "Optional BCP-47 language hint for all queries (e.g. 'en', 'de', "
+            "'pt-BR'). Providers without a language knob ignore it."
+        ),
+    )
 
     @field_validator("queries")
     @classmethod
@@ -24,6 +33,22 @@ class WebSearchToolRequest(BaseModel):
         if not cleaned_queries:
             raise ValueError("queries must include at least one non-empty value")
         return cleaned_queries
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, language: str | None) -> str | None:
+        if language is None:
+            return None
+        cleaned = language.strip()
+        if not cleaned:
+            return None
+        if len(cleaned) > 35 or not re.fullmatch(
+            r"[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*", cleaned
+        ):
+            raise ValueError(
+                "language must be a BCP-47 tag such as 'en', 'de' or 'pt-BR'"
+            )
+        return cleaned
 
     @field_validator("max_results")
     @classmethod

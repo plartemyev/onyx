@@ -33,13 +33,16 @@ class GooglePSEClient(WebSearchProvider):
         self._timeout_seconds = timeout_seconds
 
     @retry_builder(tries=3, delay=1, backoff=2)
-    def search(self, query: str) -> list[WebSearchResult]:
+    def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
         params: dict[str, str] = {
             "key": self._api_key,
             "cx": self._search_engine_id,
             "q": query,
             "num": str(self._num_results),
         }
+        # Google PSE language restrict: "lr=lang_en", "lr=lang_pt-BR", ...
+        if language:
+            params["lr"] = f"lang_{language}"
 
         response = requests.get(
             GOOGLE_CUSTOM_SEARCH_URL, params=params, timeout=self._timeout_seconds

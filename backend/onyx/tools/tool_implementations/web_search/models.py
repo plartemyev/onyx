@@ -53,8 +53,15 @@ class WebSearchProvider:
         return True
 
     @abstractmethod
-    def search(self, query: str) -> Sequence[WebSearchResult]:
-        pass
+    def search(
+        self, query: str, language: str | None = None
+    ) -> Sequence[WebSearchResult]:
+        """Search the web for `query`.
+
+        `language` is an optional BCP-47 hint (e.g. "en", "de", "pt-BR") the
+        caller can set per query. Providers that support a language knob use
+        it; the rest ignore it.
+        """
 
     @abstractmethod
     def test_connection(self) -> dict[str, str]:

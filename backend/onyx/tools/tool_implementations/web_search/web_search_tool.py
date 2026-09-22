@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -44,6 +45,25 @@ from shared_configs.enums import WebSearchProviderType
 logger = setup_logger()
 
 QUERIES_FIELD = "queries"
+LANGUAGE_FIELD = "language"
+
+# BCP-47-ish language tag: 2-3 letter base plus optional subtags
+# (e.g. "en", "de", "pt-BR", "zh-Hans-CN").
+_LANGUAGE_RE = re.compile(r"^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$")
+
+
+def _sanitize_language(raw: Any) -> str | None:
+    """Validate the LLM-provided language hint, returning None when absent.
+
+    Malformed values are ignored (search proceeds with provider defaults)
+    rather than failing the whole tool call.
+    """
+    if not isinstance(raw, str):
+        return None
+    language = raw.strip()
+    if not language or len(language) > 35 or not _LANGUAGE_RE.match(language):
+        return None
+    return language
 
 
 def _sanitize_query(query: str) -> str:
@@ -161,6 +181,17 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
                             "items": {"type": "string"},
                             "description": "One or more queries to look up on the web. Must contain only printable characters",
                         },
+                        LANGUAGE_FIELD: {
+                            "type": "string",
+                            "description": (
+                                "Optional language hint for the queries as a BCP-47 tag "
+                                "(e.g. 'en', 'de', 'pt-BR'). Set it to the language the "
+                                "query is written in or the language the best results are "
+                                "likely to be written in; omit it to use the default. "
+                                "All queries in one call share this language, so issue "
+                                "separate calls for queries in different languages."
+                            ),
+                        },
                     },
                     "required": [QUERIES_FIELD],
                 },
@@ -179,6 +210,7 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
         self,
         query: str,
         provider: Any,
+        language: str | None = None,
     ) -> tuple[list[WebSearchResult] | None, str | None]:
         """Execute a single search query and return results with error capture.
 
@@ -187,7 +219,7 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
             If failed, results is None and error_message contains the error.
         """
         try:
-            raw_results = list(provider.search(query))
+            raw_results = list(provider.search(query, language=language))
             filtered_results = filter_web_search_results_with_no_title_or_snippet(
                 raw_results
             )
@@ -225,6 +257,7 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
                     "whitespace-only). Please provide a real search query."
                 ),
             )
+        language = _sanitize_language(llm_kwargs.get(LANGUAGE_FIELD))
 
         # Emit queries
         self.emitter.emit(
@@ -236,7 +269,7 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
 
         # Perform searches in parallel with error capture
         functions_with_args = [
-            (self._safe_execute_single_search, (query, self._provider))
+            (self._safe_execute_single_search, (query, self._provider, language))
             for query in queries
         ]
         search_results_with_errors: list[

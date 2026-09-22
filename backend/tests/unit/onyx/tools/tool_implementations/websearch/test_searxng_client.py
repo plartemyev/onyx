@@ -226,3 +226,59 @@ def test_language_omitted_when_not_configured(
     client.search("drake meme")
 
     assert all("language" not in payload for payload in captured_payloads)
+
+
+def test_per_call_language_overrides_configured_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-call language (from the agent's tool call) wins over the
+    instance-level default and rides on both search payloads."""
+    captured_payloads: list[dict[str, str]] = []
+
+    def _post(
+        url: str,  # noqa: ARG001
+        data: dict[str, str],
+        timeout: Any = None,  # noqa: ARG001
+    ) -> Any:
+        captured_payloads.append(dict(data))
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        key = "images" if data.get("categories") == "images" else "general"
+        response.json.return_value = payloads[key]
+        return response
+
+    payloads = {"general": GENERAL_PAYLOAD, "images": IMAGE_PAYLOAD}
+    monkeypatch.setattr(searxng_client.requests, "post", _post)
+    client = SearXNGClient("http://localhost:8080", num_results=10, language="en")
+
+    client.search("drake meme", language="de")
+
+    assert len(captured_payloads) == 2
+    assert all(payload.get("language") == "de" for payload in captured_payloads)
+
+
+def test_per_call_language_used_without_configured_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_payloads: list[dict[str, str]] = []
+
+    def _post(
+        url: str,  # noqa: ARG001
+        data: dict[str, str],
+        timeout: Any = None,  # noqa: ARG001
+    ) -> Any:
+        captured_payloads.append(dict(data))
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        key = "images" if data.get("categories") == "images" else "general"
+        response.json.return_value = payloads[key]
+        return response
+
+    payloads = {"general": GENERAL_PAYLOAD, "images": IMAGE_PAYLOAD}
+    monkeypatch.setattr(searxng_client.requests, "post", _post)
+    client = SearXNGClient("http://localhost:8080", num_results=10)
+
+    client.search("drake meme", language="pt-BR")
+
+    assert len(captured_payloads) == 2
+    assert all(payload.get("language") == "pt-BR" for payload in captured_payloads)

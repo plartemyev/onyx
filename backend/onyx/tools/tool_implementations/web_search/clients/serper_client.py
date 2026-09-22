@@ -35,11 +35,14 @@ class SerperClient(WebSearchProvider, WebContentProvider):
         self._num_results = num_results
 
     @retry_builder(tries=3, delay=1, backoff=2)
-    def search(self, query: str) -> list[WebSearchResult]:
+    def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
         payload = {
             "q": query,
             "num": self._num_results,
         }
+        # Serper interface language: "hl=en", "hl=pt-BR", ...
+        if language:
+            payload["hl"] = language
 
         response = requests.post(
             SERPER_SEARCH_URL,

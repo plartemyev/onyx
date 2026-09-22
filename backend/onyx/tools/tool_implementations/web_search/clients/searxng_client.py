@@ -68,16 +68,20 @@ class SearXNGClient(WebSearchProvider):
         # Optional SearXNG UI language / locale (e.g. "en", "en-US", "de").
         # Without it, results follow the instance's own configured language,
         # which can localize snippets (and skew engines) unexpectedly.
+        # Serves as the default for `search(language=None)` calls.
         self._language = language or None
 
     @retry_builder(tries=3, delay=1, backoff=2)
-    def search(self, query: str) -> list[WebSearchResult]:
+    def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
         payload = {
             "q": query,
             "format": "json",
         }
-        if self._language:
-            payload["language"] = self._language
+        # A per-call language (from the agent's tool call) wins over the
+        # instance-level default.
+        language = language or self._language
+        if language:
+            payload["language"] = language
         logger.debug(
             "Searching with payload: %s to %s/search", payload, self._searxng_base_url
         )
@@ -94,7 +98,7 @@ class SearXNGClient(WebSearchProvider):
         # so we limit client-side after receiving the response
         limited_results = result_list[: self._num_results]
         general_results = [self._parse_web_result(result) for result in limited_results]
-        image_results = self._search_images(query)
+        image_results = self._search_images(query, language)
         return _interleave_image_results(general_results, image_results)
 
     def _parse_web_result(self, result: dict) -> WebSearchResult:
@@ -110,7 +114,9 @@ class SearXNGClient(WebSearchProvider):
             image_urls=[image_url] if image_url else [],
         )
 
-    def _search_images(self, query: str) -> list[WebSearchResult]:
+    def _search_images(
+        self, query: str, language: str | None = None
+    ) -> list[WebSearchResult]:
         """Best-effort image search via the SearXNG images category.
 
         Returns image hits as WebSearchResults whose `link` is the source page
@@ -123,8 +129,8 @@ class SearXNGClient(WebSearchProvider):
                 "format": "json",
                 "categories": "images",
             }
-            if self._language:
-                payload["language"] = self._language
+            if language or self._language:
+                payload["language"] = language or self._language
             response = requests.post(
                 f"{self._searxng_base_url}/search",
                 data=payload,
