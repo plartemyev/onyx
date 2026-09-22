@@ -2028,3 +2028,102 @@ class TestRunLlmLoopCycleAlignedHistory:
         }
         assert tool_responses["call_1"] == "tool result"
         assert tool_responses["call_2"] == TOOL_CALL_MERGED_PROMPT
+
+
+class TestForcedFinalAnswerCycle:
+    """The out-of-cycles / post-image-gen cycle answers without running tools,
+    but it keeps the tool schemas in the request with tool_choice=none so the
+    rendered prompt head stays byte-identical to the earlier cycles and the
+    serving stack's prompt cache keeps the whole turn prefix."""
+
+    def _run_single_forced_cycle(
+        self,
+        step_result: LlmStepResult,
+        tool: Tool,
+    ) -> Any:
+        """Run run_llm_loop with MAX_LLM_CYCLES=1, so the only cycle is the
+        forced final answer one; returns the run_llm_step mock."""
+        llm = Mock()
+        llm.config = LLMConfig(
+            model_provider="openai",
+            model_name="text-model",
+            temperature=0,
+            max_input_tokens=24000,
+        )
+        with (
+            patch("onyx.chat.llm_loop.trace", return_value=nullcontext()),
+            patch("onyx.llm.litellm_singleton.config.initialize_litellm"),
+            patch(
+                "onyx.chat.llm_loop.get_session_with_current_tenant",
+                return_value=nullcontext(),
+            ),
+            patch("onyx.chat.llm_loop.get_default_base_system_prompt", return_value=""),
+            patch("onyx.chat.llm_loop.select_reminder_text", return_value=""),
+            patch("onyx.chat.llm_loop.MAX_LLM_CYCLES", 1),
+            patch(
+                "onyx.chat.llm_loop.run_llm_step", return_value=(step_result, False)
+            ) as step,
+        ):
+            run_llm_loop(
+                emitter=Mock(),
+                state_container=Mock(),
+                simple_chat_history=[
+                    create_message("Find the thing", MessageType.USER, 10)
+                ],
+                tools=[tool],
+                custom_agent_prompt=None,
+                context_files=create_context_files(),
+                persona=None,
+                user_memory_context=None,
+                llm=llm,
+                token_counter=lambda s: max(1, len(s) // 4),
+            )
+        return step
+
+    def test_forced_cycle_keeps_tool_schemas_with_none_choice(self) -> None:
+        """The forced final request carries the full tool definitions with
+        tool_choice=none — not an empty tools array, which would change the
+        prompt head and invalidate the cached prefix."""
+        tool = _FakeLoopTool("fake_search")
+        step = self._run_single_forced_cycle(
+            LlmStepResult(
+                reasoning=None,
+                answer="Here is the final answer.",
+                tool_calls=None,
+            ),
+            tool,
+        )
+
+        assert step.call_args_list[0].kwargs["tool_choice"] == ToolChoiceOptions.NONE
+        assert step.call_args_list[0].kwargs["tool_definitions"] == [
+            tool.tool_definition()
+        ]
+
+    def test_forced_cycle_drops_emitted_tool_calls_without_running_them(self) -> None:
+        """A model that still tries to call tools on the forced cycle gets its
+        calls dropped, not executed, and its narration is kept as the answer."""
+
+        class SpyTool(_FakeLoopTool):
+            run_count = 0
+
+            def run(
+                self,
+                placement: Placement,  # noqa: ARG002
+                override_kwargs: Any = None,  # noqa: ARG002
+                **llm_kwargs: Any,  # noqa: ARG002
+            ) -> ToolResponse:
+                type(self).run_count += 1
+                return super().run(placement, override_kwargs, **llm_kwargs)
+
+        spy = SpyTool("fake_search")
+        # Must not raise: the cycle counts as answered.
+        self._run_single_forced_cycle(
+            LlmStepResult(
+                reasoning=None,
+                answer="Here is the final answer.",
+                tool_calls=[_kickoff("call_1", "fake_search")],
+            ),
+            spy,
+        )
+
+        assert SpyTool.run_count == 0

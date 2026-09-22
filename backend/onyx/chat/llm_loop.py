@@ -1130,6 +1130,7 @@ def run_llm_loop(
         for llm_cycle_count in range(MAX_LLM_CYCLES):
             # Handling tool calls based on cycle count and past cycle conditions
             out_of_cycles = llm_cycle_count == MAX_LLM_CYCLES - 1
+            forced_final_answer = out_of_cycles or ran_image_gen
             if forced_tool_id:
                 # Needs to be just the single one because the "required" currently doesn't have a specified tool, just a binary
                 final_tools = [tool for tool in tools if tool.id == forced_tool_id]
@@ -1137,10 +1138,15 @@ def run_llm_loop(
                     raise ValueError(f"Tool {forced_tool_id} not found in tools")
                 tool_choice = ToolChoiceOptions.REQUIRED
                 forced_tool_id = None
-            elif out_of_cycles or ran_image_gen:
-                # Last cycle, no tools allowed, just answer!
+            elif forced_final_answer:
+                # Last cycle: the model must answer, not call tools. The tool
+                # schemas stay in the request with tool_choice=none so the
+                # rendered prompt head (the template-rendered tool block)
+                # stays byte-identical to the earlier cycles and the serving
+                # stack's prompt cache keeps the whole prefix instead of
+                # re-prefilling the turn from scratch.
                 tool_choice = ToolChoiceOptions.NONE
-                final_tools = []
+                final_tools = tools
             else:
                 tool_choice = ToolChoiceOptions.AUTO
                 final_tools = tools
@@ -1358,6 +1364,17 @@ def run_llm_loop(
                 tool_defs=tool_defs,
                 turn_index=llm_cycle_count + reasoning_cycles,
             )
+
+            # The schemas on a forced final answer ride along only to keep the
+            # request prefix cache-stable; they are not an invitation to call
+            # tools. Drop whatever the model still emitted instead of running
+            # it — the results could never reach another cycle anyway.
+            if forced_final_answer and llm_step_result.tool_calls:
+                logger.info(
+                    "Dropping %s tool call(s) emitted on the forced final answer cycle",
+                    len(llm_step_result.tool_calls),
+                )
+                llm_step_result = llm_step_result.model_copy(update={"tool_calls": []})
 
             # Save citation mapping after each LLM step for incremental state updates
             state_container.set_citation_mapping(citation_processor.citation_to_doc)
