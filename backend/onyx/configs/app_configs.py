@@ -1766,6 +1766,26 @@ CODE_INTERPRETER_STAGING_CONCURRENCY = int(
     os.environ.get("CODE_INTERPRETER_STAGING_CONCURRENCY") or 8
 )
 
+# Persistent sandbox sessions (code-interpreter >= 0.5.0). When enabled, each
+# chat gets one long-lived session container: workspace files, installed
+# packages, and /tmp-less state persist across run_python calls and chat turns.
+CODE_INTERPRETER_SESSIONS_ENABLED = (
+    os.environ.get("CODE_INTERPRETER_SESSIONS_ENABLED", "true").lower() != "false"
+)
+
+# Session TTL. Refreshed (keepalive) on every run_python call while the chat
+# is active; the service's TTL reaper is the teardown backstop.
+CODE_INTERPRETER_SESSION_TTL_SECONDS = int(
+    os.environ.get("CODE_INTERPRETER_SESSION_TTL_SECONDS") or 30 * 60
+)
+
+# Cap on generated artifacts kept in memory for re-staging in the legacy
+# (sessionless) path. Oldest entries are evicted first. Session mode does not
+# use this cache — the session workspace holds the files.
+CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS = int(
+    os.environ.get("CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS") or 100
+)
+
 # Whether sandboxed code can reach the network. Mirrors the code-interpreter
 # service's PYTHON_EXECUTOR_DOCKER_NETWORK: the compose default joins the
 # compose network, "none" isolates the sandbox. The run_python tool guidance

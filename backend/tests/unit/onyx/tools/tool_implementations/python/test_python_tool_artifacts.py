@@ -345,3 +345,46 @@ def test_no_vision_model_skips_annotation_but_keeps_replay_bytes() -> None:
     rich = response.rich_response
     assert isinstance(rich, PythonToolRichResponse)
     assert rich.tool_images[0].content == b"png-bytes"
+
+
+# ---------------------------------------------------------------------------
+# Legacy artifact cache is bounded (oldest evicted first)
+# ---------------------------------------------------------------------------
+
+
+def test_artifacts_cache_records_and_overwrites() -> None:
+    tool = _make_tool()
+    tool._record_generated_artifact("a.csv", b"1")
+    tool._record_generated_artifact("b.csv", b"2")
+    # Same filename: newest content wins.
+    tool._record_generated_artifact("a.csv", b"1-updated")
+
+    assert tool._generated_artifacts == {"a.csv": b"1-updated", "b.csv": b"2"}
+
+
+def test_artifacts_cache_evicts_oldest_first() -> None:
+    from onyx.configs.app_configs import CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS
+
+    tool = _make_tool()
+    cap = CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS
+    for i in range(cap + 5):
+        tool._record_generated_artifact(f"file_{i}.bin", bytes([i % 256]))
+
+    assert len(tool._generated_artifacts) == cap
+    # Oldest entries (file_0..file_4) are gone; the newest survive.
+    assert "file_0.bin" not in tool._generated_artifacts
+    assert "file_4.bin" not in tool._generated_artifacts
+    assert f"file_{cap + 4}.bin" in tool._generated_artifacts
+
+
+def test_artifacts_cache_never_exceeds_cap_on_overwrite() -> None:
+    from onyx.configs.app_configs import CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS
+
+    tool = _make_tool()
+    cap = CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS
+    for i in range(cap):
+        tool._record_generated_artifact(f"file_{i}.bin", b"x")
+    # Re-recording an existing name must not grow the cache.
+    tool._record_generated_artifact("file_0.bin", b"y")
+
+    assert len(tool._generated_artifacts) == cap

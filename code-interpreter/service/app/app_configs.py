@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from functools import lru_cache
+
+# Executor backend selection
+EXECUTOR_BACKEND = os.environ.get("EXECUTOR_BACKEND") or "docker"
+
+# Docker executor configuration
+PYTHON_EXECUTOR_DOCKER_BIN = os.environ.get("PYTHON_EXECUTOR_DOCKER_BIN") or "docker"
+PYTHON_EXECUTOR_DOCKER_IMAGE = (
+    os.environ.get("PYTHON_EXECUTOR_DOCKER_IMAGE") or "onyxdotapp/python-executor-sci"
+)
+PYTHON_EXECUTOR_DOCKER_RUN_ARGS = os.environ.get("PYTHON_EXECUTOR_DOCKER_RUN_ARGS") or ""
+# Docker network for spawned executor containers. Defaults to "none" (no network access)
+# for maximum isolation. Set to a Docker network name (e.g. "onyx_default", "traefik")
+# to allow executor containers to reach services on that network.
+PYTHON_EXECUTOR_DOCKER_NETWORK = os.environ.get("PYTHON_EXECUTOR_DOCKER_NETWORK") or "none"
+# How often (seconds) the image watchdog checks that the executor image is still
+# present on the host and re-pulls it if it has gone missing (e.g. after
+# `docker system prune -a`). Executor containers run with `--pull never`, so without
+# this a removed image breaks every execution until the service is restarted. The
+# common case costs one `docker image inspect` per pass. Set to 0 to disable, e.g.
+# on air-gapped hosts that cannot pull and would only pay a registry timeout.
+PYTHON_EXECUTOR_DOCKER_IMAGE_WATCHDOG_INTERVAL_SEC = int(
+    os.environ.get("PYTHON_EXECUTOR_DOCKER_IMAGE_WATCHDOG_INTERVAL_SEC") or 60
+)
+
+# Long-lived session configuration (docker executor)
+# Hard upper bound on a session container's lifetime. The container's idle
+# `sleep` runs for this long and the reaper force-removes sessions past their
+# (possibly extended) expiry, so teardown is guaranteed even if keepalives
+# push a session past its original TTL and this service then crashes.
+SESSION_MAX_LIFETIME_SEC = int(os.environ.get("SESSION_MAX_LIFETIME_SEC") or 24 * 60 * 60)
+# Default network posture for new sessions. "inherit" joins
+# PYTHON_EXECUTOR_DOCKER_NETWORK (whatever the deployment chose); "none"
+# isolates the session. Requests may override per session via
+# network_enabled on CreateSessionRequest.
+SESSION_NETWORK_MODE = (os.environ.get("SESSION_NETWORK_MODE") or "inherit").lower()
+# Optional separate executor image for sessions (e.g. a larger research
+# image). Empty = same image as ephemeral executions.
+SESSION_EXECUTOR_IMAGE = os.environ.get("SESSION_EXECUTOR_IMAGE") or ""
+# Create a per-session virtualenv at /workspace/.venv (system-site-packages)
+# so pip/uv installs persist for the session lifetime.
+SESSION_VENV_ENABLED = (os.environ.get("SESSION_VENV_ENABLED") or "true").lower() not in (
+    "false",
+    "0",
+    "no",
+)
+
+# Kubernetes executor configuration
+KUBERNETES_EXECUTOR_NAMESPACE = os.environ.get("KUBERNETES_EXECUTOR_NAMESPACE") or "default"
+KUBERNETES_EXECUTOR_IMAGE = (
+    os.environ.get("KUBERNETES_EXECUTOR_IMAGE") or "onyxdotapp/python-executor-sci"
+)
+KUBERNETES_EXECUTOR_SERVICE_ACCOUNT = os.environ.get("KUBERNETES_EXECUTOR_SERVICE_ACCOUNT") or ""
+# When true, executor pods run a privileged (NET_ADMIN) init container that uses
+# iptables to drop all outbound traffic before the executor container starts. This
+# avoids the race where a pod can reach the network before the CNI enforces a
+# NetworkPolicy. Environments whose CNI applies NetworkPolicies without that race
+# (or that disallow NET_ADMIN) can set this to false and rely on a NetworkPolicy.
+KUBERNETES_EXECUTOR_NET_ADMIN_LOCKDOWN = (
+    os.environ.get("KUBERNETES_EXECUTOR_NET_ADMIN_LOCKDOWN") or "true"
+).lower() not in ("false", "0", "no")
+# Namespace this service runs in, and the name of the Deployment that owns it.
+# When both are set and the service shares a namespace with its executor pods,
+# executor pods get an ownerReference to that Deployment. This lets Kubernetes
+# garbage-collect leaked pods and lets monitoring tell them apart from
+# long-lived workloads. Requires "get" on apps/deployments.
+KUBERNETES_OWN_NAMESPACE = os.environ.get("KUBERNETES_OWN_NAMESPACE") or ""
+KUBERNETES_OWNER_DEPLOYMENT_NAME = os.environ.get("KUBERNETES_OWNER_DEPLOYMENT_NAME") or ""
+
+# Execution limits
+MAX_EXEC_TIMEOUT_MS = int(os.environ.get("MAX_EXEC_TIMEOUT_MS") or 60_000)
+MAX_OUTPUT_BYTES = int(os.environ.get("MAX_OUTPUT_BYTES") or 1_000_000)
+CPU_TIME_LIMIT_SEC = int(os.environ.get("CPU_TIME_LIMIT_SEC") or 5)
+MEMORY_LIMIT_MB = int(os.environ.get("MEMORY_LIMIT_MB") or 256)
+
+# API server configuration
+HOST = os.environ.get("HOST") or "0.0.0.0"  # noqa: S104
+PORT = int(os.environ.get("PORT") or "8000")
+
+# Logging configuration
+# LOG_LEVEL controls verbosity (e.g. DEBUG, INFO, WARNING).
+# LOG_FORMAT selects the output style: "plain" (default human-readable text) or
+# "json" (structured single-line JSON suitable for container log aggregators).
+LOG_LEVEL = (os.environ.get("LOG_LEVEL") or "INFO").upper()
+LOG_FORMAT = (os.environ.get("LOG_FORMAT") or "plain").lower()
+JSON_LOGGING = LOG_FORMAT == "json"
+
+# File storage configuration
+FILE_STORAGE_DIR = (
+    os.environ.get("FILE_STORAGE_DIR") or "/tmp/code-interpreter-files"  # noqa: S108
+)
+MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB") or 100)
+FILE_TTL_SEC = int(os.environ.get("FILE_TTL_SEC") or 3600)
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    max_exec_timeout_ms: int
+    max_output_bytes: int
+    cpu_time_limit_sec: int
+    memory_limit_mb: int
+    file_storage_dir: str
+    max_file_size_mb: int
+    file_ttl_sec: int
+
+    @staticmethod
+    def from_env() -> Settings:
+        return Settings(
+            max_exec_timeout_ms=MAX_EXEC_TIMEOUT_MS,
+            max_output_bytes=MAX_OUTPUT_BYTES,
+            cpu_time_limit_sec=CPU_TIME_LIMIT_SEC,
+            memory_limit_mb=MEMORY_LIMIT_MB,
+            file_storage_dir=FILE_STORAGE_DIR,
+            max_file_size_mb=MAX_FILE_SIZE_MB,
+            file_ttl_sec=FILE_TTL_SEC,
+        )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings.from_env()

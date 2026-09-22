@@ -442,18 +442,26 @@ class CodeInterpreterClient:
         self,
         ttl_seconds: int = 15 * 60,
         files: list[FileInput] | None = None,
+        network_enabled: bool | None = None,
+        install_venv: bool = True,
     ) -> CreateSessionResponse:
         """Create a long-lived code-executor session with the given TTL.
 
         The pod is guaranteed to be torn down at or before the TTL expires,
-        even if the API service crashes and restarts.
+        even if the API service crashes and restarts. ``network_enabled`` and
+        ``install_venv`` require code-interpreter >= 0.5.0; on older servers
+        they are silently ignored (extra request fields are dropped).
         """
         url = f"{self.base_url}/v1/sessions"
         payload: dict[str, Any] = {"ttl_seconds": ttl_seconds}
         if files:
             payload["files"] = files
+        if network_enabled is not None:
+            payload["network_enabled"] = network_enabled
+        if install_venv is not True:
+            payload["install_venv"] = install_venv
 
-        response = self.session.post(url, json=payload, timeout=30)
+        response = self.session.post(url, json=payload, timeout=120)
         response.raise_for_status()
 
         return CreateSessionResponse(**response.json())
@@ -486,6 +494,72 @@ class CodeInterpreterClient:
         response.raise_for_status()
 
         return BashExecResponse(**response.json())
+
+    @requires("0.5.0")
+    def execute_python_in_session_streaming(
+        self,
+        session_id: str,
+        code: str,
+        timeout_ms: int = 30000,
+        files: list[FileInput] | None = None,
+    ) -> Generator[StreamEvent, None, None]:
+        """Execute Python inside a session; workspace state persists across calls."""
+        url = f"{self.base_url}/v1/sessions/{session_id}/python/stream"
+        payload = self._build_payload(code, None, timeout_ms, files)
+
+        response = self.session.post(
+            url, json=payload, stream=True, timeout=timeout_ms / 1000 + 30
+        )
+        try:
+            response.raise_for_status()
+            yield from self._parse_sse(response)
+        finally:
+            response.close()
+
+    @requires("0.5.0")
+    def keepalive_session(
+        self, session_id: str, ttl_seconds: int = 15 * 60
+    ) -> CreateSessionResponse:
+        """Extend a session's expiry to now + ttl_seconds."""
+        url = f"{self.base_url}/v1/sessions/{session_id}/keepalive"
+        payload: dict[str, Any] = {"ttl_seconds": ttl_seconds}
+
+        response = self.session.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+
+        return CreateSessionResponse(**response.json())
+
+    @requires("0.5.0")
+    def stage_session_file(
+        self, session_id: str, file_content: bytes, path: str
+    ) -> None:
+        """Stage an additional file into an existing session's workspace."""
+        url = f"{self.base_url}/v1/sessions/{session_id}/files"
+        response = self.session.post(
+            url,
+            params={"path": path},
+            files={"file": (path, file_content)},
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    @requires("0.5.0")
+    def list_session_files(self, session_id: str) -> list[str]:
+        """List workspace file paths of an existing session."""
+        url = f"{self.base_url}/v1/sessions/{session_id}/files"
+        response = self.session.get(url, timeout=30)
+        response.raise_for_status()
+        return [entry["path"] for entry in response.json().get("files", [])]
+
+    @requires("0.5.0")
+    def read_session_file(self, session_id: str, path: str) -> bytes:
+        """Read a single file from an existing session's workspace."""
+        from urllib.parse import quote
+
+        url = f"{self.base_url}/v1/sessions/{session_id}/files/{quote(path)}"
+        response = self.session.get(url, timeout=60)
+        response.raise_for_status()
+        return response.content
 
     def upload_file(self, file_content: bytes, filename: str) -> str:
         """Upload file to Code Interpreter and return file_id"""

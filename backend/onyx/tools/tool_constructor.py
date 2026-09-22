@@ -358,7 +358,16 @@ def _construct_tools_impl(
             # Handle Python/Code Interpreter Tool
             elif tool_cls.__name__ == PythonTool.__name__:
                 tool_dict[db_tool_model.id] = [
-                    PythonTool(tool_id=db_tool_model.id, emitter=emitter)
+                    PythonTool(
+                        tool_id=db_tool_model.id,
+                        emitter=emitter,
+                        chat_session_id=(
+                            str(custom_tool_config.chat_session_id)
+                            if custom_tool_config
+                            and custom_tool_config.chat_session_id is not None
+                            else None
+                        ),
+                    )
                 ]
 
             # Handle Coding Agent Tool

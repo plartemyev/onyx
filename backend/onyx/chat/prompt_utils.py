@@ -3,7 +3,12 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from onyx.configs.app_configs import PYTHON_SANDBOX_NETWORK_ENABLED
+from onyx.configs.app_configs import (
+    CODE_INTERPRETER_BASE_URL,
+    CODE_INTERPRETER_DEFAULT_TIMEOUT_MS,
+    CODE_INTERPRETER_SESSIONS_ENABLED,
+    PYTHON_SANDBOX_NETWORK_ENABLED,
+)
 from onyx.db.enums import SUPPORTED_LANGUAGE_ENGLISH_NAMES, SupportedLanguage
 from onyx.db.memory import UserMemoryContext
 from onyx.db.persona import get_default_behavior_persona
@@ -24,9 +29,11 @@ from onyx.prompts.tool_prompts import (
     INTERNAL_SEARCH_GUIDANCE,
     MEMORY_GUIDANCE,
     OPEN_URLS_GUIDANCE,
-    PYTHON_TOOL_GUIDANCE,
+    PYTHON_TOOL_LEGACY_GUIDANCE,
+    PYTHON_TOOL_LEGACY_NETWORK_GUIDANCE,
     PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE,
     PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE,
+    PYTHON_TOOL_SESSION_GUIDANCE,
     TOOL_DESCRIPTION_SEARCH_GUIDANCE,
     TOOL_SECTION_HEADER,
     WEB_SEARCH_GUIDANCE,
@@ -53,10 +60,16 @@ from onyx.tools.tool_implementations.images.image_generation_tool import (
 )
 from onyx.tools.tool_implementations.memory.memory_tool import MemoryTool
 from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
+from onyx.tools.tool_implementations.python.code_interpreter_client import (
+    CodeInterpreterClient,
+)
 from onyx.tools.tool_implementations.python.python_tool import PythonTool
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
+from onyx.utils.logger import setup_logger
 from onyx.utils.timing import log_function_time
+
+logger = setup_logger()
 
 
 def get_default_base_system_prompt(db_session: Session) -> str:
@@ -256,15 +269,45 @@ def _build_user_information_section(
     return USER_INFORMATION_HEADER + "\n".join(sections)
 
 
+def _python_tool_sessions_available() -> bool:
+    """True when run_python runs in a persistent session sandbox: sessions are
+    enabled and the configured code-interpreter service actually supports them.
+    Uses the client's cached health check, so this costs one HTTP call per TTL
+    window at most."""
+    if not CODE_INTERPRETER_SESSIONS_ENABLED or not CODE_INTERPRETER_BASE_URL:
+        return False
+    try:
+        with CodeInterpreterClient() as client:
+            return client.supports(client.execute_python_in_session_streaming)
+    except Exception:
+        logger.debug("Code interpreter health check failed for prompt guidance")
+        return False
+
+
 def _build_python_tool_guidance() -> str:
-    """run_python guidance whose network section matches the deployment's
-    sandbox configuration (PYTHON_EXECUTOR_DOCKER_NETWORK)."""
-    return PYTHON_TOOL_GUIDANCE.format(
-        network_guidance=(
-            PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE
-            if PYTHON_SANDBOX_NETWORK_ENABLED
-            else PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE
+    """run_python guidance matching the deployment's sandbox capabilities:
+    persistent sessions (code-interpreter >= 0.5.0) vs the sessionless
+    sandbox, and the deployment's network posture."""
+    network_guidance = (
+        PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE
+        if PYTHON_SANDBOX_NETWORK_ENABLED
+        else PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE
+    )
+    template, extra = (
+        (PYTHON_TOOL_SESSION_GUIDANCE, "")
+        if _python_tool_sessions_available()
+        else (
+            PYTHON_TOOL_LEGACY_GUIDANCE,
+            (
+                f" {PYTHON_TOOL_LEGACY_NETWORK_GUIDANCE}"
+                if PYTHON_SANDBOX_NETWORK_ENABLED
+                else ""
+            ),
         )
+    )
+    return template.format(
+        timeout_seconds=CODE_INTERPRETER_DEFAULT_TIMEOUT_MS / 1000,
+        network_guidance=f"{network_guidance}{extra}",
     )
 
 

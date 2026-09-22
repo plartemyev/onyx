@@ -1,0 +1,15 @@
+# Research-grade Python environment for executor containers.
+#
+# Installed into /opt/executor-venv at image build time with uv; the exact
+# resolved set is recorded to /opt/executor-requirements.lock for auditing.
+numpy
+scipy
+pandas
+matplotlib
+pillow
+opencv-python-headless
+librosa
+soundfile
+requests
+httpx
+openpyxl

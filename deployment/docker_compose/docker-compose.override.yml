@@ -1,7 +1,14 @@
 # Local additions merged on top of docker-compose.yml automatically.
 services:
   searxng:
-    image: searxng/searxng:latest
+    # Fork with the masqueraded Chromium fetch pool (outgoing.using_browser).
+    # Engine requests go through a real, fingerprint-masqueraded browser:
+    # no more CAPTCHA walls, wrong-query junk pages or Thai geo-mangling.
+    image: searxng-browser:dev
+    build:
+      # build straight from the fork, no local checkout needed
+      context: https://github.com/plartemyev/searxng.git#feat/browser-masquerade
+      dockerfile: container/browser.dockerfile
     restart: unless-stopped
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
@@ -50,12 +57,58 @@ services:
       # Read at import time — applies on the next api_server restart; turn off
       # (and restart) once evaluation is done, it logs full prompts.
       - LOG_ONYX_MODEL_INTERACTIONS=true
+      # Persistent-session code interpreter (research sandbox). Per-call caps
+      # must match the code-interpreter service's (see its block below).
+      - CODE_INTERPRETER_SESSIONS_ENABLED=true
+      - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
+      - CODE_INTERPRETER_DEFAULT_TIMEOUT_MS=600000
+      - CODE_INTERPRETER_MAX_STAGED_FILES=100
+      - CODE_INTERPRETER_MAX_STAGED_BYTES=524288000
+      - CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS=100
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
-  # processing). Match api_server's slow-inference tolerance.
+  # processing). Match api_server's slow-inference tolerance plus the
+  # code-interpreter session settings used by scheduled chat runs.
   background:
     environment:
       - LLM_SOCKET_READ_TIMEOUT=1200
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
       - MAX_LLM_CYCLES=22
       - MAX_CHUNKS_FED_TO_CHAT=50
+      - CODE_INTERPRETER_SESSIONS_ENABLED=true
+      - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
+      - CODE_INTERPRETER_DEFAULT_TIMEOUT_MS=600000
+      - CODE_INTERPRETER_MAX_STAGED_FILES=100
+      - CODE_INTERPRETER_MAX_STAGED_BYTES=524288000
+      - CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS=100
+
+  # Persistent-session code interpreter: forked service (0.5.0) built from this
+  # repo plus an Arch-based research executor image (pip/uv/poetry, ffmpeg,
+  # librosa). Limits tuned for multi-step download-and-analyze research.
+  code-interpreter:
+    build:
+      context: ../../code-interpreter/service
+    image: code-interpreter:0.5.0-fork
+    # Host-published for external-dependency tests and manual debugging.
+    ports:
+      - "127.0.0.1:18000:8000"
+    environment:
+      # Per-execution caps (user-tuned): 10 min wall clock, 20 min CPU budget,
+      # 4 GB RAM, 500 MB uploads.
+      - MAX_EXEC_TIMEOUT_MS=600000
+      - CPU_TIME_LIMIT_SEC=1200
+      - MEMORY_LIMIT_MB=4000
+      - MAX_FILE_SIZE_MB=500
+      - PYTHON_EXECUTOR_DOCKER_IMAGE=code-interpreter-executor:arch-20260920
+      # Session hard-lifetime cap; per-session TTL comes from the api side.
+      - SESSION_MAX_LIFETIME_SEC=86400
+
+  # Host-published for external-dependency tests (Onyx file store).
+  minio:
+    ports:
+      - "127.0.0.1:19000:9000"
+
+  # Host-published for external-dependency tests (session mapping store).
+  cache:
+    ports:
+      - "127.0.0.1:16379:6379"

@@ -84,10 +84,6 @@ This includes downloading files such as images that the user asks about: fetch t
 If you need to know what an image contains, use the `analyze_image` tool instead — the sandbox cannot view images for you. \
 Always send browser-like headers (a real Chrome User-Agent and an Accept header) with downloads; plain Python requests are often blocked. \
 If a download still fails (403 or another bot-protection error), use the `download_file` tool instead — it fetches with full browser protection and shows the file to the user. \
-The sandbox Python has no pip, and `uv` is not available. Plain `pip install` and `python -m pip` fail. \
-To add a package, install it into a local folder with the system pip and add that folder to `sys.path`: \
-`subprocess.run(["pip", "install", "--no-cache-dir", "--target", "_pylibs", "<package>"], check=True)` then `sys.path.insert(0, "_pylibs")` before the import. \
-Installs do not persist between calls, so put both lines at the top of every script that needs the package, and prefer the preinstalled libraries first. \
 If a network request fails, continue without it.
 """.strip()
 
@@ -95,9 +91,31 @@ PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE = """
 Internet access for this session is disabled. Do not make external web requests, API calls, or package installations as they will fail.
 """.strip()
 
-PYTHON_TOOL_GUIDANCE = """
+# Guidance when the code-interpreter supports persistent sessions: the sandbox
+# keeps its filesystem and venv for the whole chat.
+PYTHON_TOOL_SESSION_GUIDANCE = """
 ## run_python
-Use the `run_python` tool to execute Python code in an isolated sandbox. The tool will respond with the output of the execution or time out after 60.0 seconds.
+Use the `run_python` tool to execute Python code in an isolated sandbox. The tool will respond with the output of the execution or time out after {timeout_seconds:.0f} seconds.
+The sandbox is persistent for this chat: files you write and packages you install stay available in every later call. \
+Build multi-step work across calls — download data in one call, process it in the next; pip install once, import in later calls. \
+Save all state in the current directory (or its subdirectories). Never write to `/tmp`, `/root`, or anywhere outside the working directory: only the working directory persists and is shared with the user. \
+Variables do not persist between calls, so persist any needed intermediate results to files in the current directory.
+The sandbox has pip, uv, and poetry. Install with `pip install <package>` (or `uv pip install <package>`); installs persist for the rest of the chat. \
+You have numpy, scipy, pandas, matplotlib, Pillow, OpenCV, librosa, soundfile, requests, httpx, and openpyxl preinstalled.
+Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
+Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
+Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
+{network_guidance}
+Write chart titles, axis labels, legends, and other text rendered into images in the language you reply in. \
+The sandbox fonts cannot shape Arabic or render CJK glyphs (they come out as disconnected letters or boxes), so for those languages write the rendered text in English and explain the labels in your reply.
+Downscale large images before pixel-level edits or compositing; full-resolution photo edits can exceed the sandbox memory limit.
+""".lstrip()
+
+# Guidance for deployments on a sessionless code-interpreter (< 0.5.0) or with
+# sessions disabled: each call is a fresh sandbox.
+PYTHON_TOOL_LEGACY_GUIDANCE = """
+## run_python
+Use the `run_python` tool to execute Python code in an isolated sandbox. The tool will respond with the output of the execution or time out after {timeout_seconds:.0f} seconds.
 Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
 The current directory in the file system can be used to save and persist user files. Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
 Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
@@ -107,9 +125,17 @@ Write chart titles, axis labels, legends, and other text rendered into images in
 The sandbox fonts cannot shape Arabic or render CJK glyphs (they come out as disconnected letters or boxes), so for those languages write the rendered text in English and explain the labels in your reply.
 Downscale large images before pixel-level edits or compositing; full-resolution photo edits can exceed the sandbox memory limit.
 IMPORTANT: each call to this tool runs in a fresh sandbox. Variables, imports, and installed packages from previous calls will NOT be available. \
-Files written by a previous call ARE available in later calls by filename, so multi-step work can build across calls (up to per-execution limits). \
+Do not write files to `/tmp` or anywhere outside the current directory: they are lost between calls. \
+Files written to the current directory by a previous call ARE available in later calls by filename, so multi-step work can build across calls (up to per-execution limits). \
 Batching related steps into a single script is still more efficient than many small calls.
 """.lstrip()
+
+PYTHON_TOOL_LEGACY_NETWORK_GUIDANCE = """
+The sandbox Python has no pip, and `uv` is not available. Plain `pip install` and `python -m pip` fail. \
+To add a package, install it into a local folder with the system pip and add that folder to `sys.path`: \
+`subprocess.run(["pip", "install", "--no-cache-dir", "--target", "_pylibs", "<package>"], check=True)` then `sys.path.insert(0, "_pylibs")` before the import. \
+Installs do not persist between calls, so put both lines at the top of every script that needs the package, and prefer the preinstalled libraries first. \
+""".strip()
 
 GENERATE_IMAGE_GUIDANCE = """
 ## generate_image
