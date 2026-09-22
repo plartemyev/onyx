@@ -4900,6 +4900,39 @@ class FileContent(Base):
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
 
+class ImageCaptionCache(Base):
+    """Cached vision captions for tool-annotated images.
+
+    The tool flows (download_file, analyze_image, run_python) caption images
+    with the vision model on every appearance. The same bytes reappear across
+    agent cycles, retries, and turns; this table lets the annotation reuse the
+    stored caption instead of paying the vision call again. Keyed by image
+    content, model, and prompt, so a caption is only reused when it would be
+    identical anyway."""
+
+    __tablename__ = "image_caption_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # sha256 hex of the raw image bytes
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_name: Mapped[str] = mapped_column(String, nullable=False)
+    # sha256 hex of the system prompt + question the caption answers
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    caption: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "content_hash",
+            "model_name",
+            "prompt_hash",
+            name="uq_image_caption_cache_key",
+        ),
+    )
+
+
 class Skill(Base):
     """A built-in or custom skill.
 

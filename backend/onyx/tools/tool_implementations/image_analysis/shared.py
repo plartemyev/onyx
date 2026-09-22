@@ -8,6 +8,12 @@ images it cannot view directly.
 
 from onyx.configs.chat_configs import IMAGE_SUMMARIZATION_TIMEOUT
 from onyx.configs.llm_configs import get_image_extraction_and_analysis_enabled
+from onyx.db.image_caption import (
+    get_cached_image_caption,
+    image_caption_content_hash,
+    image_caption_prompt_hash,
+    store_image_caption,
+)
 from onyx.file_processing.image_summarization import (
     UnsupportedImageFormatError,
     summarize_image_pipeline,
@@ -47,9 +53,27 @@ def annotate_image(
     """Describe one image with the vision LLM.
 
     When `question` is given, the description focuses on answering it.
+    Identical (bytes, model, prompt) triples reuse the stored caption instead
+    of paying the vision call again — the same image reappears across agent
+    cycles, retries, and turns. Cache problems never fail the annotation.
     Returns None on failure — a missing caption must never fail the tool."""
+    content_hash = image_caption_content_hash(image_data)
+    prompt_hash = image_caption_prompt_hash(
+        AGENT_IMAGE_ANNOTATION_SYSTEM_PROMPT, question
+    )
+    model_name = llm.config.model_name
+
     try:
-        return summarize_image_pipeline(
+        cached = get_cached_image_caption(content_hash, model_name, prompt_hash)
+    except Exception:
+        logger.exception("Caption cache lookup failed for %s", context_name)
+        cached = None
+    if cached is not None:
+        logger.debug("Reusing stored caption for %s", context_name)
+        return cached
+
+    try:
+        caption = summarize_image_pipeline(
             llm,
             image_data,
             query=question,
@@ -63,6 +87,12 @@ def annotate_image(
     except Exception:
         logger.exception("Image annotation failed for %s", context_name)
         return None
+
+    try:
+        store_image_caption(content_hash, model_name, prompt_hash, caption)
+    except Exception:
+        logger.exception("Failed to store caption for %s", context_name)
+    return caption
 
 
 def annotate_images_in_parallel(
