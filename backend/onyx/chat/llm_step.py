@@ -1435,7 +1435,9 @@ def run_llm_step_pkt_generator(
     has_reasoned = False
 
     if LOG_ONYX_MODEL_INTERACTIONS and current_turn_persists_content():
-        logger.debug(
+        # INFO, not DEBUG: the flag is the opt-in switch, and the default log
+        # level is INFO — at DEBUG these dumps never reach any log file.
+        logger.info(
             "Message history:\n%s",
             _format_message_history_for_logging(llm_msg_history),
         )
@@ -1828,17 +1830,17 @@ def run_llm_step_pkt_generator(
     # Note: Content (AgentResponseDelta) doesn't need an explicit end packet - OverallStop handles it
     # Tool calls are handled by tool execution code and emit their own packets (e.g., SectionEnd)
     if LOG_ONYX_MODEL_INTERACTIONS and current_turn_persists_content():
-        logger.debug("Accumulated reasoning: %s", accumulated_reasoning)
-        logger.debug("Accumulated answer: %s", accumulated_answer)
+        logger.info("Accumulated reasoning: %s", accumulated_reasoning)
+        logger.info("Accumulated answer: %s", accumulated_answer)
 
         if tool_calls:
             tool_calls_str = "\n".join(
                 f"  - {tc.tool_name}: {json.dumps(tc.tool_args, indent=4)}"
                 for tc in tool_calls
             )
-            logger.debug("Tool calls:\n%s", tool_calls_str)
+            logger.info("Tool calls:\n%s", tool_calls_str)
         else:
-            logger.debug("Tool calls: []")
+            logger.info("Tool calls: []")
 
     if actionable_chunk_count == 0:
         logger.warning(

@@ -29,9 +29,14 @@ route. This fork makes them a real research environment:
 - `GET /v1/sessions/{id}/files[/{path}]` — list the workspace / read a file.
 - Session workspaces are **named volumes** (not tmpfs), owned by the
   execution user, so files persist across executions.
-- A per-session **venv** is created at `/workspace/.venv`
-  (`--system-site-packages`, pip bootstrapped) and put first on PATH, so plain
-  `pip install` inside session code lands on the workspace volume.
+- A per-session **venv** is created at `/workspace/.venv` (pip bootstrapped) and
+  put first on PATH, so plain `pip install` inside session code lands on the
+  workspace volume. The image's baked stack (`/opt/executor-venv`) is injected
+  via a `.pth` file in the session site-packages — a plain
+  `--system-site-packages` child would NOT see it, because a venv created from
+  a venv resolves "system site" from the real base prefix (`/usr`), not from
+  the parent venv. The `.pth` path is appended after the session site-packages,
+  so session installs override baked packages.
 - Expiry lives in a file inside the workspace (docker labels are immutable),
   so keepalives survive service restarts. `SESSION_MAX_LIFETIME_SEC` bounds
   the container's idle sleep, guaranteeing teardown even if this service dies.

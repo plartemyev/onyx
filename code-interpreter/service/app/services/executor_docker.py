@@ -551,14 +551,25 @@ class DockerExecutor(BaseExecutor):
         return PYTHON_EXECUTOR_DOCKER_NETWORK
 
     def _install_session_venv(self, container_name: str) -> None:
-        """Create /workspace/.venv (system-site-packages) and bootstrap pip.
+        """Create /workspace/.venv and bootstrap pip.
 
+        The venv is created from the image's `python3`, which is itself a venv
+        (`/opt/executor-venv`) holding the baked package stack. A plain
+        `--system-site-packages` child would resolve "system site" from the
+        real base prefix (/usr) and NOT see the baked stack, so the parent
+        venv's purelib is injected with a .pth file instead — appended after
+        the session site-packages, keeping session installs authoritative.
         Best-effort: a failure (e.g. an executor image without the venv
         module) degrades to system-python execution and is logged.
         """
         venv_cmd = (
-            "python3 -m venv --system-site-packages /workspace/.venv"
+            "python3 -m venv /workspace/.venv"
             " && /workspace/.venv/bin/python -m ensurepip --upgrade"
+            " && PARENT_PURELIB=$(python3 -c"
+            " 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])')"
+            " && SESSION_PURELIB=$(/workspace/.venv/bin/python -c"
+            " 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])')"
+            ' && echo "$PARENT_PURELIB" > "$SESSION_PURELIB/_onyx_baked.pth"'
         )
         result = subprocess.run(  # nosec B603
             [
