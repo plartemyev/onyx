@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -7,7 +9,11 @@ from urllib.parse import urlparse
 
 import requests
 
-from onyx.configs.app_configs import OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED
+from onyx.configs.app_configs import (
+    OPEN_URL_FETCH_MODE,
+    OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED,
+    WEB_CRAWLER_USER_AGENT,
+)
 from onyx.file_processing.html_utils import (
     ParsedHTML,
     extract_image_urls,
@@ -30,7 +36,7 @@ from onyx.utils.playwright_fetch import (
     fetch_rendered_html,
     looks_like_cloudflare_challenge,
 )
-from onyx.utils.request_pacer import Pacer, get_default_pacer
+from onyx.utils.request_pacer import Pacer, get_default_pacer, provider_key
 from onyx.utils.url import SSRFException, ssrf_safe_get
 from onyx.utils.web_content import (
     decode_html_bytes,
@@ -42,9 +48,19 @@ from onyx.utils.web_content import (
 
 logger = setup_logger()
 
+# Fetch strategies for OnyxWebCrawler. "auto" keeps the Python-requests fast
+# path (with the browser as fallback); "playwright" routes every fetch through
+# the real browser. See OPEN_URL_FETCH_MODE.
+FETCH_MODE_AUTO = "auto"
+FETCH_MODE_PLAYWRIGHT = "playwright"
+_FETCH_MODES = (FETCH_MODE_AUTO, FETCH_MODE_PLAYWRIGHT)
+
 DEFAULT_READ_TIMEOUT_SECONDS = 15
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
-DEFAULT_USER_AGENT = "OnyxWebCrawler/1.0 (+https://www.onyx.app)"
+# Browser-consistent UA for the Python-requests fast path (see
+# WEB_CRAWLER_USER_AGENT). The old crawler-branded UA was an instant bot
+# signal that poisoned the IP's reputation with antibot services.
+DEFAULT_USER_AGENT = WEB_CRAWLER_USER_AGENT
 DEFAULT_MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 DEFAULT_MAX_HTML_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 DEFAULT_MAX_DOWNLOAD_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -99,6 +115,36 @@ def _failed_result(url: str, failure_reason: str | None = None) -> WebContent:
         scrape_successful=False,
         failure_reason=failure_reason,
     )
+
+
+# Known-challenger memory: providers that recently served a bot challenge
+# (Cloudflare interstitial, Reddit's network-security block, ...) to the
+# Python-requests fast path. Those blocks are TLS-fingerprint-driven, so
+# retrying requests against them is guaranteed to fail again — and every
+# doomed attempt costs IP reputation with the antibot service. Within the
+# TTL window we skip the fast path for such providers and go straight to
+# the real-browser fetch.
+_CHALLENGER_TTL_SECONDS = 1800.0
+_challenger_last_seen: dict[str, float] = {}
+_challenger_lock = threading.Lock()
+
+
+def _remember_challenger(url: str) -> None:
+    with _challenger_lock:
+        _challenger_last_seen[provider_key(url)] = time.monotonic()
+
+
+def _is_known_challenger(url: str) -> bool:
+    key = provider_key(url)
+    with _challenger_lock:
+        seen = _challenger_last_seen.get(key)
+    if seen is None:
+        return False
+    if time.monotonic() - seen > _CHALLENGER_TTL_SECONDS:
+        with _challenger_lock:
+            _challenger_last_seen.pop(key, None)
+        return False
+    return True
 
 
 @dataclass
@@ -203,19 +249,16 @@ def should_try_playwright_fallback(response: requests.Response) -> bool:
     )
 
 
-def failure_reason_for_status(response: requests.Response, has_cf_signals: bool) -> str:
+def failure_reason_for_status(status_code: int) -> str:
     """Pick the LLM-facing failure reason for a 4xx/5xx upstream response.
 
-    Only labels failures as Cloudflare when the response actually carries
-    CF-specific headers — bare 403s without those headers are far more
-    often auth walls or access-restricted resources, and labelling them
-    "Cloudflare" sends the LLM and the admin chasing the wrong fix.
+    A bare 403 without Cloudflare evidence is far more often an auth wall
+    or an access-restricted resource than a bot challenge, so it gets the
+    generic 403 reason instead of the Cloudflare one.
     """
-    if has_cf_signals:
-        return FailureReason.CLOUDFLARE_CHALLENGE
-    if response.status_code == 403:
+    if status_code == 403:
         return FailureReason.HTTP_403_BLOCKED
-    return FailureReason.http_status(response.status_code)
+    return FailureReason.http_status(status_code)
 
 
 def _parse_html_to_web_content(url: str, html: str) -> WebContent:
@@ -249,14 +292,21 @@ def _parse_html_to_web_content(url: str, html: str) -> WebContent:
 
 class OnyxWebCrawler(WebContentProvider):
     """
-    Lightweight built-in crawler that fetches HTML directly and extracts readable text.
-    Acts as the default content provider when no external crawler (e.g. Firecrawl) is
-    configured.
+    Built-in crawler that fetches web content and extracts readable text.
+    Acts as the default content provider when no external crawler (e.g. Firecrawl)
+    is configured.
 
-    On a Cloudflare/bot-challenge response (canonical entry point: HTTP 403,
-    or any response carrying a `cf-ray` / `cf-mitigated` header), falls back
-    to a one-shot headless-browser fetch via `playwright_fetch`. Controlled
-    by the `OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED` flag.
+    Two fetch strategies (OPEN_URL_FETCH_MODE / `fetch_mode`):
+
+    - "auto" (default): a Python-requests fast path with browser-consistent
+      headers tries first. On trouble it falls back to a real-browser fetch
+      via `playwright_fetch`: Cloudflare/bot-challenge responses (HTTP 403,
+      `cf-ray` / `cf-mitigated` headers), providers remembered from earlier
+      challenges, and unparseable 200 bodies (Reddit-style JS shells). The
+      fallback is controlled by `OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED`.
+
+    - "playwright": every fetch goes through the real browser — no requests
+      attempt at all. Maximum stealth for TLS-fingerprint-driven bot walls.
     """
 
     def __init__(
@@ -268,23 +318,26 @@ class OnyxWebCrawler(WebContentProvider):
         max_pdf_size_bytes: int | None = None,
         max_html_size_bytes: int | None = None,
         playwright_fallback_enabled: bool = OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED,
+        fetch_mode: str = OPEN_URL_FETCH_MODE,
         validate_ssrf: bool | None = None,
         pacer: Pacer | None = None,
     ) -> None:
+        if fetch_mode not in _FETCH_MODES:
+            raise ValueError(
+                f"fetch_mode must be one of {_FETCH_MODES}, got '{fetch_mode}'"
+            )
         self._read_timeout_seconds = timeout_seconds
         self._connect_timeout_seconds = connect_timeout_seconds
         self._max_pdf_size_bytes = max_pdf_size_bytes
         self._max_html_size_bytes = max_html_size_bytes
         self._playwright_fallback_enabled = playwright_fallback_enabled
+        self._fetch_mode = fetch_mode
         # None => resolve from the admin SSRF Protection setting per fetch (see
         # _should_validate_ssrf); a non-None caller value pins it.
         self._validate_ssrf_override = validate_ssrf
         # Shared by default so every crawler in the process paces jointly.
         self._pacer = pacer if pacer is not None else get_default_pacer()
-        self._headers = {
-            "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
+        self._headers = {**DEFAULT_HEADERS, "User-Agent": user_agent}
 
     def _should_validate_ssrf(self) -> bool:
         """Whether to enforce SSRF validation for this fetch. Resolved per
@@ -296,6 +349,36 @@ class OnyxWebCrawler(WebContentProvider):
             return self._validate_ssrf_override
         return not outbound_allow_private_network(
             get_security_settings().ssrf_protection_level
+        )
+
+    def _ssrf_safe_get_with_retry(
+        self, url: str, headers: dict[str, str] | None = None
+    ) -> requests.Response:
+        """Fast-path GET with one retry on transient network failures
+        (connection resets, DNS hiccups — residential links see these).
+        The retry is paced like any other same-provider request.
+        """
+        try:
+            return self._ssrf_safe_get(url, headers)
+        except SSRFException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Fast-path fetch of %s failed once (%s); retrying",
+                url,
+                exc.__class__.__name__,
+            )
+        self._pacer.pace(url)
+        return self._ssrf_safe_get(url, headers)
+
+    def _ssrf_safe_get(
+        self, url: str, headers: dict[str, str] | None = None
+    ) -> requests.Response:
+        return ssrf_safe_get(
+            url,
+            headers=headers if headers is not None else self._headers,
+            timeout=(self._connect_timeout_seconds, self._read_timeout_seconds),
+            allow_private_network=not self._should_validate_ssrf(),
         )
 
     def contents(self, urls: Sequence[str]) -> list[WebContent]:
@@ -320,13 +403,85 @@ class OnyxWebCrawler(WebContentProvider):
 
     def _fetch_url(self, url: str) -> WebContent:
         self._pacer.pace(url)
-        try:
-            response = ssrf_safe_get(
+        if self._fetch_mode == FETCH_MODE_PLAYWRIGHT:
+            return self._fetch_url_via_browser(url)
+        return self._fetch_url_requests_then_browser(url)
+
+    def _fetch_url_via_browser(self, url: str) -> WebContent:
+        """Browser-only page fetch (OPEN_URL_FETCH_MODE=playwright).
+
+        Renders the page first (post-JS DOM — bot-walls and SPAs resolve like
+        in a real browser), then falls back to a fetch-style bytes read for
+        resources a renderer cannot represent (PDF, plain text).
+        """
+        rendered: RenderedPage | None = fetch_rendered_html(
+            url, allow_private_network=not self._should_validate_ssrf()
+        )
+        if rendered is None:
+            return _failed_result(url, FailureReason.NETWORK_ERROR)
+
+        if (
+            self._max_html_size_bytes is not None
+            and len(rendered.html) > self._max_html_size_bytes
+        ):
+            logger.warning(
+                "Rendered HTML too large (%d chars) for %s, max is %d",
+                len(rendered.html),
                 url,
-                headers=self._headers,
-                timeout=(self._connect_timeout_seconds, self._read_timeout_seconds),
-                allow_private_network=not self._should_validate_ssrf(),
+                self._max_html_size_bytes,
             )
+            return _failed_result(url, FailureReason.OVERSIZED_HTML)
+
+        if looks_like_cloudflare_challenge(rendered.html):
+            logger.info(
+                "Browser fetch of %s landed on the Cloudflare challenge page; "
+                "treating as Cloudflare failure",
+                url,
+            )
+            return _failed_result(url, FailureReason.CLOUDFLARE_CHALLENGE)
+
+        result = _parse_html_to_web_content(url, rendered.html)
+        if result.scrape_successful:
+            return result
+
+        if rendered.status is not None and rendered.status >= 400:
+            return _failed_result(url, failure_reason_for_status(rendered.status))
+
+        # The renderer drew nothing readable: the URL may be a non-HTML
+        # resource (PDF, plain text) that Chromium shows in a viewer shell.
+        # Read the raw bytes fetch-style and handle the non-HTML cases.
+        downloaded = fetch_content_bytes(
+            url, allow_private_network=not self._should_validate_ssrf()
+        )
+        if downloaded is not None:
+            content_type = primary_content_type(downloaded.content_type) or ""
+            if is_pdf_resource(url, content_type, downloaded.content[:1024]):
+                return self._handle_pdf_response(url, downloaded.content)
+            if content_type.startswith("text/"):
+                try:
+                    decoded = decode_html_bytes(
+                        downloaded.content, content_type=content_type
+                    )
+                except Exception:
+                    decoded = None
+                if decoded:
+                    text_result = _parse_html_to_web_content(url, decoded)
+                    if text_result.scrape_successful:
+                        return text_result
+        return result
+
+    def _fetch_url_requests_then_browser(self, url: str) -> WebContent:
+        """Default 'auto' strategy: requests fast path first, browser on trouble."""
+        # Known challenge-heavy provider: skip the doomed requests attempt and
+        # go straight to the real-browser fetch.
+        if self._playwright_fallback_enabled and _is_known_challenger(url):
+            logger.info("Skipping requests fast path for known challenger %s", url)
+            fallback = self._fetch_via_playwright(url)
+            if fallback is not None:
+                return fallback
+            return _failed_result(url, FailureReason.CLOUDFLARE_CHALLENGE)
+        try:
+            response = self._ssrf_safe_get_with_retry(url)
         except SSRFException as exc:
             logger.error(
                 "SSRF protection blocked request to %s (%s)",
@@ -359,6 +514,9 @@ class OnyxWebCrawler(WebContentProvider):
             )
 
             if try_fallback:
+                # The fast path was challenge-blocked; remember it so later
+                # fetches skip straight to the browser.
+                _remember_challenger(url)
                 logger.info(
                     "Onyx crawler got %s for %s; retrying via Playwright "
                     "(cf_signals=%s)",
@@ -375,7 +533,10 @@ class OnyxWebCrawler(WebContentProvider):
 
             logger.warning("Onyx crawler received %s for %s", response.status_code, url)
             return _failed_result(
-                url, failure_reason_for_status(response, has_cf_signals)
+                url,
+                FailureReason.CLOUDFLARE_CHALLENGE
+                if has_cf_signals
+                else failure_reason_for_status(response.status_code),
             )
 
         content_type = response.headers.get("Content-Type", "")
@@ -409,7 +570,20 @@ class OnyxWebCrawler(WebContentProvider):
             )
             return _failed_result(url, FailureReason.DECODE_ERROR)
 
-        return _parse_html_to_web_content(url, decoded_html)
+        result = _parse_html_to_web_content(url, decoded_html)
+        if result.scrape_successful or not self._playwright_fallback_enabled:
+            return result
+        # Some bot-walls (e.g. Reddit) answer non-browser TLS with HTTP 200
+        # and a JS-only shell: no error status triggers the fallback, but
+        # there is nothing readable either. Try a real-browser render.
+        logger.info(
+            "Onyx crawler got an unparseable body for %s; retrying via Playwright",
+            url,
+        )
+        fallback = self._fetch_via_playwright(url)
+        if fallback is not None and fallback.scrape_successful:
+            return fallback
+        return result
 
     def _handle_pdf_response(self, url: str, content: bytes) -> WebContent:
         if (
@@ -443,12 +617,17 @@ class OnyxWebCrawler(WebContentProvider):
     ) -> FetchedFile | FailedFetch:
         """Download binary content for a URL with bot-protection fallbacks.
 
-        Fast path: SSRF-safe GET with browser-like headers — navigation-style
-        for page-like URLs, `<img>`-style for image URLs (image CDNs like
-        imgur and reddit redirect navigation requests for direct image URLs
-        to their HTML viewer pages). On 403 / Cloudflare signals (or any
-        fallback-worthy 4xx), retries via a one-shot headless Chromium fetch
-        that inherits the browser's TLS fingerprint, User-Agent, and cookies.
+        "auto" mode: SSRF-safe GET with browser-like headers first —
+        navigation-style for page-like URLs, `<img>`-style for image URLs
+        (image CDNs like imgur and reddit redirect navigation requests for
+        direct image URLs to their HTML viewer pages). On 403 / Cloudflare
+        signals (or any fallback-worthy 4xx), retries through the pooled
+        real-browser fetch, which carries the browser's TLS fingerprint,
+        User-Agent, and cookies.
+
+        "playwright" mode: everything goes through the pooled real-browser
+        fetch directly (fetch-style `context.request.get` with a page
+        warm-up retry on challenges).
 
         Returns:
             FetchedFile on success. FailedFetch with an LLM-facing reason
@@ -459,15 +638,31 @@ class OnyxWebCrawler(WebContentProvider):
         # for direct image URLs to their HTML viewer pages, which this method
         # rejects as HTML_NOT_FILE. Fetch image-like URLs the way a browser
         # <img> load does; those CDNs serve the bytes for that.
-        headers = IMAGE_FETCH_HEADERS if looks_like_image_url(url) else DEFAULT_HEADERS
         self._pacer.pace(url)
-        try:
-            response = ssrf_safe_get(
-                url,
-                headers=headers,
-                timeout=(self._connect_timeout_seconds, self._read_timeout_seconds),
-                allow_private_network=not self._should_validate_ssrf(),
+        if self._fetch_mode == FETCH_MODE_PLAYWRIGHT:
+            result = self._download_via_playwright(
+                url, max_file_size_bytes=max_file_size_bytes
             )
+            if result is None:
+                # The browser fetch failed entirely (navigation hard-errored).
+                return FailedFetch(url=url, failure_reason=FailureReason.NETWORK_ERROR)
+            return result
+        # Known challenge-heavy provider: the requests attempt would be
+        # TLS-fingerprint-blocked again; fetch through the real browser.
+        if self._playwright_fallback_enabled and _is_known_challenger(url):
+            logger.info("Skipping requests fast path for known challenger %s", url)
+            fallback = self._download_via_playwright(
+                url, max_file_size_bytes=max_file_size_bytes
+            )
+            if fallback is not None:
+                return fallback
+            return FailedFetch(
+                url=url, failure_reason=FailureReason.CLOUDFLARE_CHALLENGE
+            )
+
+        headers = IMAGE_FETCH_HEADERS if looks_like_image_url(url) else DEFAULT_HEADERS
+        try:
+            response = self._ssrf_safe_get_with_retry(url, headers=headers)
         except SSRFException:
             logger.error("SSRF protection blocked download of %s", url)
             return FailedFetch(url=url, failure_reason=FailureReason.SSRF_BLOCKED)
@@ -487,6 +682,8 @@ class OnyxWebCrawler(WebContentProvider):
                 should_try_playwright_fallback(response)
             )
             if try_fallback:
+                # Fast path was challenge-blocked; remember the provider.
+                _remember_challenger(url)
                 logger.info(
                     "Download got HTTP %s for %s; retrying via Playwright",
                     response.status_code,
@@ -499,7 +696,9 @@ class OnyxWebCrawler(WebContentProvider):
                     return fallback
             return FailedFetch(
                 url=url,
-                failure_reason=failure_reason_for_status(response, has_cf_signals),
+                failure_reason=FailureReason.CLOUDFLARE_CHALLENGE
+                if has_cf_signals
+                else failure_reason_for_status(response.status_code),
             )
 
         if len(content) > max_file_size_bytes:
@@ -555,6 +754,8 @@ class OnyxWebCrawler(WebContentProvider):
         """One-shot headless-Chromium binary fetch. Returns None when the
         fallback gave no new information (caller keeps its status-based reason).
         """
+        # The browser fetch is a fresh request to the same provider, made
+        # seconds after the fast-path attempt — pace it separately.
         self._pacer.pace(url)
         rendered_content: DownloadedContent | None = fetch_content_bytes(
             url, allow_private_network=not self._should_validate_ssrf()
@@ -573,6 +774,7 @@ class OnyxWebCrawler(WebContentProvider):
             # The challenge did not resolve (or the URL genuinely serves HTML).
             snippet = rendered_content.content[:4096].decode("utf-8", errors="ignore")
             if looks_like_cloudflare_challenge(snippet):
+                _remember_challenger(url)
                 return FailedFetch(
                     url=url, failure_reason=FailureReason.CLOUDFLARE_CHALLENGE
                 )
@@ -604,6 +806,8 @@ class OnyxWebCrawler(WebContentProvider):
               or rendered HTML didn't parse to anything). Caller should fall
               back to its own status-based failure reason.
         """
+        # The browser fetch is a fresh request to the same provider, made
+        # seconds after the fast-path attempt — pace it separately.
         self._pacer.pace(url)
         rendered: RenderedPage | None = fetch_rendered_html(
             url, allow_private_network=not self._should_validate_ssrf()
@@ -633,6 +837,7 @@ class OnyxWebCrawler(WebContentProvider):
                 "itself for %s; treating as Cloudflare failure",
                 url,
             )
+            _remember_challenger(url)
             return _failed_result(url, FailureReason.CLOUDFLARE_CHALLENGE)
 
         result = _parse_html_to_web_content(url, rendered.html)

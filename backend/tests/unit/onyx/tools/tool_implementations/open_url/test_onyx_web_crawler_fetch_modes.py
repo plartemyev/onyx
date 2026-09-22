@@ -1,13 +1,16 @@
-"""Tests for OnyxWebCrawler's Playwright fallback on Cloudflare/bot challenges.
+"""Tests for OnyxWebCrawler's fetch strategies.
 
-The fallback is triggered when the fast `requests` path returns a response
-that looks like a Cloudflare challenge (HTTP 403, or any 4xx with `cf-ray`
-/ `cf-mitigated` headers, or `Server: cloudflare`). On hit, we try a
-one-shot headless render and re-parse.
+"auto" mode keeps the Python-requests fast path and falls back to the
+browser on bot challenges (HTTP 403, `cf-ray` / `cf-mitigated` headers,
+`Server: cloudflare`, known-challenger memory, unparseable JS shells).
+
+"playwright" mode routes every fetch through the real browser — no
+requests attempt at all.
 """
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +19,7 @@ import onyx.tools.tool_implementations.open_url.onyx_web_crawler as crawler_modu
 from onyx.tools.tool_implementations.open_url.onyx_web_crawler import (
     FailureReason,
     OnyxWebCrawler,
+    looks_like_cloudflare_challenge,
 )
 from onyx.utils.playwright_fetch import RenderedPage
 from onyx.utils.request_pacer import NullPacer
@@ -28,7 +32,15 @@ def _disable_request_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crawler_module, "get_default_pacer", lambda: NullPacer())
 
 
+@pytest.fixture(autouse=True)
+def _clear_challenger_memory() -> None:
+    """The known-challenger memory is process-global; a 403 test must not
+    flip later tests onto the browser-skip path."""
+    crawler_module._challenger_last_seen.clear()
+
+
 SUCCESS_HTML = "<html><head><title>Real Page</title></head><body><p>Hello world, this is real content from the page after rendering.</p></body></html>"
+JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 16  # JPEG magic bytes + padding
 # Empty rendered page — what we'd get if Playwright navigation produced nothing
 # parseable (e.g. CF challenge hung past our grace period and was never replaced).
 EMPTY_HTML = "<html><body></body></html>"
@@ -403,7 +415,270 @@ def test_bare_403_with_fallback_disabled_yields_generic_403_reason(
 # ---------------------------------------------------------------------------
 
 
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_unparseable_200_body_triggers_playwright_fallback(
+    mock_get: MagicMock, mock_render: MagicMock
+) -> None:
+    """Reddit-style bot-walls answer non-browser TLS with HTTP 200 and a
+    JS-only shell — no 403, nothing readable. The browser render is tried
+    before giving up."""
+    shell_html = b"<html><head></head><body><div id='root'></div></body></html>"
+    mock_get.return_value = _mock_response(status_code=200, content=shell_html)
+    mock_render.return_value = _ok_rendered()
+
+    result = OnyxWebCrawler()._fetch_url("https://example.com/")
+
+    mock_render.assert_called_once()
+    assert result.scrape_successful
+    assert "Hello world" in result.full_content
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_unparseable_200_body_with_failing_render_keeps_original_reason(
+    mock_get: MagicMock, mock_render: MagicMock
+) -> None:
+    """When the browser render also yields nothing, the original honest
+    'unparseable' failure is surfaced (not a Cloudflare claim)."""
+    shell_html = b"<html><head></head><body><div id='root'></div></body></html>"
+    mock_get.return_value = _mock_response(status_code=200, content=shell_html)
+    mock_render.return_value = None
+
+    result = OnyxWebCrawler()._fetch_url("https://example.com/")
+
+    mock_render.assert_called_once()
+    assert not result.scrape_successful
+    assert result.failure_reason == FailureReason.EMPTY_OR_UNPARSEABLE
+
+
+# ---------------------------------------------------------------------------
+# OPEN_URL_FETCH_MODE=playwright: browser-only strategy. No requests attempt
+# at all — pages render first, non-HTML resources fall back to a fetch-style
+# bytes read.
+# ---------------------------------------------------------------------------
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_content_bytes")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_playwright_mode_skips_requests_path(
+    mock_get: MagicMock, mock_render: MagicMock, mock_fetch_bytes: MagicMock
+) -> None:
+    mock_render.return_value = _ok_rendered()
+
+    result = OnyxWebCrawler(fetch_mode="playwright")._fetch_url("https://example.com/")
+
+    mock_get.assert_not_called()
+    mock_fetch_bytes.assert_not_called()
+    assert result.scrape_successful
+    assert "Hello world" in result.full_content
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_content_bytes")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_playwright_mode_download_skips_requests_path(
+    mock_get: MagicMock, mock_render: MagicMock, mock_fetch_bytes: MagicMock
+) -> None:
+    mock_fetch_bytes.return_value = crawler_module.DownloadedContent(
+        content=JPEG_BYTES,
+        final_url="https://example.com/cat.jpg",
+        content_type="image/jpeg",
+        status=200,
+    )
+
+    result = OnyxWebCrawler(fetch_mode="playwright").download_file_bytes(
+        "https://example.com/cat.jpg"
+    )
+
+    mock_get.assert_not_called()
+    mock_render.assert_not_called()
+    assert isinstance(result, crawler_module.FetchedFile)
+    assert result.content == JPEG_BYTES
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_content_bytes")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+def test_playwright_mode_challenge_yields_cloudflare_reason(
+    mock_render: MagicMock, mock_fetch_bytes: MagicMock
+) -> None:
+    mock_render.return_value = RenderedPage(
+        html=CF_CHALLENGE_HTML, final_url="https://example.com/", status=403
+    )
+
+    result = OnyxWebCrawler(fetch_mode="playwright")._fetch_url("https://example.com/")
+
+    mock_fetch_bytes.assert_not_called()
+    assert not result.scrape_successful
+    assert result.failure_reason == FailureReason.CLOUDFLARE_CHALLENGE
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_content_bytes")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+def test_playwright_mode_empty_render_falls_back_to_pdf_bytes(
+    mock_render: MagicMock, mock_fetch_bytes: MagicMock
+) -> None:
+    """A PDF renders as an empty viewer shell; the fetch-style bytes read
+    recovers the document text."""
+    mock_render.return_value = RenderedPage(
+        html="<html><head></head><body></body></html>",
+        final_url="https://example.com/report.pdf",
+        status=200,
+    )
+    pdf_bytes = b"%PDF-1.4 fake pdf content"
+    mock_fetch_bytes.return_value = crawler_module.DownloadedContent(
+        content=pdf_bytes,
+        final_url="https://example.com/report.pdf",
+        content_type="application/pdf",
+        status=200,
+    )
+
+    crawler = OnyxWebCrawler(fetch_mode="playwright")
+    with patch.object(
+        crawler_module,
+        "extract_pdf_text",
+        return_value=("PDF text content", {"Title": "Report"}),
+    ):
+        result = crawler._fetch_url("https://example.com/report.pdf")
+
+    mock_fetch_bytes.assert_called_once()
+    assert result.scrape_successful
+    assert result.full_content == "PDF text content"
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_content_bytes")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+def test_playwright_mode_render_failure_yields_network_error(
+    mock_render: MagicMock, mock_fetch_bytes: MagicMock
+) -> None:
+    mock_render.return_value = None
+
+    result = OnyxWebCrawler(fetch_mode="playwright")._fetch_url("https://example.com/")
+
+    mock_fetch_bytes.assert_not_called()
+    assert not result.scrape_successful
+    assert result.failure_reason == FailureReason.NETWORK_ERROR
+
+
+def test_invalid_fetch_mode_rejected() -> None:
+    with pytest.raises(ValueError):
+        OnyxWebCrawler(fetch_mode="bogus")
+
+
 def test_fetch_rendered_html_is_importable_from_crawler_module() -> None:
     assert hasattr(crawler_module, "fetch_rendered_html")
     assert hasattr(crawler_module, "RenderedPage")
     assert hasattr(crawler_module, "looks_like_cloudflare_challenge")
+
+
+# ---------------------------------------------------------------------------
+# Known-challenger memory: providers that challenge the requests fast path
+# are skipped straight to the browser for a TTL window, because the block is
+# TLS-fingerprint-driven and retrying requests is doomed (and each doomed
+# attempt costs IP reputation).
+# ---------------------------------------------------------------------------
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_known_challenger_skips_requests_fast_path(
+    mock_get: MagicMock, mock_render: MagicMock
+) -> None:
+    mock_get.return_value = _mock_response(status_code=403)
+    mock_render.return_value = _ok_rendered()
+
+    crawler = OnyxWebCrawler()
+    assert crawler._fetch_url("https://example.com/").scrape_successful
+    mock_get.assert_called_once()
+    mock_render.reset_mock()
+    mock_get.reset_mock()
+
+    # The 403 above flagged the provider; the next fetch must not touch
+    # requests at all and should come from the browser render.
+    result = crawler._fetch_url("https://example.com/other")
+
+    mock_get.assert_not_called()
+    mock_render.assert_called_once()
+    assert result.scrape_successful
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_known_challenger_browser_failure_yields_cloudflare_reason(
+    mock_get: MagicMock, mock_render: MagicMock
+) -> None:
+    """A known challenger whose browser fetch also fails is a Cloudflare
+    failure — we know the provider challenges, the browser didn't beat it."""
+    mock_render.return_value = None
+
+    crawler_module._remember_challenger("https://example.com/")
+    result = OnyxWebCrawler()._fetch_url("https://example.com/")
+
+    mock_get.assert_not_called()
+    mock_render.assert_called_once()
+    assert not result.scrape_successful
+    assert result.failure_reason == FailureReason.CLOUDFLARE_CHALLENGE
+
+
+def test_challenger_memory_expires_after_ttl() -> None:
+    crawler_module._remember_challenger("https://example.com/")
+    assert crawler_module._is_known_challenger("https://example.com/")
+
+    provider = crawler_module.provider_key("https://example.com/")
+    crawler_module._challenger_last_seen[provider] = (
+        time.monotonic() - crawler_module._CHALLENGER_TTL_SECONDS - 1
+    )
+    assert not crawler_module._is_known_challenger("https://example.com/")
+    # Expired entries are dropped from memory.
+    assert provider not in crawler_module._challenger_last_seen
+
+
+def test_unflagged_provider_uses_requests_fast_path() -> None:
+    assert not crawler_module._is_known_challenger("https://never-seen.com/")
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare challenge detection precision: the script-src markers
+# (`challenges.cloudflare.com`, `/cdn-cgi/challenge-platform/`) appear on
+# EVERY Cloudflare-proxied page — including ones fetched successfully after
+# the challenge resolved — so they must not be treated as challenge signals.
+# ---------------------------------------------------------------------------
+
+
+def test_challenge_detection_ignores_passed_challenge_script_markers() -> None:
+    """A real page fetched through a passed challenge still references the
+    challenge platform scripts; it must NOT be classified as a challenge."""
+    passed_page_html = (
+        "<html><head><title>KSP memes Megathread - Forum Games!</title></head>"
+        "<body><p>Post content here.</p>"
+        '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page_v1?ray=abc"></script>'
+        "</body></html>"
+    )
+    assert not looks_like_cloudflare_challenge(passed_page_html)
+
+
+def test_challenge_detection_matches_challenge_titles() -> None:
+    for title in (
+        "Just a moment...",
+        "Attention Required! | Cloudflare",
+        "Please Wait... | Cloudflare",
+        "Checking your browser before accessing",
+        "Verifying you are human",
+    ):
+        html = f"<html><head><title>{title}</title></head><body></body></html>"
+        assert looks_like_cloudflare_challenge(html), title
+
+
+def test_challenge_detection_matches_challenge_ui_elements() -> None:
+    html = (
+        "<html><head><title></title></head>"
+        '<body><form id="challenge-form" action="?__cf_chl_rt_tk=...">'
+        '<div class="cf-turnstile"></div></form></body></html>'
+    )
+    assert looks_like_cloudflare_challenge(html)
+
+
+def test_challenge_detection_ignores_normal_page() -> None:
+    assert not looks_like_cloudflare_challenge(SUCCESS_HTML)
+    assert not looks_like_cloudflare_challenge("")

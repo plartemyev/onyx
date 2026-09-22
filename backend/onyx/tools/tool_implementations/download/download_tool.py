@@ -43,8 +43,11 @@ logger = setup_logger()
 
 URLS_FIELD = "urls"
 
-# Per-call cap so one tool call cannot flood the context or the file store
-DOWNLOAD_MAX_URLS = 5
+# Per-call cap so one tool call cannot flood the context or the file store.
+# Models routinely list ~8-10 candidate images per call; 8 keeps that to a
+# single call (the skipped-URLs note drives a second call otherwise) while
+# still bounding response size.
+DOWNLOAD_MAX_URLS = 8
 
 _SANITIZE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 

@@ -26,6 +26,13 @@ def _disable_request_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crawler_module, "get_default_pacer", lambda: NullPacer())
 
 
+@pytest.fixture(autouse=True)
+def _clear_challenger_memory() -> None:
+    """The known-challenger memory is process-global; a challenge-path test
+    must not flip later tests onto the browser-skip path."""
+    crawler_module._challenger_last_seen.clear()
+
+
 class FakeResponse(BaseModel):
     status_code: int
     headers: dict[str, str]
