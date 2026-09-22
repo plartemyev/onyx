@@ -64,7 +64,9 @@ CODE_INTERPRETER_UNSAFE_FILENAME_CHARS = re.compile(r"[\x00-\x1f/\\:\*\?\"<>\|]+
 FILES_NOTICE_TEMPLATE = (
     "Generated files are saved and stay available by filename in later "
     "executions of this session. Image files are displayed to the user in chat; "
-    "embed one in your reply with markdown: ![filename](file_link)."
+    "to show one, embed its exact file_link URL from generated_files as the "
+    "markdown image target, copied verbatim. Never write a placeholder in "
+    "place of the URL."
 )
 
 

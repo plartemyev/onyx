@@ -73,7 +73,7 @@ Very briefly describe the image(s) generated. Do not include any links or attach
 
 FILE_REMINDER = """
 Your code execution generated file(s) with download links.
-If you reference or share these files, use the exact markdown format [filename](file_link) with the file_link from the execution result.
+If you reference or share these files, embed the file's `file_link` URL from the execution result as the markdown link target. Copy the URL exactly as given; do not write a placeholder in its place.
 """.strip()
 
 
