@@ -6,6 +6,10 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from onyx.chat.chat_utils import (
+    dedupe_generated_files_latest_by_filename,
+    file_descriptors_from_generated_files,
+)
 from onyx.chat.citation_utils import extract_citation_order_from_text
 from onyx.coding_agent.mock_tools import CODING_AGENT_QUERY_KEY, CODING_AGENT_REPO_KEY
 from onyx.configs.constants import MessageType
@@ -14,12 +18,13 @@ from onyx.db.chat import (
     get_db_search_doc_by_id,
     translate_db_search_doc_to_saved_search_doc,
 )
-from onyx.db.models import ChatMessage
+from onyx.db.models import ChatMessage, ToolCall
 from onyx.db.tools import get_tool_by_id
 from onyx.deep_research.dr_mock_tools import (
     RESEARCH_AGENT_IN_CODE_ID,
     RESEARCH_AGENT_TASK_KEY,
 )
+from onyx.file_store.models import FileDescriptor
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     AgentResponseDelta,
@@ -441,6 +446,46 @@ def create_memory_packets(
     )
 
     return packets
+
+
+def extract_generated_file_descriptors(
+    tool_calls: list[ToolCall],
+    db_session: Session,
+) -> list[FileDescriptor]:
+    """Recover code interpreter artifacts from stored tool call responses.
+
+    Sessions saved before generated files were attached to messages keep them
+    only inside the tool call response JSON. This surfaces them so the UI can
+    list produced artifacts and serve downloads. Repeated saves of one
+    filename collapse to the newest file id.
+    """
+    generated: list[tuple[str, str]] = []
+    for tool_call in tool_calls:
+        try:
+            tool = get_tool_by_id(tool_call.tool_id, db_session)
+        except Exception:
+            # Tool may have been deleted since the session ran
+            continue
+        if tool.in_code_tool_id != PythonTool.__name__:
+            continue
+        if not tool_call.tool_call_response:
+            continue
+        try:
+            response_data = json.loads(tool_call.tool_call_response)
+        except json.JSONDecodeError:
+            continue
+        for generated_file in response_data.get("generated_files", []):
+            file_link = generated_file.get("file_link", "")
+            filename = generated_file.get("filename")
+            if not file_link or not filename:
+                continue
+            generated.append((filename, file_link.split("/")[-1]))
+
+    if not generated:
+        return []
+
+    deduped = dedupe_generated_files_latest_by_filename(generated)
+    return file_descriptors_from_generated_files(deduped)
 
 
 def create_python_tool_packets(

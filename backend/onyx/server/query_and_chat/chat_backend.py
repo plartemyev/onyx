@@ -138,6 +138,7 @@ from onyx.server.query_and_chat.models import (
     UpdateChatSessionThreadRequest,
 )
 from onyx.server.query_and_chat.session_loading import (
+    extract_generated_file_descriptors,
     translate_assistant_message_to_packets,
 )
 from onyx.server.query_and_chat.streaming_models import Packet, heartbeat_packet
@@ -420,9 +421,21 @@ def get_chat_session(
     )
 
     # Convert messages to ChatMessageDetail format
-    chat_message_details = [
-        translate_db_message_to_chat_message_detail(msg) for msg in session_messages
-    ]
+    chat_message_details = []
+    for msg in session_messages:
+        detail = translate_db_message_to_chat_message_detail(msg)
+        # Sessions saved before generated files were attached to messages
+        # keep their artifacts only inside tool call responses; recover them
+        # so the UI can list and serve downloads.
+        if (
+            msg.message_type == MessageType.ASSISTANT
+            and not detail.files
+            and msg.tool_calls
+        ):
+            detail.files = extract_generated_file_descriptors(
+                msg.tool_calls, db_session
+            )
+        chat_message_details.append(detail)
 
     current_run: CurrentRunInfo | None = None
     try:
