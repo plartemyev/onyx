@@ -1802,6 +1802,13 @@ PYTHON_SANDBOX_NETWORK_ENABLED = (
     os.environ.get("PYTHON_EXECUTOR_DOCKER_NETWORK") or "onyx_default"
 ) != "none"
 
+# Whether the executor image bundles PlantUML (and a JDK to run it). The
+# upstream stock executor does not; the Arch research executor does. Gates the
+# run_python guidance that tells the model to render diagrams locally.
+PYTHON_SANDBOX_PLANTUML = (
+    os.environ.get("PYTHON_SANDBOX_PLANTUML", "").lower() == "true"
+)
+
 # Per-call MCP read timeout; configurable since some tools (e.g. data-agent
 # servers) run longer than the default.
 MCP_TOOL_CALL_TIMEOUT_SECONDS = int(

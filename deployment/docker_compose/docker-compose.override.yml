@@ -89,6 +89,10 @@ services:
       # download_file cap: the old 50 MB default rejected JDK-sized archives
       # that the sandbox itself downloads fine. Bodies stream to a disk spool.
       - BINARY_DOWNLOAD_MAX_SIZE_BYTES=524288000
+      # The Arch research executor bundles PlantUML (+ JDK); the run_python
+      # guidance then tells the model to validate and render .puml diagrams
+      # locally instead of trying to install something.
+      - PYTHON_SANDBOX_PLANTUML=true
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
   # processing). Match api_server's slow-inference tolerance plus the
@@ -107,6 +111,9 @@ services:
       - CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS=100
       - TOOL_EXECUTION_TIMEOUT_SECONDS=240
       - CHAT_TURN_BUDGET_SECONDS=1800
+      # The Arch research executor bundles PlantUML; mention it in run_python
+      # guidance (api_server below and here for scheduled chat runs).
+      - PYTHON_SANDBOX_PLANTUML=true
 
   # Persistent-session code interpreter: forked service (0.5.0) built from this
   # repo plus an Arch-based research executor image (pip/uv/poetry, ffmpeg,

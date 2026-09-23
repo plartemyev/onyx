@@ -8,6 +8,7 @@ from onyx.configs.app_configs import (
     CODE_INTERPRETER_DEFAULT_TIMEOUT_MS,
     CODE_INTERPRETER_SESSIONS_ENABLED,
     PYTHON_SANDBOX_NETWORK_ENABLED,
+    PYTHON_SANDBOX_PLANTUML,
 )
 from onyx.db.enums import SUPPORTED_LANGUAGE_ENGLISH_NAMES, SupportedLanguage
 from onyx.db.memory import UserMemoryContext
@@ -35,6 +36,7 @@ from onyx.prompts.tool_prompts import (
     PYTHON_TOOL_LEGACY_NETWORK_GUIDANCE,
     PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE,
     PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE,
+    PYTHON_TOOL_PLANTUML_GUIDANCE,
     PYTHON_TOOL_SESSION_GUIDANCE,
     PYTHON_TOOL_WORKSPACE_GUIDANCE,
     TOOL_DESCRIPTION_SEARCH_GUIDANCE,
@@ -290,7 +292,8 @@ def _python_tool_sessions_available() -> bool:
 def _build_python_tool_guidance() -> str:
     """run_python guidance matching the deployment's sandbox capabilities:
     persistent sessions (code-interpreter >= 0.5.0) vs the sessionless
-    sandbox, and the deployment's network posture."""
+    sandbox, the deployment's network posture, and whether the executor
+    image bundles PlantUML."""
     network_guidance = (
         PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE
         if PYTHON_SANDBOX_NETWORK_ENABLED
@@ -298,6 +301,13 @@ def _build_python_tool_guidance() -> str:
     )
     download_guidance = (
         PYTHON_TOOL_DOWNLOAD_GUIDANCE if PYTHON_SANDBOX_NETWORK_ENABLED else ""
+    )
+    # Only claim the PlantUML toolchain when the executor actually has it;
+    # the stock upstream executor does not.
+    plantuml_guidance = (
+        PYTHON_TOOL_PLANTUML_GUIDANCE
+        if CODE_INTERPRETER_SESSIONS_ENABLED and PYTHON_SANDBOX_PLANTUML
+        else ""
     )
     template, extra = (
         (PYTHON_TOOL_SESSION_GUIDANCE, "")
@@ -316,6 +326,7 @@ def _build_python_tool_guidance() -> str:
         network_guidance=f"{network_guidance}{extra}",
         download_guidance=download_guidance,
         files_guidance=PYTHON_TOOL_FILES_GUIDANCE,
+        plantuml_guidance=plantuml_guidance,
         # The shared-workspace note only matters when the workspace persists.
         workspace_guidance=(
             PYTHON_TOOL_WORKSPACE_GUIDANCE if _python_tool_sessions_available() else ""

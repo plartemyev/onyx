@@ -50,10 +50,11 @@ It runs with full browser-like request protection, so it succeeds where download
 The URLs must point at the file itself, not a web page containing the file. \
 Never construct a download URL from memory: resolve the exact asset URL first, via the provider's release API (GitHub API `releases/latest`), a search result, or the download link on the release page. \
 A wrong URL returns a web page or a 404 — the failure reason tells you which. \
-At most 5 URLs are downloaded per call; the result tells you if extra URLs were skipped, and you can call the tool again for the rest. \
+At most 8 URLs are downloaded per call; the result tells you if extra URLs were skipped, and you can call the tool again for the rest. \
 Downloaded images are described for you automatically: the result includes an `annotation` for each image, so you normally do not need analyze_image for them. \
 To share a downloaded image in your reply, embed it exactly once with markdown: ![filename](file_url). \
-Never wrap the embed in a link. Link other files as [filename](file_url).
+Never wrap the embed in a link. Link other files as [filename](file_url). \
+This tool is the reliable way to get any file the user should see: sandbox downloads are a fallback, not the default.
 """.lstrip()
 
 
@@ -73,19 +74,23 @@ Images downloaded with download_file already include annotations; call analyze_i
 OPEN_URLS_GUIDANCE = """
 ## open_url
 Use the `open_url` tool to read the content of one or more URLs. Use this tool to access the contents of the most promising web pages from your web searches or user specified URLs. \
+It fetches pages through a real browser pipeline, so it also works where scripted requests are blocked — prefer it over fetching pages from the Python sandbox. \
 You can open many URLs at once by passing multiple URLs in the array if multiple pages seem promising. Prioritize the most promising pages and reputable sources. \
 Do not open URLs that are image files like .png, .jpg, etc. — this tool reads text only. \
 Results may include an `images` field with direct image URLs found on the page. \
-To learn what one of those images shows, use the `analyze_image` tool. To share a web image with the user without analyzing it, download it with the `download_file` or `run_python` tool.
+To learn what one of those images shows, use the `analyze_image` tool. To share a web image with the user without analyzing it, download it with the `download_file` tool and embed the file it returns. \
 You should almost always use open_url after a web_search call. Use this tool when a user asks about a specific provided URL.
 """.lstrip()
 
 PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE = """
 Internet access is available in the sandbox: your code can fetch public URLs and call APIs. \
-This includes downloading files such as images that the user asks about: fetch the bytes and save them in the current directory, and the user gets them in chat. \
-If you need to know what an image contains, use the `analyze_image` tool instead — the sandbox cannot view images for you. \
-Always send browser-like headers (a real Chrome User-Agent and an Accept header) with downloads; plain Python requests are often blocked. \
-If a download still fails (403 or another bot-protection error), use the `download_file` tool instead — it fetches with full browser protection and shows the file to the user. \
+Treat that as the last resort, not the default: most Internet resources employ antibot measures that block scripted requests, while the dedicated tools run with full browser-like protection and countermeasures. \
+To read a web page, use the `open_url` tool instead of fetching it in code. \
+To download a file or image, use the `download_file` tool instead of saving it in code. \
+If you need to know what an image contains, use the `analyze_image` tool — the sandbox cannot view images for you. \
+Reach for sandbox network calls only when those tools cannot do the job: JSON APIs, bulk or paginated programmatic fetches, or requests whose bytes the code must process in flight. \
+Always send browser-like headers (a real Chrome User-Agent and an Accept header) with sandbox requests; plain Python requests are often blocked. \
+If a sandbox request fails with 403 or another bot-protection error, switch to `download_file` or `open_url` — do not retry the same request. \
 If a network request fails, continue without it.
 """.strip()
 
@@ -121,6 +126,17 @@ Keep scratch work (archive extractions, intermediate downloads, extracted trees)
 and copy only the final deliverables to the current directory.
 """.strip()
 
+# Diagrams: the research executor image bundles PlantUML and a JDK. The
+# commands here are verified against that image (see the sandbox README).
+PYTHON_TOOL_PLANTUML_GUIDANCE = """
+Java (`java`, `javac`) and PlantUML are preinstalled — render diagrams locally instead of installing anything. \
+Write the `.puml` source with the `files` argument, then validate it without rendering: `plantuml -checkonly diagram.puml` \
+(exit code 0 means the syntax is valid; a nonzero exit prints the error and nothing is rendered). \
+Render to SVG with `plantuml -tsvg diagram.puml` or to PNG with `plantuml -tpng diagram.puml`; the output file lands next to the source, so it is exported to the chat like any file you create. \
+Embed the rendered file in your reply with its exact `file_link`. \
+Use SVG for flowcharts and architecture diagrams (crisp at any zoom) and PNG when the target needs a raster image.
+""".strip()
+
 # Guidance when the code-interpreter supports persistent sessions: the sandbox
 # keeps its filesystem and venv for the whole chat.
 PYTHON_TOOL_SESSION_GUIDANCE = """
@@ -133,8 +149,8 @@ Variables do not persist between calls, so persist any needed intermediate resul
 {files_guidance}
 {workspace_guidance}
 The sandbox has pip, uv, and poetry. Install with `pip install <package>` (or `uv pip install <package>`); installs persist for the rest of the chat. \
-You have numpy, scipy, pandas, matplotlib, Pillow, OpenCV, librosa, soundfile, requests, httpx, and openpyxl preinstalled. \
-Java (`java`, `javac`) and PlantUML (`plantuml -tpng diagram.puml`, also `-tsvg`) are preinstalled — render diagrams locally instead of installing anything.
+You have numpy, scipy, pandas, matplotlib, Pillow, OpenCV, librosa, soundfile, requests, httpx, and openpyxl preinstalled.
+{plantuml_guidance}
 Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
 Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
 Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
