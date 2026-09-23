@@ -488,3 +488,84 @@ def test_small_file_lists_are_not_capped_or_reordered() -> None:
     assert [f["filename"] for f in result["generated_files"]] == ["b.csv", "a.png"]
     assert result["files_notice"] is not None
     assert "further file(s)" not in result["files_notice"]
+
+
+# ---------------------------------------------------------------------------
+# `files` tool argument: verbatim file writes without hand-escaped code strings
+# ---------------------------------------------------------------------------
+
+
+def test_parse_declared_files_valid() -> None:
+    from onyx.tools.tool_implementations.python.python_tool import (
+        _parse_declared_files,
+    )
+
+    declared = _parse_declared_files(
+        {
+            "files": [
+                {"filename": " diagram.puml ", "content": "@startuml\nA -> B\n@enduml"},
+                {"filename": "b.txt", "content": "line1\n\"quoted\"\n'''ticks"},
+            ]
+        }
+    )
+
+    assert [f.filename for f in declared] == ["diagram.puml", "b.txt"]
+    # Content is preserved byte-for-byte — no escaping round-trip.
+    assert declared[1].content == "line1\n\"quoted\"\n'''ticks".encode("utf-8")
+
+
+def test_parse_declared_files_rejects_malformed_entries() -> None:
+    from onyx.tools.models import ToolCallException
+    from onyx.tools.tool_implementations.python.python_tool import (
+        _parse_declared_files,
+    )
+
+    with pytest.raises(ToolCallException):
+        _parse_declared_files({"files": [{"filename": "x.txt"}]})
+    with pytest.raises(ToolCallException):
+        _parse_declared_files({"files": [{"filename": "x.txt", "content": 5}]})
+    with pytest.raises(ToolCallException):
+        _parse_declared_files({"files": "not-a-list"})
+    # Absent argument is fine.
+    assert _parse_declared_files({}) == []
+
+
+@patch(f"{TOOL_MODULE}.CODE_INTERPRETER_BASE_URL", "http://fake:8000")
+def test_declared_files_staged_in_session_mode() -> None:
+    tool = _make_tool()
+    tool._chat_session_id = "chat-1"
+
+    client = MagicMock()
+    client.supports.return_value = True
+    client.download_file.return_value = b"out"
+    client.execute_streaming.return_value = iter([])
+
+    from onyx.server.query_and_chat.placement import Placement
+
+    with (
+        patch(
+            f"{TOOL_MODULE}.CodeInterpreterClient",
+            return_value=_make_client_ctx(client),
+        ),
+        patch(f"{TOOL_MODULE}.get_default_file_store", return_value=MagicMock()),
+        patch(f"{TOOL_MODULE}.fetch_workspace_file_ids", return_value={}),
+        patch(f"{TOOL_MODULE}.fetch_ci_session_id", return_value=None),
+        patch(f"{TOOL_MODULE}.store_ci_session_id"),
+        patch(f"{TOOL_MODULE}.forget_staged_file_keys"),
+        patch(f"{TOOL_MODULE}.forget_workspace_file_ids"),
+        patch.object(tool, "_use_sessions", return_value=True),
+        patch.object(tool, "_ensure_session", return_value="ci-session-1"),
+    ):
+        tool.run(
+            placement=Placement(turn_index=0, tab_index=0),
+            override_kwargs=PythonToolOverrideKwargs(chat_files=[]),
+            code="print(open('notes.txt').read())",
+            files=[{"filename": "notes.txt", "content": "verbatim\ntext"}],
+        )
+
+    # The declared file reached the persistent workspace untouched.
+    client.stage_session_file.assert_called_once()
+    args = client.stage_session_file.call_args.args
+    assert args[0] == "ci-session-1"
+    assert args[1] == b"verbatim\ntext"
+    assert args[2] == "notes.txt"

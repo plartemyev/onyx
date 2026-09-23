@@ -73,6 +73,11 @@ from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 logger = setup_logger()
 
 CODE_FIELD = "code"
+FILES_FIELD = "files"
+
+# Caps for files the model passes through the tool's `files` argument. They
+# share the staging caps so one call cannot flood the workspace.
+DECLARED_FILES_MAX_COUNT = CODE_INTERPRETER_MAX_STAGED_FILES
 CODE_INTERPRETER_DEFAULT_FILENAME = "file"
 CODE_INTERPRETER_FILENAME_MAX_LENGTH = 200
 CODE_INTERPRETER_UNSAFE_FILENAME_CHARS = re.compile(r"[\x00-\x1f/\\:\*\?\"<>\|]+")
@@ -154,6 +159,105 @@ def _guess_mime_from_path(path: str) -> str:
     filename = path.split("/")[-1]
     mime_type, _ = mimetypes.guess_type(filename)
     return mime_type or "application/octet-stream"
+
+
+def _parse_declared_files(llm_kwargs: dict[str, Any]) -> list[ChatFile]:
+    """Validate the tool call's `files` argument into stageable chat files.
+
+    Content arrives as a JSON tool argument, so file text needs no quoting or
+    escaping inside the code — the failure mode this replaces (triple-quoted
+    literals wrapped by ast.parse) burned whole cycles on SyntaxErrors.
+    """
+    raw_files = llm_kwargs.get(FILES_FIELD)
+    if raw_files is None:
+        return []
+    if isinstance(raw_files, dict):
+        raw_files = [raw_files]
+    if not isinstance(raw_files, list):
+        raise ToolCallException(
+            message=f"Invalid '{FILES_FIELD}' parameter in python tool call",
+            llm_facing_message=(
+                f"The '{FILES_FIELD}' parameter must be an array of objects "
+                'like: {"files": [{"filename": "notes.txt", "content": "..."}]}'
+            ),
+        )
+
+    declared: list[ChatFile] = []
+    for index, item in enumerate(raw_files):
+        if not isinstance(item, dict):
+            raise ToolCallException(
+                message=f"Invalid '{FILES_FIELD}' entry at index {index}",
+                llm_facing_message=(
+                    f"'{FILES_FIELD}[{index}]' must be an object with "
+                    "'filename' and 'content' string fields."
+                ),
+            )
+        filename = item.get("filename")
+        content = item.get("content")
+        if not isinstance(filename, str) or not filename.strip():
+            raise ToolCallException(
+                message=f"Invalid '{FILES_FIELD}' entry at index {index}",
+                llm_facing_message=(
+                    f"'{FILES_FIELD}[{index}].filename' must be a non-empty string."
+                ),
+            )
+        if not isinstance(content, str):
+            raise ToolCallException(
+                message=f"Invalid '{FILES_FIELD}' entry at index {index}",
+                llm_facing_message=(
+                    f"'{FILES_FIELD}[{index}].content' must be a string."
+                ),
+            )
+        declared.append(
+            ChatFile(filename=filename.strip(), content=content.encode("utf-8"))
+        )
+    return declared[:DECLARED_FILES_MAX_COUNT]
+
+
+def _stage_declared_files(
+    client: CodeInterpreterClient,
+    ci_session_id: str | None,
+    declared_files: list[ChatFile],
+) -> tuple[list[FileInput], list[str]]:
+    """Write the model-declared files into the sandbox; return stage specs and
+    the filenames that failed.
+
+    Session mode stages directly into the persistent workspace (dedup by
+    filename + content hash is unnecessary here — the model asked for this
+    write explicitly, and a repeat with fresh bytes must win). Legacy mode
+    uploads and returns specs for the single execution. The count cap bounds
+    the batch; the byte cap drops overflow with a warning (the model sees the
+    result in the workspace listing of its own next steps).
+    """
+    stage_specs: list[FileInput] = []
+    failures: list[str] = []
+    total_bytes = 0
+    for declared_file in declared_files[:DECLARED_FILES_MAX_COUNT]:
+        if total_bytes + len(declared_file.content) > CODE_INTERPRETER_MAX_STAGED_BYTES:
+            logger.warning(
+                "Declared files crossed the %d byte staging cap; dropping %s",
+                CODE_INTERPRETER_MAX_STAGED_BYTES,
+                declared_file.filename,
+            )
+            failures.append(declared_file.filename)
+            continue
+        filename = _safe_code_interpreter_filename(declared_file.filename)
+        try:
+            if ci_session_id is not None:
+                client.stage_session_file(
+                    ci_session_id, declared_file.content, filename
+                )
+            else:
+                file_id = client.upload_file(declared_file.content, filename)
+                stage_specs.append({"path": filename, "file_id": file_id})
+        except Exception:
+            logger.warning(
+                "Failed to stage declared file %s", declared_file.filename
+            )
+            failures.append(declared_file.filename)
+            continue
+        total_bytes += len(declared_file.content)
+    return stage_specs, failures
 
 
 def _read_chat_file_content(chat_file: ChatFile) -> bytes:
@@ -373,6 +477,24 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                             "type": "string",
                             "description": "Python source code to execute",
                         },
+                        FILES_FIELD: {
+                            "type": "array",
+                            "description": (
+                                "Optional files to write into the workspace "
+                                "before the code runs, with their text passed "
+                                "verbatim. Always prefer this over embedding "
+                                "file content in code strings: it avoids "
+                                "quoting/escaping errors."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "filename": {"type": "string"},
+                                    "content": {"type": "string"},
+                                },
+                                "required": ["filename", "content"],
+                            },
+                        },
                     },
                     "required": [CODE_FIELD],
                 },
@@ -468,6 +590,7 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
             )
         code = cast(str, llm_kwargs[CODE_FIELD])
         chat_files = override_kwargs.chat_files if override_kwargs else []
+        declared_files = _parse_declared_files(llm_kwargs)
 
         # Emit start event with the code
         self.emitter.emit(
@@ -485,7 +608,9 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 # (expired past its TTL, reaped, or the service restarted).
                 for allow_recreate in (True, False):
                     try:
-                        return self._run_in_session(client, placement, code, chat_files)
+                        return self._run_in_session(
+                            client, placement, code, chat_files, declared_files
+                        )
                     except http_requests.HTTPError as e:
                         status_code = (
                             e.response.status_code if e.response is not None else None
@@ -521,10 +646,15 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 client, selection.files
             )
 
+            declared_specs, declared_failures = _stage_declared_files(
+                client, None, declared_files
+            )
+            files_to_stage = (files_to_stage or []) + declared_specs
+
             staging_notice = _build_staging_notice(
                 selection.dropped_by_caps,
                 len(staging_inputs),
-                selection.read_failures + upload_failures,
+                selection.read_failures + upload_failures + declared_failures,
             )
             if staging_notice:
                 logger.warning(staging_notice)
@@ -678,6 +808,7 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
         placement: Placement,
         code: str,
         chat_files: list[ChatFile],
+        declared_files: list[ChatFile],
     ) -> ToolResponse:
         """Execute in the chat's persistent sandbox session."""
         if not self._chat_session_id:
@@ -688,6 +819,20 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
         staging_notice = self._stage_chat_files_into_session(
             client, ci_session_id, chat_session_id, chat_files, code
         )
+        if declared_files:
+            _, declared_failures = _stage_declared_files(
+                client, ci_session_id, declared_files
+            )
+            if declared_failures:
+                declared_notice = (
+                    f"Failed to write {len(declared_failures)} file(s) from the "
+                    f"files argument: {', '.join(declared_failures)}."
+                )
+                staging_notice = (
+                    f"{staging_notice} {declared_notice}"
+                    if staging_notice
+                    else declared_notice
+                )
         # Known workspace files act as the dedup baseline: the server skips
         # them when reporting new/modified files (missing ids are skipped too).
         baseline = fetch_workspace_file_ids(chat_session_id)
