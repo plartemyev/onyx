@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -40,6 +40,14 @@ class FakeResponse(BaseModel):
     text: str = ""
     apparent_encoding: str | None = None
     encoding: str | None = None
+    closed: bool = False
+
+    def iter_content(self, chunk_size: int) -> Generator[bytes, None, None]:
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i : i + chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_fetch_url_extracts_image_urls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -577,7 +585,9 @@ def test_download_file_bytes_rejects_html(
     result = crawler.download_file_bytes("https://example.com/page")
 
     assert isinstance(result, crawler_module.FailedFetch)
-    assert result.failure_reason == crawler_module.FailureReason.HTML_NOT_FILE
+    assert result.failure_reason == crawler_module.FailureReason.html_not_file(
+        None, "text/html"
+    )
 
 
 def test_download_file_bytes_rejects_html_after_playwright_fails(
@@ -609,7 +619,9 @@ def test_download_file_bytes_rejects_html_after_playwright_fails(
 
     assert fallback_calls == ["https://example.com/page"]
     assert isinstance(result, crawler_module.FailedFetch)
-    assert result.failure_reason == crawler_module.FailureReason.HTML_NOT_FILE
+    assert result.failure_reason == crawler_module.FailureReason.html_not_file(
+        None, "text/html"
+    )
 
 
 def test_download_file_bytes_html_page_falls_back_to_playwright(
@@ -736,7 +748,9 @@ def test_download_file_bytes_enforces_size_cap(
     )
 
     assert isinstance(result, crawler_module.FailedFetch)
-    assert result.failure_reason == crawler_module.FailureReason.OVERSIZED_FILE
+    assert "limit" in (result.failure_reason or "")
+    assert "100 bytes" in (result.failure_reason or "")
+    assert "Python sandbox" in (result.failure_reason or "")
 
 
 def test_download_file_bytes_403_falls_back_to_playwright(
@@ -989,7 +1003,9 @@ def test_download_file_bytes_page_playwright_render_also_html(
     result = crawler.download_file_bytes("https://example.com/page")
 
     assert isinstance(result, crawler_module.FailedFetch)
-    assert result.failure_reason == crawler_module.FailureReason.HTML_NOT_FILE
+    assert result.failure_reason == crawler_module.FailureReason.html_not_file(
+        None, "text/html"
+    )
 
 
 def test_download_file_bytes_image_html_without_playwright(
@@ -1040,3 +1056,104 @@ def test_download_file_bytes_image_html_keeps_playwright_rescue(
 
     assert isinstance(result, crawler_module.FetchedFile)
     assert result.content == b"\xff\xd8\xff\xe0jpegdata"
+
+
+# ---------------------------------------------------------------------------
+# Streaming downloads: declared-size pre-check and mid-transfer cap
+# ---------------------------------------------------------------------------
+
+
+def test_download_file_bytes_content_length_precheck_fails_before_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared size above the cap fails without reading the body."""
+    crawler = OnyxWebCrawler()
+    response = FakeResponse(
+        status_code=200,
+        headers={
+            "Content-Type": "application/java-archive",
+            "Content-Length": str(200 * 1024 * 1024),
+        },
+        content=b"\x89PNG\r\n\x1a\n" + b"x" * 100,
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes("https://example.com/jdk.tar.gz")
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert "200 MB" in (result.failure_reason or "")
+    assert "Python sandbox" in (result.failure_reason or "")
+    # The body transfer never started.
+    assert response.closed
+
+
+def test_download_file_bytes_cuts_off_oversized_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a Content-Length header, a body that crosses the cap
+    mid-transfer fails with the limit named."""
+    crawler = OnyxWebCrawler()
+    response = FakeResponse(
+        status_code=200,
+        headers={"Content-Type": "application/octet-stream"},
+        content=b"z" * 500,
+    )
+
+    monkeypatch.setattr(
+        crawler_module,
+        "ssrf_safe_get",
+        lambda *args, **kwargs: response,  # noqa: ARG005
+    )
+
+    result = crawler.download_file_bytes(
+        "https://example.com/big.bin", max_file_size_bytes=100
+    )
+
+    assert isinstance(result, crawler_module.FailedFetch)
+    assert "100 bytes" in (result.failure_reason or "")
+    assert response.closed
+
+
+def test_read_streamed_body_spills_to_disk() -> None:
+    """Bodies past the spool threshold come back as a positioned file-like
+    instead of bytes, and survive a round-trip."""
+    crawler_module._SPOOL_TO_DISK_BYTES = 64  # ty: ignore[invalid-assignment]
+    try:
+        body = b"a" * 200
+        response = FakeResponse(
+            status_code=200,
+            headers={"Content-Type": "application/octet-stream"},
+            content=body,
+        )
+        content, content_file, size = crawler_module._read_streamed_body(
+            response,  # ty: ignore[invalid-argument-type]
+            max_file_size_bytes=1024,
+        )
+        assert content is None
+        assert content_file is not None
+        assert size == 200
+        assert content_file.read() == body
+        content_file.close()
+    finally:
+        crawler_module._SPOOL_TO_DISK_BYTES = 16 * 1024 * 1024
+
+
+def test_fetched_file_sniffs_magic_bytes_from_disk_spill() -> None:
+    """sniffed_mime_type reads the head of a disk-spilled payload."""
+    import io
+
+    content_file = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"rest")
+    fetched = crawler_module.FetchedFile(
+        content=b"",
+        content_type=None,
+        content_file=content_file,
+        size_bytes=16,
+    )
+    assert fetched.sniffed_mime_type() == "image/png"
+    # The file is rewound for the next reader.
+    assert content_file.tell() == 0

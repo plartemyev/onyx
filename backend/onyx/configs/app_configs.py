@@ -1214,6 +1214,14 @@ OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED = (
     os.environ.get("OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED", "true").lower() == "true"
 )
 
+# Cap for binary downloads through the crawler's fast path (download_file /
+# analyze_image / open_url file fetches). Declared Content-Length above the
+# cap fails before the body transfers; streamed bodies are cut off mid-read
+# when they cross it. Large files should go through the Python sandbox.
+BINARY_DOWNLOAD_MAX_SIZE_BYTES = int(
+    os.environ.get("BINARY_DOWNLOAD_MAX_SIZE_BYTES", 50 * 1024 * 1024)
+)
+
 # Path to a distro-packaged Chromium binary (apt/pacman build) for Playwright to
 # drive, e.g. /usr/bin/chromium. Empty => Playwright's own bundled build. The
 # distro build is preferred: it matches what real users run, while Playwright's

@@ -5,11 +5,14 @@ import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from tempfile import SpooledTemporaryFile
+from typing import IO
 from urllib.parse import urlparse
 
 import requests
 
 from onyx.configs.app_configs import (
+    BINARY_DOWNLOAD_MAX_SIZE_BYTES,
     OPEN_URL_FETCH_MODE,
     OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED,
     WEB_CRAWLER_USER_AGENT,
@@ -64,8 +67,71 @@ DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_USER_AGENT = WEB_CRAWLER_USER_AGENT
 DEFAULT_MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 DEFAULT_MAX_HTML_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
-DEFAULT_MAX_DOWNLOAD_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+# Download cap for binary fetches (BINARY_DOWNLOAD_MAX_SIZE_BYTES env).
+DEFAULT_MAX_DOWNLOAD_SIZE_BYTES = BINARY_DOWNLOAD_MAX_SIZE_BYTES
 DEFAULT_MAX_WORKERS = 5
+
+# Bodies stream through a spool that rolls to disk past this size, so a
+# download near the cap never fully occupies memory.
+_SPOOL_TO_DISK_BYTES = 16 * 1024 * 1024
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class _BodyTooLarge(Exception):
+    """Streamed body crossed the download cap; the transfer was cut off."""
+
+
+def _declared_content_length(response: requests.Response) -> int | None:
+    """The server's declared body size, when present and parseable."""
+    raw = response.headers.get("Content-Length")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _read_streamed_body(
+    response: requests.Response,
+    *,
+    max_file_size_bytes: int,
+) -> tuple[bytes | None, SpooledTemporaryFile[bytes] | None, int]:
+    """Read the response body with the cap enforced during the transfer.
+
+    Returns (content, content_file, size): exactly one of content/content_file
+    is set (small payloads as bytes; disk-spilled ones as a file positioned
+    at 0), and size is the byte count. Returns (None, None, 0) for an empty
+    body. Raises _BodyTooLarge — after closing the transfer — once the body
+    crosses the cap, so an oversized download stops early instead of filling
+    memory or disk.
+    """
+    spool = SpooledTemporaryFile(max_size=_SPOOL_TO_DISK_BYTES)
+    total = 0
+    try:
+        for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_file_size_bytes:
+                raise _BodyTooLarge
+            spool.write(chunk)
+    except Exception:
+        spool.close()
+        raise
+    finally:
+        response.close()
+    if total == 0:
+        spool.close()
+        return None, None, 0
+    if total <= _SPOOL_TO_DISK_BYTES:
+        spool.seek(0)
+        data = spool.read()
+        spool.close()
+        return data, None, total
+    spool.seek(0)
+    return None, spool, total
+
 
 # Headers that, when present on a 4xx response, signal that the upstream
 # is a Cloudflare-style bot challenge (vs. a real auth/not-found error)
@@ -93,10 +159,8 @@ class FailureReason:
     NETWORK_ERROR = "network error while fetching the URL"
     OVERSIZED_HTML = "HTML response exceeded the configured maximum size"
     OVERSIZED_PDF = "PDF response exceeded the configured maximum size"
-    OVERSIZED_FILE = "file exceeded the configured maximum download size"
     DECODE_ERROR = "could not decode the response body"
     EMPTY_OR_UNPARSEABLE = "response could not be parsed into readable text"
-    HTML_NOT_FILE = "the URL returned a web page, not a downloadable file"
     IMAGE_NOT_AVAILABLE = (
         "the image URL returned a web page instead of the image file — the "
         "image is likely deleted, private, or not directly downloadable"
@@ -105,6 +169,38 @@ class FailureReason:
     @staticmethod
     def http_status(status_code: int) -> str:
         return f"upstream returned HTTP {status_code}"
+
+    @staticmethod
+    def html_not_file(status_code: int | None, content_type: str | None) -> str:
+        status_text = f"HTTP {status_code}" if status_code else "a success status"
+        return (
+            f"the URL returned {status_text} with content type "
+            f"'{content_type or 'unknown'}' — a web page, not a downloadable "
+            "file. Usually a 404/soft-404 or a viewer page: find the direct "
+            "file URL instead of a page that links to it."
+        )
+
+    @staticmethod
+    def _format_size(num_bytes: float) -> str:
+        if num_bytes >= 1024 * 1024:
+            return f"{num_bytes / (1024 * 1024):.0f} MB"
+        if num_bytes >= 1024:
+            return f"{num_bytes / 1024:.0f} KB"
+        return f"{num_bytes:.0f} bytes"
+
+    @staticmethod
+    def oversized_file(declared_bytes: int | None, max_bytes: int) -> str:
+        limit = FailureReason._format_size(max_bytes)
+        if declared_bytes:
+            declared = FailureReason._format_size(declared_bytes)
+            return (
+                f"the file is {declared}, above this tool's {limit} download "
+                "limit. Download it inside the Python sandbox instead."
+            )
+        return (
+            f"the file passed this tool's {limit} download limit mid-transfer. "
+            "Download it inside the Python sandbox instead."
+        )
 
 
 def _failed_result(url: str, failure_reason: str | None = None) -> WebContent:
@@ -150,10 +246,26 @@ def _is_known_challenger(url: str) -> bool:
 
 @dataclass
 class FetchedFile:
-    """Binary content fetched from a URL, with its declared content type."""
+    """Binary content fetched from a URL, with its declared content type.
+
+    Downloads stream into a spool that rolls to disk past
+    _SPOOL_TO_DISK_BYTES, so a large file never sits fully in RAM. Small
+    payloads expose `content` bytes; larger ones expose `content_file`
+    (positioned at 0) — exactly one of the two carries the bytes.
+    """
 
     content: bytes
     content_type: str | None
+    content_file: IO[bytes] | None = None
+    size_bytes: int = 0
+
+    def sniffed_mime_type(self) -> str | None:
+        """Magic-byte MIME detection over the head of the payload."""
+        if self.content_file is not None:
+            head = self.content_file.read(16)
+            self.content_file.seek(0)
+            return sniff_mime_type(head)
+        return sniff_mime_type(self.content)
 
 
 def primary_content_type(header_value: str | None) -> str | None:
@@ -353,14 +465,18 @@ class OnyxWebCrawler(WebContentProvider):
         )
 
     def _ssrf_safe_get_with_retry(
-        self, url: str, headers: dict[str, str] | None = None
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        *,
+        stream: bool = False,
     ) -> requests.Response:
         """Fast-path GET with one retry on transient network failures
         (connection resets, DNS hiccups — residential links see these).
         The retry is paced like any other same-provider request.
         """
         try:
-            return self._ssrf_safe_get(url, headers)
+            return self._ssrf_safe_get(url, headers, stream=stream)
         except SSRFException:
             raise
         except Exception as exc:
@@ -370,16 +486,21 @@ class OnyxWebCrawler(WebContentProvider):
                 exc.__class__.__name__,
             )
         self._pacer.pace(url)
-        return self._ssrf_safe_get(url, headers)
+        return self._ssrf_safe_get(url, headers, stream=stream)
 
     def _ssrf_safe_get(
-        self, url: str, headers: dict[str, str] | None = None
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        *,
+        stream: bool = False,
     ) -> requests.Response:
         return ssrf_safe_get(
             url,
             headers=headers if headers is not None else self._headers,
             timeout=(self._connect_timeout_seconds, self._read_timeout_seconds),
             allow_private_network=not self._should_validate_ssrf(),
+            stream=stream,
         )
 
     def contents(self, urls: Sequence[str]) -> list[WebContent]:
@@ -663,7 +784,7 @@ class OnyxWebCrawler(WebContentProvider):
 
         headers = IMAGE_FETCH_HEADERS if looks_like_image_url(url) else DEFAULT_HEADERS
         try:
-            response = self._ssrf_safe_get_with_retry(url, headers=headers)
+            response = self._ssrf_safe_get_with_retry(url, headers=headers, stream=True)
         except SSRFException:
             logger.error("SSRF protection blocked download of %s", url)
             return FailedFetch(url=url, failure_reason=FailureReason.SSRF_BLOCKED)
@@ -674,10 +795,7 @@ class OnyxWebCrawler(WebContentProvider):
             return FailedFetch(url=url, failure_reason=FailureReason.NETWORK_ERROR)
 
         content_type = primary_content_type(response.headers.get("Content-Type"))
-        content = b""
-        if response.status_code < 400:
-            content = response.content
-        else:
+        if response.status_code >= 400:
             has_cf_signals = has_cloudflare_signals(response)
             try_fallback = self._playwright_fallback_enabled and (
                 should_try_playwright_fallback(response)
@@ -693,8 +811,11 @@ class OnyxWebCrawler(WebContentProvider):
                 fallback = self._download_via_playwright(
                     url, max_file_size_bytes=max_file_size_bytes
                 )
+                response.close()
                 if fallback is not None:
                     return fallback
+            else:
+                response.close()
             return FailedFetch(
                 url=url,
                 failure_reason=FailureReason.CLOUDFLARE_CHALLENGE
@@ -702,10 +823,42 @@ class OnyxWebCrawler(WebContentProvider):
                 else failure_reason_for_status(response.status_code),
             )
 
-        if len(content) > max_file_size_bytes:
-            return FailedFetch(url=url, failure_reason=FailureReason.OVERSIZED_FILE)
-        if not content:
+        # Size known up front: fail before transferring the body (the observed
+        # failure mode was a 190 MB file silently downloaded into memory and
+        # then rejected).
+        declared_size = _declared_content_length(response)
+        if declared_size is not None and declared_size > max_file_size_bytes:
+            response.close()
+            return FailedFetch(
+                url=url,
+                failure_reason=FailureReason.oversized_file(
+                    declared_size, max_file_size_bytes
+                ),
+            )
+
+        try:
+            content, content_file, size_bytes = _read_streamed_body(
+                response, max_file_size_bytes=max_file_size_bytes
+            )
+        except _BodyTooLarge:
+            logger.info(
+                "Download of %s crossed the %d byte cap mid-transfer",
+                url,
+                max_file_size_bytes,
+            )
+            return FailedFetch(
+                url=url,
+                failure_reason=FailureReason.oversized_file(None, max_file_size_bytes),
+            )
+        if content is None and content_file is None:
             return FailedFetch(url=url, failure_reason=FailureReason.NETWORK_ERROR)
+        fetched = FetchedFile(
+            content=content if content is not None else b"",
+            content_file=content_file,
+            content_type=content_type,
+            size_bytes=size_bytes,
+        )
+
         if content_type and (
             content_type.startswith("text/html")
             or content_type == "application/xhtml+xml"
@@ -715,7 +868,7 @@ class OnyxWebCrawler(WebContentProvider):
             # an error status, so this is the *most likely* failure mode for
             # major sites. First trust magic bytes over a mislabelled header;
             # then retry through a real browser before giving up.
-            sniffed_type = sniff_mime_type(content)
+            sniffed_type = fetched.sniffed_mime_type()
             if sniffed_type:
                 logger.info(
                     "Download of %s had %s Content-Type but binary magic bytes; "
@@ -723,7 +876,8 @@ class OnyxWebCrawler(WebContentProvider):
                     url,
                     content_type,
                 )
-                return FetchedFile(content=content, content_type=sniffed_type)
+                fetched.content_type = sniffed_type
+                return fetched
             if self._playwright_fallback_enabled:
                 logger.info(
                     "Download of %s got an HTML page with HTTP %s; retrying via "
@@ -744,10 +898,10 @@ class OnyxWebCrawler(WebContentProvider):
                 failure_reason=(
                     FailureReason.IMAGE_NOT_AVAILABLE
                     if looks_like_image_url(url)
-                    else FailureReason.HTML_NOT_FILE
+                    else FailureReason.html_not_file(None, content_type)
                 ),
             )
-        return FetchedFile(content=content, content_type=content_type)
+        return fetched
 
     def _download_via_playwright(
         self, url: str, *, max_file_size_bytes: int
@@ -767,7 +921,12 @@ class OnyxWebCrawler(WebContentProvider):
             return None
 
         if len(rendered_content.content) > max_file_size_bytes:
-            return FailedFetch(url=url, failure_reason=FailureReason.OVERSIZED_FILE)
+            return FailedFetch(
+                url=url,
+                failure_reason=FailureReason.oversized_file(
+                    len(rendered_content.content), max_file_size_bytes
+                ),
+            )
 
         content_type = primary_content_type(rendered_content.content_type)
         if content_type and (
@@ -789,11 +948,15 @@ class OnyxWebCrawler(WebContentProvider):
                 failure_reason=(
                     FailureReason.IMAGE_NOT_AVAILABLE
                     if looks_like_image_url(url)
-                    else FailureReason.HTML_NOT_FILE
+                    else FailureReason.html_not_file(None, content_type)
                 ),
             )
 
-        return FetchedFile(content=rendered_content.content, content_type=content_type)
+        return FetchedFile(
+            content=rendered_content.content,
+            content_type=content_type,
+            size_bytes=len(rendered_content.content),
+        )
 
     def _fetch_via_playwright(self, url: str) -> WebContent | None:
         """Try a one-shot headless render.

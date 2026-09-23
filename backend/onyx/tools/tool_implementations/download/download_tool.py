@@ -256,13 +256,17 @@ class DownloadFileTool(Tool[None]):
                     and fetched.content_type != "application/octet-stream"
                     else None
                 )
-                or sniff_mime_type(fetched.content)
+                or fetched.sniffed_mime_type()
                 or "application/octet-stream"
             )
             filename = filename_from_url(url, mime_type, index)
             try:
                 file_id = file_store.save_file(
-                    content=BytesIO(fetched.content),
+                    content=(
+                        fetched.content_file
+                        if fetched.content_file is not None
+                        else BytesIO(fetched.content)
+                    ),
                     display_name=filename,
                     file_origin=FileOrigin.CHAT_IMAGE_GEN,
                     file_type=mime_type,
@@ -283,7 +287,9 @@ class DownloadFileTool(Tool[None]):
                 mime_type=mime_type,
             )
             files.append(downloaded_file)
-            if mime_type.startswith("image/"):
+            # Only small (in-memory) images get captioned: disk-spilled
+            # payloads are far past what a vision model should receive.
+            if mime_type.startswith("image/") and fetched.content_file is None:
                 images_to_annotate.append((filename, fetched.content, downloaded_file))
 
         # Describe fetched images with the configured captioning model so the

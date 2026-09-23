@@ -345,3 +345,37 @@ class TestDownloadFileAnnotation:
         assert rich.files[0].annotation is None
         # The image is still attached for direct replay to vision-capable models
         assert rich.tool_images[0].content == JPEG_BYTES
+
+
+class TestDiskSpilledDownload:
+    """Large downloads arrive as a disk-spilled file-like instead of bytes."""
+
+    def test_large_file_saved_via_content_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import io
+
+        tool, file_store = _make_tool(
+            {
+                "https://example.com/jdk.tar.gz": FetchedFile(
+                    content=b"",
+                    content_type="application/x-gzip",
+                    content_file=io.BytesIO(b"tar-bytes"),
+                    size_bytes=9,
+                )
+            },
+            monkeypatch,
+        )
+
+        response = tool.run(
+            placement=Placement(turn_index=0, tab_index=0),
+            override_kwargs=None,
+            urls=["https://example.com/jdk.tar.gz"],
+        )
+
+        # Saved through the file-like, not BytesIO-of-empty-bytes.
+        saved_content = file_store.save_file.call_args.kwargs["content"]
+        assert saved_content.read() == b"tar-bytes"
+        result = json.loads(response.llm_facing_response)
+        assert result["files"][0]["filename"] == "jdk.tar.gz"

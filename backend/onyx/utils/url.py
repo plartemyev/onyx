@@ -534,6 +534,9 @@ def ssrf_safe_get(
 
         # Validate and follow the redirect (this will raise SSRFException if invalid)
         current_url = redirect_url
+        # With stream=True the redirect hop's body was never read; release
+        # its connection before following (a no-op for consumed responses).
+        response.close()
         response = _make_ssrf_safe_request(
             redirect_url,
             headers,
