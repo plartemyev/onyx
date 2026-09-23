@@ -49,7 +49,11 @@ from onyx.chat.incognito_context import (
     incognito_session_ended,
     load_incognito_context,
 )
-from onyx.chat.llm_loop import EmptyLLMResponseError, run_llm_loop
+from onyx.chat.llm_loop import (
+    ContextWindowExceededError,
+    EmptyLLMResponseError,
+    run_llm_loop,
+)
 from onyx.chat.models import (
     AnswerStream,
     AnswerStreamPart,
@@ -112,6 +116,7 @@ from onyx.hooks.points.query_processing import (
     QueryProcessingPayload,
     QueryProcessingResponse,
 )
+from onyx.llm.exceptions import ClassifiedLLMError
 from onyx.llm.factory import get_llm_for_persona, get_llm_token_counter
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.models import LLMErrorInfo, ReasoningEffort
@@ -1176,6 +1181,9 @@ def _model_error_details(
     if isinstance(error, EmptyLLMResponseError):
         details["tool_choice"] = error.tool_choice.value
         details["finish_reason"] = error.finish_reason
+    elif isinstance(error, ContextWindowExceededError):
+        details["required_tokens"] = error.required_tokens
+        details["available_tokens"] = error.available_tokens
 
     return details
 
@@ -1459,9 +1467,19 @@ def _run_models(
 
         except Exception as e:
             model_errored[model_idx] = True
-            model_error_info[model_idx] = litellm_exception_to_safe_error(
-                e, model_llm, fallback_to_error_msg=True
-            )
+            # Classified errors (empty response, context overflow) already
+            # carry a user-safe message and their own code/retryability —
+            # pass them through instead of re-mapping through LiteLLM.
+            if isinstance(e, ClassifiedLLMError):
+                model_error_info[model_idx] = LLMErrorInfo(
+                    message=e.client_error_msg,
+                    error_code=e.error_code,
+                    is_retryable=e.is_retryable,
+                )
+            else:
+                model_error_info[model_idx] = litellm_exception_to_safe_error(
+                    e, model_llm, fallback_to_error_msg=True
+                )
             logger.exception(
                 "LLM call failed for model %d (%s)",
                 model_idx,
@@ -1882,8 +1900,23 @@ def _stream_chat_turn(
             },
         )
 
+    except ContextWindowExceededError as e:
+        logger.warning(
+            "Turn exceeds the model context window (required=%s, available=%s)",
+            e.required_tokens,
+            e.available_tokens,
+        )
+        yield StreamingError(
+            error=e.client_error_msg,
+            error_code=e.error_code,
+            is_retryable=e.is_retryable,
+            details={
+                "required_tokens": e.required_tokens,
+                "available_tokens": e.available_tokens,
+            },
+        )
+
     except Exception as e:
-        logger.exception("Failed to process chat message due to %s", e)
         stack_trace = traceback.format_exc()
 
         llm = setup.llms[0] if setup else None

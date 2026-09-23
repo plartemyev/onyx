@@ -99,6 +99,15 @@ TOOL_CALL_RESPONSE_CROSS_MESSAGE = """
 This tool call completed but the results are no longer accessible.
 """.strip()
 
+
+# In-turn compaction: replaces a tool response whose content was dropped to
+# fit the context window during the current turn's tool loop. The companion
+# cross-turn tombstone above covers responses replayed on later turns.
+TOOL_CALL_RESPONSE_COMPACTED = (
+    "This tool call completed but its full result was removed to fit the "
+    "context window. Re-run the tool if you need the output again."
+)
+
 # Replayed in place of an image when the current model does not accept image
 # input (e.g. after a mid-session model switch).
 NON_VISION_IMAGE_MARKER = (

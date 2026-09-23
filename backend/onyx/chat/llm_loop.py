@@ -58,6 +58,7 @@ from onyx.prompts.chat_prompts import (
     IMAGE_GEN_REMINDER,
     NON_VISION_IMAGE_MARKER,
     OPEN_URL_REMINDER,
+    TOOL_CALL_RESPONSE_COMPACTED,
 )
 from onyx.prompts.prompt_utils import substitute_user_placeholders
 from onyx.server.query_and_chat.placement import Placement
@@ -104,6 +105,39 @@ logger = setup_logger()
 # Used when no token_counter is available to measure the non-vision image
 # marker; intentionally generous so budgeting stays conservative.
 _NON_VISION_MARKER_TOKEN_FALLBACK = 40
+
+# Used when no token_counter is available to measure the in-turn compaction
+# stub. TOOL_CALL_RESPONSE_COMPACTED is ~130 chars (~33 tokens).
+_COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK = 34
+
+
+class ContextWindowExceededError(ClassifiedLLMError):
+    """The turn cannot fit the model's context window even after compaction.
+
+    Growth inside a tool loop is handled by compacting the in-turn tail
+    (see ``_compact_in_turn_tail``). This error is reserved for the
+    unrecoverable case: the last user message plus the fixed per-request
+    prompts alone exceed the budget — the session (or an attachment) is too
+    large for the model. ``client_error_msg`` is safe to show to the user.
+    """
+
+    def __init__(
+        self,
+        *,
+        required_tokens: int,
+        available_tokens: int,
+    ) -> None:
+        super().__init__(
+            client_error_msg=(
+                "This chat has grown too long for the selected model's context "
+                "window. Start a new chat, remove large attachments, or switch "
+                "to a model with a larger context window."
+            ),
+            error_code="CONTEXT_WINDOW_EXCEEDED",
+            is_retryable=False,
+        )
+        self.required_tokens = required_tokens
+        self.available_tokens = available_tokens
 
 
 class EmptyLLMResponseError(ClassifiedLLMError):
@@ -429,6 +463,108 @@ def count_message_replay_tokens(
     return max(0, msg.token_count - msg.image_token_count) + num_images * marker_tokens
 
 
+def _group_in_turn_exchanges(
+    messages: list[ChatMessageSimple],
+) -> list[list[ChatMessageSimple]]:
+    """Group the in-turn tail into exchanges.
+
+    An exchange starts at an ASSISTANT message (the tool-call carrier) and
+    spans every message that follows it (its TOOL_CALL_RESPONSE messages).
+    Keeping exchanges intact when compacting means a tool response is never
+    separated from the assistant message that carries its tool_call_id.
+    """
+    groups: list[list[ChatMessageSimple]] = []
+    for msg in messages:
+        if msg.message_type == MessageType.ASSISTANT or not groups:
+            groups.append([msg])
+        else:
+            groups[-1].append(msg)
+    return groups
+
+
+def _stub_tool_response(
+    msg: ChatMessageSimple,
+    token_counter: Callable[[str], int] | None,
+) -> ChatMessageSimple:
+    """Copy a tool response with its content replaced by the compaction notice.
+
+    Copies — the caller's ``simple_chat_history`` shares these message objects
+    across cycles, so mutating in place would corrupt later requests. Attached
+    images go too: the payload they belonged to is gone.
+    """
+    stub_tokens = (
+        token_counter(TOOL_CALL_RESPONSE_COMPACTED)
+        if token_counter
+        else _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK
+    )
+    return msg.model_copy(
+        update={
+            "message": TOOL_CALL_RESPONSE_COMPACTED,
+            "token_count": stub_tokens,
+            "image_files": None,
+            "image_token_count": 0,
+        }
+    )
+
+
+def _compact_in_turn_tail(
+    messages_after_last_user: list[ChatMessageSimple],
+    *,
+    available_tokens: int,
+    replay_count: Callable[[ChatMessageSimple], int],
+    token_counter: Callable[[str], int] | None,
+) -> list[ChatMessageSimple]:
+    """Fit the in-turn tail (messages after the last user message) into the
+    budget by compacting oldest-first, or return it unchanged when it fits.
+
+    Stage 1 replaces old tool-response content with a short notice — the
+    tool-call arguments and the model's narration stay, since both are
+    information rich and small. Stage 2 drops whole exchanges, oldest first,
+    when even stubbed responses do not fit. Never mutates the input list or
+    its messages; each cycle re-compacts from the full history, so the
+    transformation is deterministic.
+    """
+    total_tokens = sum(replay_count(msg) for msg in messages_after_last_user)
+    if total_tokens <= available_tokens:
+        return messages_after_last_user
+
+    # Stage 1: stub every tool response's content.
+    stubbed = [
+        _stub_tool_response(msg, token_counter)
+        if msg.message_type == MessageType.TOOL_CALL_RESPONSE
+        else msg
+        for msg in messages_after_last_user
+    ]
+    total_tokens = sum(replay_count(msg) for msg in stubbed)
+    if total_tokens <= available_tokens:
+        logger.info(
+            "Compacted in-turn tool history: stubbed tool responses to fit "
+            "tail into %d tokens",
+            available_tokens,
+        )
+        return stubbed
+
+    # Stage 2: keep the newest exchanges that fit, drop the rest entirely.
+    groups = _group_in_turn_exchanges(stubbed)
+    kept_groups: list[list[ChatMessageSimple]] = []
+    kept_tokens = 0
+    for group in reversed(groups):
+        group_tokens = sum(replay_count(msg) for msg in group)
+        if kept_tokens + group_tokens > available_tokens:
+            break
+        kept_groups.insert(0, group)
+        kept_tokens += group_tokens
+
+    logger.info(
+        "Compacted in-turn tool history: dropped %d of %d exchanges to fit "
+        "tail into %d tokens",
+        len(groups) - len(kept_groups),
+        len(groups),
+        available_tokens,
+    )
+    return [msg for group in kept_groups for msg in group]
+
+
 def construct_message_history(
     system_prompt: ChatMessageSimple | None,
     custom_agent_prompt: ChatMessageSimple | None,
@@ -530,20 +666,29 @@ def construct_message_history(
 
     # Calculate tokens needed for the last user message and everything after it
     last_user_tokens = _replay_token_count(last_user_message)
+    if last_user_tokens > history_token_budget:
+        # The one unrecoverable case: compaction has nothing left to trade
+        # away. Caught upstream and surfaced as a clear, user-facing error.
+        raise ContextWindowExceededError(
+            required_tokens=last_user_tokens,
+            available_tokens=history_token_budget,
+        )
+
+    # The in-turn tail grows every tool cycle (narration + tool response +
+    # reminder); when it alone exceeds the budget, compact it instead of
+    # failing the turn and discarding all in-turn progress.
+    messages_after_last_user = _compact_in_turn_tail(
+        messages_after_last_user,
+        available_tokens=history_token_budget - last_user_tokens,
+        replay_count=_replay_token_count,
+        token_counter=token_counter,
+    )
     after_user_tokens = sum(
         _replay_token_count(msg) for msg in messages_after_last_user
     )
 
-    # Check if we can fit at least the last user message and messages after it
-    required_tokens = last_user_tokens + after_user_tokens
-    if required_tokens > history_token_budget:
-        raise ValueError(
-            f"Not enough tokens to include the last user message and subsequent messages. "
-            f"Required: {required_tokens}, Available: {history_token_budget}"
-        )
-
     # Calculate remaining budget for history before the last user message
-    remaining_budget = history_token_budget - required_tokens
+    remaining_budget = history_token_budget - last_user_tokens - after_user_tokens
 
     # Truncate history_before_last_user from the top to fit in remaining budget.
     # Track dropped file messages so we can provide their metadata to the

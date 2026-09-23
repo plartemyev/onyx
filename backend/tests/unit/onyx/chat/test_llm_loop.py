@@ -7,7 +7,9 @@ from unittest.mock import Mock, patch
 import pytest
 
 from onyx.chat.llm_loop import (
+    _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK,
     _REFUSAL_FINISH_REASONS,
+    ContextWindowExceededError,
     EmptyLLMResponseError,
     _build_empty_llm_response_error,
     _cycle_history_token_budget,
@@ -29,7 +31,11 @@ from onyx.chat.models import (
 from onyx.configs.constants import MessageType
 from onyx.file_store.models import ChatFileType
 from onyx.llm.interfaces import LLMConfig, ToolChoiceOptions
-from onyx.prompts.chat_prompts import IMAGE_GEN_REMINDER, OPEN_URL_REMINDER
+from onyx.prompts.chat_prompts import (
+    IMAGE_GEN_REMINDER,
+    OPEN_URL_REMINDER,
+    TOOL_CALL_RESPONSE_COMPACTED,
+)
 from onyx.prompts.tool_prompts import TOOL_CALL_MERGED_PROMPT
 from onyx.server.query_and_chat.placement import Placement
 from onyx.tools.constants import FILE_READER_TOOL_NAME
@@ -529,7 +535,7 @@ class TestConstructMessageHistory:
 
         # Total required: 50 (system) + 50 (custom) + 100 (project) + 50 (user) = 250
         # But only 200 available
-        with pytest.raises(ValueError, match="Not enough tokens"):
+        with pytest.raises(ContextWindowExceededError):
             construct_message_history(
                 system_prompt=system_prompt,
                 custom_agent_prompt=custom_agent,
@@ -539,22 +545,19 @@ class TestConstructMessageHistory:
                 available_tokens=200,
             )
 
-    def test_not_enough_tokens_for_last_user_and_messages_after(self) -> None:
-        """Test error when last user message and messages after don't fit."""
+    def test_last_user_message_too_large_raises_context_error(self) -> None:
+        """The last user message alone cannot fit: unrecoverable, raises the
+        classified context-window error (compaction has nothing to trade)."""
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
-        user_msg1 = create_message("First", MessageType.USER, 10)
-        user_msg2 = create_message("Second", MessageType.USER, 30)
-        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 30)
+        user_msg = create_message("Very long user message", MessageType.USER, 100)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        tool_response = create_tool_response("tc_1", "Results", 5)
 
-        simple_chat_history = [user_msg1, user_msg2, assistant_with_tool]
+        simple_chat_history = [user_msg, assistant_with_tool, tool_response]
         context_files = create_context_files()
 
-        # Budget: 50 tokens
-        # Required: 10 (system) + 30 (user2) + 30 (assistant_with_tool) = 70 tokens
-        # After subtracting system: 40 tokens available, but need 60 for user2 + assistant_with_tool
-        with pytest.raises(
-            ValueError, match="Not enough tokens to include the last user message"
-        ):
+        # Budget after system prompt: 40; the user message alone is 100.
+        with pytest.raises(ContextWindowExceededError) as exc_info:
             construct_message_history(
                 system_prompt=system_prompt,
                 custom_agent_prompt=None,
@@ -563,6 +566,159 @@ class TestConstructMessageHistory:
                 context_files=context_files,
                 available_tokens=50,
             )
+        assert exc_info.value.error_code == "CONTEXT_WINDOW_EXCEEDED"
+        assert exc_info.value.is_retryable is False
+        # The user-facing message must not leak raw token math.
+        assert "context" in exc_info.value.client_error_msg.lower()
+
+    def test_tail_overflow_stubs_oldest_tool_response(self) -> None:
+        """A tail that alone exceeds the budget is compacted, not fatal: the
+        oldest tool response is stubbed and the turn completes."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        big_tool_response = create_tool_response("tc_1", "Huge result", 60)
+
+        simple_chat_history = [user_msg, assistant_with_tool, big_tool_response]
+        context_files = create_context_files()
+
+        # History budget: 60 - 10 (system) = 50; after the 10-token user
+        # message, 40 remain. Tail = 5 + 60 = 65 does not fit, so the
+        # response is stubbed to ~34 tokens (5 + 34 = 39 <= 40).
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=context_files,
+            available_tokens=60,
+        )
+
+        assert len(result) == 4
+        assert result[0] == system_prompt
+        assert result[1] == user_msg
+        # The tool-call carrier stays (arguments are information rich)...
+        assert result[2] == assistant_with_tool
+        # ...and the response content is replaced by the compaction notice.
+        assert result[3].message == TOOL_CALL_RESPONSE_COMPACTED
+        assert result[3].tool_call_id == "tc_1"
+        assert result[3].token_count == _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK
+
+    def test_tail_overflow_stub_does_not_mutate_shared_messages(self) -> None:
+        """Stubbing must copy: the same message objects feed later cycles."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        big_tool_response = create_tool_response("tc_1", "Huge result", 60)
+
+        simple_chat_history = [user_msg, assistant_with_tool, big_tool_response]
+        construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=create_context_files(),
+            available_tokens=60,
+        )
+
+        assert simple_chat_history[2].token_count == 60
+        assert simple_chat_history[2].message_type == MessageType.TOOL_CALL_RESPONSE
+        assert simple_chat_history[2].tool_call_id == "tc_1"
+
+    def test_tail_overflow_drops_oldest_exchange_when_stubbing_not_enough(
+        self,
+    ) -> None:
+        """When stubbed responses still do not fit, whole exchanges are
+        dropped oldest-first and the newest ones are kept."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_1 = create_assistant_with_tool_call("tc_1", "tool", 5)
+        response_1 = create_tool_response("tc_1", "Result 1", 20)
+        assistant_2 = create_assistant_with_tool_call("tc_2", "tool", 5)
+        response_2 = create_tool_response("tc_2", "Result 2", 20)
+
+        simple_chat_history = [
+            user_msg,
+            assistant_1,
+            response_1,
+            assistant_2,
+            response_2,
+        ]
+        context_files = create_context_files()
+
+        # History budget: 50; after the user message, 40 remain. Stubbed
+        # tail = 2 * (5 + 34) = 78 > 40, so the oldest exchange is dropped
+        # entirely; the newest (39) is kept.
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=context_files,
+            available_tokens=60,
+        )
+
+        assert len(result) == 4
+        assert result[1] == user_msg
+        assert result[2] == assistant_2
+        assert result[3].message == TOOL_CALL_RESPONSE_COMPACTED
+        assert result[3].tool_call_id == "tc_2"
+        # The oldest exchange is gone entirely.
+        assert all(msg is not assistant_1 for msg in result)
+        assert all(msg is not response_1 for msg in result)
+
+    def test_tail_within_budget_is_not_compacted(self) -> None:
+        """No compaction pressure: tool responses replay verbatim (existing
+        in-turn behavior is unchanged)."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        tool_response = create_tool_response("tc_1", "Result", 15)
+
+        simple_chat_history = [user_msg, assistant_with_tool, tool_response]
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=create_context_files(),
+            available_tokens=100,
+        )
+
+        assert result[-2] == assistant_with_tool
+        assert result[-1] == tool_response
+        assert tool_response.message == "Result"
+        assert tool_response.token_count == 15
+
+    def test_not_enough_tokens_for_last_user_and_messages_after(self) -> None:
+        """A tail that exceeds the budget no longer kills the turn: it is
+        compacted so the request can still be built."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg1 = create_message("First", MessageType.USER, 10)
+        user_msg2 = create_message("Second", MessageType.USER, 30)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 30)
+
+        simple_chat_history = [user_msg1, user_msg2, assistant_with_tool]
+        context_files = create_context_files()
+
+        # Budget: 50 tokens → 40 after the system prompt. Old behavior raised
+        # here (30 user + 30 assistant > 40); now the turn survives. The tail
+        # (the 30-token assistant carrier) does not fit the 10 tokens left
+        # after user_msg2 and has no response content to stub, so stage 2
+        # drops it and the model answers from the user message alone.
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=context_files,
+            available_tokens=50,
+        )
+
+        assert len(result) == 3
+        assert result[0] == system_prompt
+        assert result[1] == user_msg1
+        assert result[2] == user_msg2
 
     def test_complex_scenario_all_elements(self) -> None:
         """Test a complex scenario with all elements combined."""
