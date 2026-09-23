@@ -1,3 +1,4 @@
+import logging
 import os
 
 NUM_RETURNED_HITS = 50
@@ -8,8 +9,17 @@ MAX_CHUNKS_FED_TO_CHAT = int(os.environ.get("MAX_CHUNKS_FED_TO_CHAT") or 25)
 # Maximum number of LLM cycles (one tool-call round-trip per cycle) before the
 # agent is forced to answer. Default 6 covers the common search → open_url
 # pattern documented at the call site; raise via env when integrating with
-# tool-heavy MCPs that legitimately need more turns.
+# tool-heavy MCPs that legitimately need more turns. Very high values are
+# warned about (not clamped): the per-cycle history reserve divides the
+# context headroom by this number, so extreme values erode it.
 MAX_LLM_CYCLES: int = int(os.environ.get("MAX_LLM_CYCLES") or 6)
+_MAX_LLM_CYCLES_WARN_THRESHOLD = 50
+if MAX_LLM_CYCLES > _MAX_LLM_CYCLES_WARN_THRESHOLD:
+    logging.getLogger(__name__).warning(
+        "MAX_LLM_CYCLES=%s is very high; the per-cycle history reserve "
+        "shrinks proportionally and long turns risk context overflow",
+        MAX_LLM_CYCLES,
+    )
 
 # Wall-clock budget for a whole chat turn (all LLM cycles + tool calls). When
 # exceeded, the loop jumps to the forced-final-answer cycle so the user gets a
