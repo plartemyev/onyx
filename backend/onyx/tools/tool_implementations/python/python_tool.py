@@ -53,6 +53,7 @@ from onyx.tools.tool_implementations.python.code_interpreter_client import (
     StreamErrorEvent,
     StreamOutputEvent,
     StreamResultEvent,
+    WorkspaceFile,
 )
 from onyx.tools.tool_implementations.python.session_store import (
     fetch_ci_session_id,
@@ -89,6 +90,13 @@ SESSION_NOTICE_TEMPLATE = (
     "working directory and packages installed with pip/uv stay available in "
     "later calls of this chat."
 )
+
+# Cap on workspace files registered per execution. Each registered file is
+# saved to the file store, listed in the LLM-facing response (~40 tokens per
+# file_link entry), and attached to the chat message — one archive extraction
+# would otherwise flood all three. Files past the cap stay in the sandbox
+# workspace where the code can still read them; they just get no links.
+MAX_GENERATED_FILES_REGISTERED = 100
 
 
 class _SessionUnavailable(Exception):
@@ -140,6 +148,12 @@ def _code_references_file(filename: str, code: str) -> bool:
     if not filename:
         return False
     return filename in code or _safe_code_interpreter_filename(filename) in code
+
+
+def _guess_mime_from_path(path: str) -> str:
+    filename = path.split("/")[-1]
+    mime_type, _ = mimetypes.guess_type(filename)
+    return mime_type or "application/octet-stream"
 
 
 def _read_chat_file_content(chat_file: ChatFile) -> bytes:
@@ -834,19 +848,41 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
         # the bytes replay to vision-capable chat models.
         images_to_annotate: list[tuple[str, bytes, str, PythonExecutionFile]] = []
 
-        for workspace_file in result_event.files:
-            if workspace_file.kind != "file" or not workspace_file.file_id:
-                continue
+        candidates = [
+            workspace_file
+            for workspace_file in result_event.files
+            if workspace_file.kind == "file" and workspace_file.file_id
+        ]
+        overflow_count = max(0, len(candidates) - MAX_GENERATED_FILES_REGISTERED)
+        if overflow_count:
+            # Keep every generated image when the cap forces a cut — plots are
+            # the artifacts users want links for; bulk extraction noise is not.
+            # Fill the remaining slots in listed order.
+            def _is_image(workspace_file: WorkspaceFile) -> bool:
+                return _guess_mime_from_path(workspace_file.path).startswith("image/")
 
+            image_files = [wf for wf in candidates if _is_image(wf)]
+            other_files = [wf for wf in candidates if not _is_image(wf)]
+            image_slots = min(len(image_files), MAX_GENERATED_FILES_REGISTERED)
+            other_slots = MAX_GENERATED_FILES_REGISTERED - image_slots
+            candidates = image_files[:image_slots] + other_files[:other_slots]
+            logger.info(
+                "Capping registered generated files at %d (%d skipped)",
+                MAX_GENERATED_FILES_REGISTERED,
+                overflow_count,
+            )
+
+        for workspace_file in candidates:
+            ci_file_id = workspace_file.file_id
+            if ci_file_id is None:
+                continue
             try:
                 # Download file from Code Interpreter
-                file_content = client.download_file(workspace_file.file_id)
+                file_content = client.download_file(ci_file_id)
 
                 # Determine MIME type from file extension
                 filename = workspace_file.path.split("/")[-1]
-                mime_type, _ = mimetypes.guess_type(filename)
-                # Default to binary if we can't determine the type
-                mime_type = mime_type or "application/octet-stream"
+                mime_type = _guess_mime_from_path(workspace_file.path)
 
                 # Save to Onyx file store
                 onyx_file_id = file_store.save_file(
@@ -857,9 +893,7 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 )
 
                 if ci_session_id is not None:
-                    reported_workspace_files[workspace_file.path] = (
-                        workspace_file.file_id
-                    )
+                    reported_workspace_files[workspace_file.path] = ci_file_id
                 else:
                     # Legacy path only: the sandbox is wiped per call, so keep
                     # artifacts for re-staging in later executions (newest wins,
@@ -879,7 +913,7 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                     )
 
                 # Mark for cleanup
-                file_ids_to_cleanup.append(workspace_file.file_id)
+                file_ids_to_cleanup.append(ci_file_id)
 
             except Exception as e:
                 logger.error(
@@ -961,6 +995,17 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 f"{files_notice} {SESSION_NOTICE_TEMPLATE}"
                 if files_notice
                 else SESSION_NOTICE_TEMPLATE
+            )
+        if overflow_count:
+            overflow_notice = (
+                f"{overflow_count} further file(s) were kept in the sandbox "
+                "workspace without download links; read them with Python code "
+                "if needed."
+            )
+            files_notice = (
+                f"{files_notice} {overflow_notice}"
+                if files_notice
+                else overflow_notice
             )
 
         result = LlmPythonExecutionResult(

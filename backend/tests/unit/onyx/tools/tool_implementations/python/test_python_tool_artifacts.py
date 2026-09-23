@@ -11,7 +11,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from onyx.tools.models import ChatFile, PythonToolOverrideKwargs, PythonToolRichResponse
+from onyx.tools.models import (
+    ChatFile,
+    PythonToolOverrideKwargs,
+    PythonToolRichResponse,
+    ToolResponse,
+)
 from onyx.tools.tool_implementations.python.code_interpreter_client import (
     StreamResultEvent,
     WorkspaceFile,
@@ -59,7 +64,7 @@ def _run_tool(
     client: MagicMock,
     files: list[ChatFile],
     code: str = "print('hi')",
-) -> None:
+) -> ToolResponse:
     """Call tool.run() with mocked CodeInterpreterClient and file store."""
     from onyx.server.query_and_chat.placement import Placement
 
@@ -73,7 +78,7 @@ def _run_tool(
         ),
         patch(f"{TOOL_MODULE}.get_default_file_store", return_value=file_store),
     ):
-        tool.run(
+        return tool.run(
             placement=Placement(turn_index=0, tab_index=0),
             override_kwargs=PythonToolOverrideKwargs(chat_files=files),
             code=code,
@@ -388,3 +393,98 @@ def test_artifacts_cache_never_exceeds_cap_on_overwrite() -> None:
     tool._record_generated_artifact("file_0.bin", b"y")
 
     assert len(tool._generated_artifacts) == cap
+
+
+# ---------------------------------------------------------------------------
+# Generated-file cap: bulk extraction must not flood links or the LLM response
+# ---------------------------------------------------------------------------
+
+
+@patch(f"{TOOL_MODULE}.CODE_INTERPRETER_BASE_URL", "http://fake:8000")
+def test_generated_files_capped_in_llm_response() -> None:
+    from onyx.tools.tool_implementations.python.python_tool import (
+        MAX_GENERATED_FILES_REGISTERED,
+    )
+
+    tool = _make_tool()
+    client = MagicMock()
+    client.download_file.return_value = b"bytes"
+    total = MAX_GENERATED_FILES_REGISTERED + 50
+    client.execute_streaming.return_value = iter(
+        [
+            StreamResultEvent(
+                exit_code=0,
+                timed_out=False,
+                duration_ms=10,
+                files=[
+                    WorkspaceFile(path=f"extracted_{i}.h", kind="file", file_id=f"f{i}")
+                    for i in range(total)
+                ],
+            )
+        ]
+    )
+
+    response = _run_tool(tool, client, [])
+
+    result = json.loads(response.llm_facing_response)
+    # The LLM-facing list is capped and a summary notice names the rest.
+    assert len(result["generated_files"]) == MAX_GENERATED_FILES_REGISTERED
+    assert "50 further file(s)" in (result["files_notice"] or "")
+    # Only the registered files are downloaded and saved.
+    assert client.download_file.call_count == MAX_GENERATED_FILES_REGISTERED
+
+
+@patch(f"{TOOL_MODULE}.CODE_INTERPRETER_BASE_URL", "http://fake:8000")
+def test_generated_images_survive_the_cap() -> None:
+    from onyx.tools.tool_implementations.python.python_tool import (
+        MAX_GENERATED_FILES_REGISTERED,
+    )
+
+    tool = _make_tool()
+    client = MagicMock()
+    client.download_file.return_value = b"bytes"
+    # A plot plus a bulk extraction, in extraction order.
+    files = [
+        WorkspaceFile(path=f"extracted_{i}.h", kind="file", file_id=f"f{i}")
+        for i in range(MAX_GENERATED_FILES_REGISTERED + 20)
+    ]
+    files.append(WorkspaceFile(path="plot.png", kind="file", file_id="plot-1"))
+    client.execute_streaming.return_value = iter(
+        [StreamResultEvent(exit_code=0, timed_out=False, duration_ms=10, files=files)]
+    )
+
+    response = _run_tool(tool, client, [])
+
+    result = json.loads(response.llm_facing_response)
+    filenames = [f["filename"] for f in result["generated_files"]]
+    assert len(filenames) == MAX_GENERATED_FILES_REGISTERED
+    # The image is registered even though it is listed last in the workspace.
+    assert "plot.png" in filenames
+    assert "extracted_0.h" in filenames
+
+
+@patch(f"{TOOL_MODULE}.CODE_INTERPRETER_BASE_URL", "http://fake:8000")
+def test_small_file_lists_are_not_capped_or_reordered() -> None:
+    tool = _make_tool()
+    client = MagicMock()
+    client.download_file.return_value = b"bytes"
+    client.execute_streaming.return_value = iter(
+        [
+            StreamResultEvent(
+                exit_code=0,
+                timed_out=False,
+                duration_ms=10,
+                files=[
+                    WorkspaceFile(path="b.csv", kind="file", file_id="f1"),
+                    WorkspaceFile(path="a.png", kind="file", file_id="f2"),
+                ],
+            )
+        ]
+    )
+
+    response = _run_tool(tool, client, [])
+
+    result = json.loads(response.llm_facing_response)
+    assert [f["filename"] for f in result["generated_files"]] == ["b.csv", "a.png"]
+    assert result["files_notice"] is not None
+    assert "further file(s)" not in result["files_notice"]
