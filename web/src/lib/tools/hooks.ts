@@ -196,6 +196,30 @@ const NEUTRAL: ChatConfiguration = {
   filters: NEUTRAL_FILTERS,
 };
 
+/**
+ * Internal search ships attached to agents but stays switched off until the
+ * user opts in for a chat: a fresh configuration seeds the "disabled" state
+ * for it, so a chat never runs (or allows) internal search until the user
+ * pins it in the tools popover. An explicit user choice for the tool always
+ * wins over the seed.
+ */
+function withSearchDefault(
+  configuration: ChatConfiguration,
+  searchToolNumericId: number | undefined
+): ChatConfiguration {
+  if (searchToolNumericId === undefined) return configuration;
+  if (configuration.tools[searchToolNumericId] !== undefined) {
+    return configuration;
+  }
+  return {
+    ...configuration,
+    tools: {
+      ...configuration.tools,
+      [searchToolNumericId]: "disabled",
+    },
+  };
+}
+
 function isNeutralFilters(filters: ChatSearchFilters): boolean {
   return (
     filters.selectedSources === null &&
@@ -537,6 +561,15 @@ export function useToolConfiguration(
     configuration: ChatConfiguration;
   }>({ key: null, configuration: NEUTRAL });
 
+  // The numeric id of the internal search tool on the active agent, if the
+  // agent carries it. Undefined while the agent has not resolved.
+  const searchToolNumericId = useMemo(
+    () =>
+      activeAgent?.tools.find((tool) => tool.in_code_tool_id === SEARCH_TOOL_ID)
+        ?.id,
+    [activeAgent]
+  );
+
   // Storage is only reachable on the client, so the first paint shows neutral
   // and this corrects it. Every later key change comes from the user moving
   // between chats, which is many frames after anything can be sent.
@@ -555,7 +588,11 @@ export function useToolConfiguration(
     setEntry({ key, configuration: stored });
   }, [key]);
 
-  const configuration = entry.key === key ? entry.configuration : NEUTRAL;
+  const rawConfiguration = entry.key === key ? entry.configuration : NEUTRAL;
+  const configuration = useMemo(
+    () => withSearchDefault(rawConfiguration, searchToolNumericId),
+    [rawConfiguration, searchToolNumericId]
+  );
   const ready = key !== null && entry.key === key;
 
   // Written from an effect rather than inside the setter, so two changes made

@@ -1118,11 +1118,11 @@ export default function useChatController({
             ? llmManager.temperature
             : undefined,
           deepResearch,
-          // Only sent when something is actually disabled. To the backend an
-          // explicit list is a whitelist, and this one is built from the tools
-          // the frontend can see — which excludes those marked
-          // `expose_to_frontend=False`. Sending it always would quietly
-          // withhold tools nobody chose to disable.
+          // Internal search starts disabled for every chat, so this whitelist
+          // is the common path. To the backend an explicit list is a
+          // whitelist, but it is only applied to tools the frontend can see
+          // — tools marked `expose_to_frontend=False` keep flowing, so
+          // disabling one visible tool cannot withhold the hidden ones.
           enabledToolIds:
             activeAgent && toolConfiguration.disabledToolIds.length > 0
               ? activeAgent.tools
