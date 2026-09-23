@@ -27,6 +27,7 @@ class LLMProviderManager:
         personas: list[int] | None = None,
         is_public: bool | None = None,
         set_as_default: bool = True,
+        max_input_tokens: int | None = None,
     ) -> DATestLLMProvider:
         print(f"Seeding LLM Providers for {user_performing_action.email}...")
 
@@ -44,7 +45,7 @@ class LLMProviderManager:
                 ModelConfigurationUpsertRequest(
                     name=default_model_name or "gpt-4o-mini",
                     is_visible=True,
-                    max_input_tokens=None,
+                    max_input_tokens=max_input_tokens,
                     display_name=default_model_name or "gpt-4o-mini",
                     supports_image_input=True,
                 )
