@@ -1461,7 +1461,20 @@ def _run_models(
                     all_injected_file_metadata=setup.all_injected_file_metadata,
                     inject_memories_in_prompt=user.use_memories,
                     enable_search_receipts=search_receipts,
+                    check_is_connected=setup.check_is_connected,
                 )
+
+            if not setup.check_is_connected():
+                # The loop exited early on the stop signal. Leave the model
+                # neither succeeded nor errored: its persist call becomes a
+                # no-op and the writer's stop-button path owns the partial
+                # snapshot with the stopped-by-user annotation.
+                logger.info(
+                    "Model %d (%s) stopped by user mid-turn",
+                    model_idx,
+                    setup.model_display_names[model_idx],
+                )
+                return
 
             model_succeeded[model_idx] = True
 

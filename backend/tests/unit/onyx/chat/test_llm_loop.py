@@ -604,6 +604,10 @@ class TestConstructMessageHistory:
         assert result[3].tool_call_id == "tc_1"
         assert result[3].token_count == _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK
 
+        # ...the input history is never mutated by compaction.
+        assert simple_chat_history[2].message == "Huge result"
+        assert simple_chat_history[2].token_count == 60
+
     def test_tail_overflow_stub_does_not_mutate_shared_messages(self) -> None:
         """Stubbing must copy: the same message objects feed later cycles."""
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
@@ -618,7 +622,7 @@ class TestConstructMessageHistory:
             simple_chat_history=simple_chat_history,
             reminder_message=None,
             context_files=create_context_files(),
-            available_tokens=60,
+            available_tokens=50,
         )
 
         assert simple_chat_history[2].token_count == 60
@@ -2317,3 +2321,120 @@ class TestForcedFinalAnswerCycle:
         )
 
         assert SpyTool.run_count == 0
+
+
+class TestStopSignalChecks:
+    """The stop fence (check_is_connected) is checked at the top of every
+    cycle and before each tool batch, so a stopped turn stops burning LLM
+    calls and tool executions instead of zombie-running to completion."""
+
+    def _run_loop(
+        self,
+        steps: list[tuple[LlmStepResult, bool]],
+        tools: list[Tool],
+        check_is_connected: Any,
+    ) -> Any:
+        """Run run_llm_loop with mocked LLM steps; returns the step mock."""
+        llm = Mock()
+        llm.config = LLMConfig(
+            model_provider="openai",
+            model_name="text-model",
+            temperature=0,
+            max_input_tokens=24000,
+        )
+        with (
+            patch("onyx.chat.llm_loop.trace", return_value=nullcontext()),
+            patch("onyx.llm.litellm_singleton.config.initialize_litellm"),
+            patch(
+                "onyx.chat.llm_loop.get_session_with_current_tenant",
+                return_value=nullcontext(),
+            ),
+            patch("onyx.chat.llm_loop.get_default_base_system_prompt", return_value=""),
+            patch("onyx.chat.llm_loop.select_reminder_text", return_value=""),
+            patch("onyx.chat.llm_loop.run_llm_step", side_effect=steps) as step,
+        ):
+            run_llm_loop(
+                emitter=Mock(),
+                state_container=Mock(),
+                simple_chat_history=[
+                    create_message("Find the thing", MessageType.USER, 10)
+                ],
+                tools=tools,
+                custom_agent_prompt=None,
+                context_files=create_context_files(),
+                persona=None,
+                user_memory_context=None,
+                llm=llm,
+                token_counter=lambda s: max(1, len(s) // 4),
+                check_is_connected=check_is_connected,
+            )
+        return step
+
+    def test_stop_before_first_cycle_skips_the_llm(self) -> None:
+        step = self._run_loop(
+            steps=[(LlmStepResult(reasoning=None, answer="x", tool_calls=None), False)],
+            tools=[_FakeLoopTool("fake_search")],
+            check_is_connected=lambda: False,
+        )
+        # Cancelled before any LLM call was made.
+        assert step.call_args_list == []
+
+    def test_stop_before_tool_batch_skips_execution(self) -> None:
+        tool = _FakeLoopTool("fake_search")
+        with patch.object(tool, "run", wraps=tool.run) as run_spy:
+            # The fence is still set (connected) for cycle 0, then the user
+            # presses stop while the LLM step runs — detected before the
+            # tool batch.
+            calls = {"n": 0}
+
+            def fence() -> bool:
+                calls["n"] += 1
+                return calls["n"] <= 1
+
+            step = self._run_loop(
+                steps=[
+                    (
+                        LlmStepResult(
+                            reasoning=None,
+                            answer="Calling the tool.",
+                            tool_calls=[_kickoff("call_1", "fake_search")],
+                        ),
+                        False,
+                    ),
+                    (
+                        LlmStepResult(
+                            reasoning=None, answer="Final answer.", tool_calls=None
+                        ),
+                        False,
+                    ),
+                ],
+                tools=[tool],
+                check_is_connected=fence,
+            )
+
+        # Cycle 0 ran; the tool batch and cycle 1 never did.
+        assert len(step.call_args_list) == 1
+        assert run_spy.call_count == 0
+
+    def test_connected_loop_runs_to_completion(self) -> None:
+        step = self._run_loop(
+            steps=[
+                (
+                    LlmStepResult(
+                        reasoning=None,
+                        answer="Working.",
+                        tool_calls=[_kickoff("call_1", "fake_search")],
+                    ),
+                    False,
+                ),
+                (
+                    LlmStepResult(
+                        reasoning=None, answer="Final answer.", tool_calls=None
+                    ),
+                    False,
+                ),
+            ],
+            tools=[_FakeLoopTool("fake_search")],
+            check_is_connected=lambda: True,
+        )
+        assert len(step.call_args_list) == 2

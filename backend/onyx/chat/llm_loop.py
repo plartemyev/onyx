@@ -676,7 +676,7 @@ def construct_message_history(
 
     # The in-turn tail grows every tool cycle (narration + tool response +
     # reminder); when it alone exceeds the budget, compact it instead of
-    # failing the turn and discarding all in-turn progress.
+    # failing the whole turn and discarding all in-turn progress.
     messages_after_last_user = _compact_in_turn_tail(
         messages_after_last_user,
         available_tokens=history_token_budget - last_user_tokens,
@@ -1159,6 +1159,11 @@ def run_llm_loop(
     inject_memories_in_prompt: bool = True,
     # Append retrieval receipts to internal search responses (see onyx.chat.search_receipts).
     enable_search_receipts: bool = False,
+    # Stop-signal fence (Redis). Checked between cycles and before each tool
+    # batch so a stopped turn stops burning LLM calls and tool executions
+    # instead of running as a zombie until it finishes on its own. The stream
+    # writer owns persistence: this loop just exits promptly.
+    check_is_connected: Callable[[], bool] | None = None,
 ) -> None:
     with trace(
         "run_llm_loop",
@@ -1287,6 +1292,12 @@ def run_llm_loop(
         reasoning_cycles = 0
         turn_started_monotonic = time.monotonic()
         for llm_cycle_count in range(MAX_LLM_CYCLES):
+            if check_is_connected is not None and not check_is_connected():
+                logger.info(
+                    "Stop signal detected before LLM cycle %d; ending the turn",
+                    llm_cycle_count,
+                )
+                return
             # Handling tool calls based on cycle count and past cycle conditions
             out_of_cycles = llm_cycle_count == MAX_LLM_CYCLES - 1
             out_of_time = (
@@ -1550,6 +1561,18 @@ def run_llm_loop(
             # each tool might have custom logic here
             tool_responses: list[ToolResponse] = []
             tool_calls = llm_step_result.tool_calls or []
+
+            if (
+                tool_calls
+                and check_is_connected is not None
+                and not check_is_connected()
+            ):
+                logger.info(
+                    "Stop signal detected before tool batch of cycle %d; "
+                    "ending the turn",
+                    llm_cycle_count,
+                )
+                return
 
             if INTEGRATION_TESTS_MODE and tool_calls:
                 for tool_call in tool_calls:
