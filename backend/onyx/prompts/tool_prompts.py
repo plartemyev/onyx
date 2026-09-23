@@ -133,7 +133,8 @@ Variables do not persist between calls, so persist any needed intermediate resul
 {files_guidance}
 {workspace_guidance}
 The sandbox has pip, uv, and poetry. Install with `pip install <package>` (or `uv pip install <package>`); installs persist for the rest of the chat. \
-You have numpy, scipy, pandas, matplotlib, Pillow, OpenCV, librosa, soundfile, requests, httpx, and openpyxl preinstalled.
+You have numpy, scipy, pandas, matplotlib, Pillow, OpenCV, librosa, soundfile, requests, httpx, and openpyxl preinstalled. \
+Java (`java`, `javac`) and PlantUML (`plantuml -tpng diagram.puml`, also `-tsvg`) are preinstalled — render diagrams locally instead of installing anything.
 Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
 Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
 Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.

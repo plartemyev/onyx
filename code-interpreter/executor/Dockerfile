@@ -1,13 +1,14 @@
 # Research executor image (Arch Linux base).
 #
 # Pinned dated base snapshot for reproducibility. Provides pacman-managed
-# system tools (python, pip, uv, poetry, ffmpeg, libsndfile) plus a
-# uv-installed research Python stack in /opt/executor-venv.
+# system tools (python, pip, uv, poetry, ffmpeg, libsndfile, JDK, PlantUML)
+# plus a uv-installed research Python stack in /opt/executor-venv.
 FROM archlinux:base-20260920.0.596911
 
 # Refresh the keyring against current signing state, then install the system
 # toolchain. The pinned base image means repo versions resolve at build time;
-# both package managers record their resolved sets for auditing.
+# both package managers record their resolved sets for auditing. PlantUML
+# pulls a Java runtime; the full JDK is included so agents can also compile.
 RUN pacman-key --init \
     && pacman -Sy --noconfirm archlinux-keyring \
     && pacman -Su --noconfirm \
@@ -20,6 +21,8 @@ RUN pacman-key --init \
         libsndfile \
         git \
         ca-certificates \
+        jdk-openjdk \
+        plantuml \
     && pacman -Scc --noconfirm \
     && rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
 
