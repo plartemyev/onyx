@@ -205,7 +205,12 @@ export const useMarkdownComponents = (
       if (src === "file_link") {
         return null;
       }
-      return <img src={src} alt={props.alt ?? ""} />;
+      // Anything else (a remote URL) never reaches the browser: loading it
+      // would hand the user's IP and fingerprint to the cited site just for
+      // reading an agent report. Agents are told to download images into
+      // chat artifacts with download_file and embed the file they return,
+      // which lands here as a /api/chat/file URL.
+      return null;
     },
     []
   );

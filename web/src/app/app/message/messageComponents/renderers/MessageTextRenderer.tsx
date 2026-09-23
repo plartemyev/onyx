@@ -395,7 +395,11 @@ export const MessageTextRenderer: MessageRenderer<
         if (url === "file_link") {
           return null;
         }
-        return <img src={url} alt={alt ?? ""} />;
+        // Remote URLs are never fetched by the browser: that would leak the
+        // reader's IP and fingerprint to the cited site. Agents must
+        // download images into chat artifacts (download_file) and embed the
+        // returned file link, which lands in the fileId branch above.
+        return null;
       },
       p: ({ children, dir }) => (
         <MemoizedParagraph dir={dir} className="font-main-content-body">

@@ -56,8 +56,10 @@ const upgradeInsecureRequests =
   process.env.NODE_ENV !== "development";
 
 const CSP_HEADER = [
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;",
-  "font-src 'self' https://fonts.gstatic.com;",
+  // Fonts are self-hosted (next/font downloads them at build time), so no
+  // external style or font origins are needed.
+  "style-src 'self' 'unsafe-inline';",
+  "font-src 'self';",
   "object-src 'none';",
   "base-uri 'self';",
   "form-action 'self';",
@@ -82,8 +84,10 @@ const CSP_HEADER = [
         sentryConnectSrc ? ` ${sentryConnectSrc}` : ""
       };`
     : "",
-  // img-src stays broad: chat markdown and connector content render remote
-  // images.
+  // img-src stays broad for connector content, which renders remote images
+  // inside documents the user opens explicitly. Chat markdown is different:
+  // the message renderers only draw images served from /api/chat/file, so an
+  // agent report never triggers third-party requests.
   strictCspEnabled ? "img-src 'self' data: blob: https:;" : "",
   // cdn.onyx.app serves the Craft page's animated background video.
   strictCspEnabled ? "media-src 'self' blob: data: https://cdn.onyx.app;" : "",
