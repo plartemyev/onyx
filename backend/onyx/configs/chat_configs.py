@@ -11,6 +11,20 @@ MAX_CHUNKS_FED_TO_CHAT = int(os.environ.get("MAX_CHUNKS_FED_TO_CHAT") or 25)
 # tool-heavy MCPs that legitimately need more turns.
 MAX_LLM_CYCLES: int = int(os.environ.get("MAX_LLM_CYCLES") or 6)
 
+# Wall-clock budget for a whole chat turn (all LLM cycles + tool calls). When
+# exceeded, the loop jumps to the forced-final-answer cycle so the user gets a
+# partial answer instead of an unbounded crawl. Must stay above the per-tool
+# budget below so at least one forced answer cycle is reachable.
+CHAT_TURN_BUDGET_SECONDS: int = int(os.environ.get("CHAT_TURN_BUDGET_SECONDS") or 1800)
+
+# Wall-clock budget for one tool call (applied to the batch of parallel tool
+# calls). Must sit ABOVE the code-interpreter executor's per-execution timeout
+# (CODE_INTERPRETER_DEFAULT_TIMEOUT_MS) so the executor's structured
+# timed_out result reaches the model instead of a generic tombstone.
+TOOL_EXECUTION_TIMEOUT_SECONDS: int = int(
+    os.environ.get("TOOL_EXECUTION_TIMEOUT_SECONDS") or 240
+)
+
 # 1 / (1 + DOC_TIME_DECAY * doc-age-in-years), set to 0 to have no decay
 # Capped in Vespa at 0.5
 DOC_TIME_DECAY = float(

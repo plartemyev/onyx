@@ -41,7 +41,7 @@ from onyx.chat.prompt_utils import (
 from onyx.chat.search_receipts import maybe_append_search_receipt
 from onyx.chat.token_budget import resolve_chat_token_budget
 from onyx.configs.app_configs import INTEGRATION_TESTS_MODE
-from onyx.configs.chat_configs import MAX_LLM_CYCLES
+from onyx.configs.chat_configs import CHAT_TURN_BUDGET_SECONDS, MAX_LLM_CYCLES
 from onyx.configs.constants import DocumentSource, MessageType
 from onyx.context.search.models import SearchDoc, SearchDocsResponse
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
@@ -1140,10 +1140,19 @@ def run_llm_loop(
         )
 
         reasoning_cycles = 0
+        turn_started_monotonic = time.monotonic()
         for llm_cycle_count in range(MAX_LLM_CYCLES):
             # Handling tool calls based on cycle count and past cycle conditions
             out_of_cycles = llm_cycle_count == MAX_LLM_CYCLES - 1
-            forced_final_answer = out_of_cycles or ran_image_gen
+            out_of_time = (
+                time.monotonic() - turn_started_monotonic >= CHAT_TURN_BUDGET_SECONDS
+            )
+            if out_of_time and not out_of_cycles:
+                logger.info(
+                    "Turn time budget of %ds exceeded; forcing final answer",
+                    CHAT_TURN_BUDGET_SECONDS,
+                )
+            forced_final_answer = out_of_cycles or ran_image_gen or out_of_time
             if forced_tool_id:
                 # Needs to be just the single one because the "required" currently doesn't have a specified tool, just a binary
                 final_tools = [tool for tool in tools if tool.id == forced_tool_id]

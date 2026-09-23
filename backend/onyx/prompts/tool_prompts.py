@@ -91,6 +91,16 @@ PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE = """
 Internet access for this session is disabled. Do not make external web requests, API calls, or package installations as they will fail.
 """.strip()
 
+# Download hygiene for network-enabled sandboxes: a stalled transfer burns the
+# whole tool time budget (observed: 600 s per download attempt on a trickling
+# archive.org node), and urllib's timeout= only bounds a single socket read,
+# so it never fires on a slow trickle.
+PYTHON_TOOL_DOWNLOAD_GUIDANCE = """
+When downloading files, check `Content-Length` first, stream the body to disk in chunks, and print progress every few MB. \
+Budget each download (about 120 seconds per file): if the transfer trickles (under roughly 100 KB/s after 30 seconds), abort it, report the bytes received, and move on. \
+`urllib`'s `timeout=` only bounds a single socket read, not the whole transfer, so it cannot stop a slow trickle.
+""".strip()
+
 # Guidance when the code-interpreter supports persistent sessions: the sandbox
 # keeps its filesystem and venv for the whole chat.
 PYTHON_TOOL_SESSION_GUIDANCE = """
@@ -106,6 +116,7 @@ Any files uploaded to the chat will automatically be available in the execution 
 Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
 Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
 {network_guidance}
+{download_guidance}
 Write chart titles, axis labels, legends, and other text rendered into images in the language you reply in. \
 The sandbox fonts cannot shape Arabic or render CJK glyphs (they come out as disconnected letters or boxes), so for those languages write the rendered text in English and explain the labels in your reply.
 Downscale large images before pixel-level edits or compositing; full-resolution photo edits can exceed the sandbox memory limit.
@@ -120,6 +131,7 @@ Any files uploaded to the chat will automatically be available in the execution 
 The current directory in the file system can be used to save and persist user files. Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
 Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
 {network_guidance}
+{download_guidance}
 Use `openpyxl` to read and write Excel files. You have access to libraries like numpy, pandas, scipy, matplotlib, and PIL.
 Write chart titles, axis labels, legends, and other text rendered into images in the language you reply in. \
 The sandbox fonts cannot shape Arabic or render CJK glyphs (they come out as disconnected letters or boxes), so for those languages write the rendered text in English and explain the labels in your reply.

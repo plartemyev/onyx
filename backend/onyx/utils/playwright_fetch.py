@@ -103,6 +103,12 @@ DEFAULT_BOT_CHALLENGE_GRACE_MS = 5000
 # Generous because we *want* to absorb a Cloudflare interstitial.
 DEFAULT_NAVIGATION_TIMEOUT_MS = 30000
 
+# Total budget for binary downloads (download_file). Covers the 50 MB
+# download cap at ~430 KB/s; slower links are trickles worth aborting rather
+# than waiting out — the in-sandbox equivalent of this failure was a run of
+# 10-minute tool timeouts per download attempt.
+BINARY_DOWNLOAD_TIMEOUT_MS = 120000
+
 # Common distro Chromium locations (Debian/Arch/Fedora packages).
 _CHROMIUM_CANDIDATE_PATHS = (
     "/usr/bin/chromium",

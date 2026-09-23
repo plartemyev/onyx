@@ -57,14 +57,21 @@ services:
       # Read at import time — applies on the next api_server restart; turn off
       # (and restart) once evaluation is done, it logs full prompts.
       - LOG_ONYX_MODEL_INTERACTIONS=true
-      # Persistent-session code interpreter (research sandbox). Per-call caps
-      # must match the code-interpreter service's (see its block below).
+      # Persistent-session code interpreter (research sandbox). The per-call
+      # exec budget must stay BELOW the code-interpreter service's cap
+      # (MAX_EXEC_TIMEOUT_MS below) and BELOW TOOL_EXECUTION_TIMEOUT_SECONDS,
+      # so the executor's structured timed_out result reaches the model.
       - CODE_INTERPRETER_SESSIONS_ENABLED=true
       - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
-      - CODE_INTERPRETER_DEFAULT_TIMEOUT_MS=600000
+      - CODE_INTERPRETER_DEFAULT_TIMEOUT_MS=180000
       - CODE_INTERPRETER_MAX_STAGED_FILES=100
       - CODE_INTERPRETER_MAX_STAGED_BYTES=524288000
       - CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS=100
+      # One tool call (batch) budget; must stay above the per-exec budget above.
+      - TOOL_EXECUTION_TIMEOUT_SECONDS=240
+      # Whole-turn wall clock: forces the final answer instead of an unbounded
+      # crawl when downloads/tool calls stall.
+      - CHAT_TURN_BUDGET_SECONDS=1800
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
   # processing). Match api_server's slow-inference tolerance plus the
@@ -77,10 +84,12 @@ services:
       - MAX_CHUNKS_FED_TO_CHAT=50
       - CODE_INTERPRETER_SESSIONS_ENABLED=true
       - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
-      - CODE_INTERPRETER_DEFAULT_TIMEOUT_MS=600000
+      - CODE_INTERPRETER_DEFAULT_TIMEOUT_MS=180000
       - CODE_INTERPRETER_MAX_STAGED_FILES=100
       - CODE_INTERPRETER_MAX_STAGED_BYTES=524288000
       - CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS=100
+      - TOOL_EXECUTION_TIMEOUT_SECONDS=240
+      - CHAT_TURN_BUDGET_SECONDS=1800
 
   # Persistent-session code interpreter: forked service (0.5.0) built from this
   # repo plus an Arch-based research executor image (pip/uv/poetry, ffmpeg,

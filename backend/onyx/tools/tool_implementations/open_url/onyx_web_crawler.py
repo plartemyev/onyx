@@ -28,6 +28,7 @@ from onyx.tools.tool_implementations.open_url.models import (
 )
 from onyx.utils.logger import setup_logger
 from onyx.utils.playwright_fetch import (
+    BINARY_DOWNLOAD_TIMEOUT_MS,
     DEFAULT_HEADERS,
     IMAGE_FETCH_HEADERS,
     DownloadedContent,
@@ -758,7 +759,9 @@ class OnyxWebCrawler(WebContentProvider):
         # seconds after the fast-path attempt — pace it separately.
         self._pacer.pace(url)
         rendered_content: DownloadedContent | None = fetch_content_bytes(
-            url, allow_private_network=not self._should_validate_ssrf()
+            url,
+            allow_private_network=not self._should_validate_ssrf(),
+            navigation_timeout_ms=BINARY_DOWNLOAD_TIMEOUT_MS,
         )
         if rendered_content is None:
             return None

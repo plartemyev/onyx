@@ -793,12 +793,10 @@ class DockerExecutor(BaseExecutor):
             timed_out = False
         except subprocess.TimeoutExpired:
             timed_out = True
-            # Kill bash inside the container; pkill matches all bash procs in the
-            # container — acceptable since the agent runs commands sequentially.
-            subprocess.run(  # nosec B603
-                [self.docker_binary, "exec", session_id, "pkill", "-9", "bash"],
-                capture_output=True,
-            )
+            # Kill bash inside the container; pkill matches all bash procs of
+            # the exec user in the container — acceptable since the agent runs
+            # commands sequentially.
+            self._pkill_in_container(session_id, "bash", match_full_cmdline=False)
             proc.kill()
             stdout_bytes, stderr_bytes = proc.communicate()
 
@@ -938,18 +936,7 @@ class DockerExecutor(BaseExecutor):
                 timed_out = False
             except subprocess.TimeoutExpired:
                 timed_out = True
-                subprocess.run(  # nosec B603
-                    [
-                        self.docker_binary,
-                        "exec",
-                        session_id,
-                        "pkill",
-                        "-9",
-                        "-f",
-                        script_name,
-                    ],
-                    capture_output=True,
-                )
+                self._pkill_in_container(session_id, script_name, match_full_cmdline=True)
                 proc.kill()
                 stdout_bytes, stderr_bytes = proc.communicate()
         finally:
@@ -1000,21 +987,18 @@ class DockerExecutor(BaseExecutor):
             timed_out = yield from _stream_process_output(proc, deadline, max_output_bytes)
 
             if timed_out:
-                subprocess.run(  # nosec B603
-                    [
-                        self.docker_binary,
-                        "exec",
-                        session_id,
-                        "pkill",
-                        "-9",
-                        "-f",
-                        script_name,
-                    ],
-                    capture_output=True,
-                )
+                self._pkill_in_container(session_id, script_name, match_full_cmdline=True)
                 proc.kill()
             proc.wait()
         finally:
+            # The SSE consumer can vanish mid-run (client disconnect closes this
+            # generator via GeneratorExit before the timeout path runs). The
+            # output has no consumer then, so kill the in-container process
+            # instead of leaking it with its sockets.
+            if proc.poll() is None:
+                self._pkill_in_container(session_id, script_name, match_full_cmdline=True)
+                proc.kill()
+                proc.wait()
             self._remove_session_script(session_id, script_path)
 
         workspace_snapshot = self._extract_workspace_snapshot(
@@ -1029,6 +1013,31 @@ class DockerExecutor(BaseExecutor):
             duration_ms=duration_ms,
             files=workspace_snapshot,
         )
+
+    def _pkill_in_container(self, container: str, pattern: str, match_full_cmdline: bool) -> None:
+        """pkill inside an executor container as the exec user.
+
+        The containers drop all capabilities except CHOWN, so root's pkill gets
+        EPERM against the exec user's processes (observed as leaked timed-out
+        executions). The exec user owns those processes and needs no
+        capabilities to kill them.
+        """
+        pkill_cmd = ["pkill", "-9"]
+        if match_full_cmdline:
+            pkill_cmd.append("-f")
+        pkill_cmd.append(pattern)
+        result = subprocess.run(  # nosec B603
+            [self.docker_binary, "exec", "-u", EXEC_USER, container, *pkill_cmd],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "pkill of %r in container %s failed rc=%d stderr=%s",
+                pattern,
+                container,
+                result.returncode,
+                result.stderr.decode("utf-8", "replace")[:200],
+            )
 
     def keepalive_session(self, session_id: str, *, ttl_seconds: int) -> SessionInfo:
         """Extend the session expiry to now + ttl_seconds."""
@@ -1146,18 +1155,9 @@ class DockerExecutor(BaseExecutor):
                 timed_out = False
             except subprocess.TimeoutExpired:
                 timed_out = True
-                # Kill the Python process in the container (as root to ensure we can kill it)
-                subprocess.run(
-                    [
-                        self.docker_binary,
-                        "exec",
-                        ctx.container_name,
-                        "pkill",
-                        "-9",
-                        "python",
-                    ],
-                    capture_output=True,
-                )
+                # Kill the Python process in the container; the exec user owns
+                # it, root in a cap-stripped container does not.
+                self._pkill_in_container(ctx.container_name, "python", match_full_cmdline=False)
                 ctx.proc.kill()
                 stdout_bytes, stderr_bytes = ctx.proc.communicate()
 
@@ -1184,17 +1184,7 @@ class DockerExecutor(BaseExecutor):
     def _terminate_process(self, ctx: _ExecContext, timed_out: bool) -> None:
         """Kill the process on timeout or wait for normal exit."""
         if timed_out:
-            subprocess.run(
-                [
-                    self.docker_binary,
-                    "exec",
-                    ctx.container_name,
-                    "pkill",
-                    "-9",
-                    "python",
-                ],
-                capture_output=True,
-            )
+            self._pkill_in_container(ctx.container_name, "python", match_full_cmdline=False)
             ctx.proc.kill()
         ctx.proc.wait()
 

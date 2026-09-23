@@ -59,6 +59,65 @@ def session(executor: DockerExecutor) -> Generator[str, None, None]:
 
 
 @pytest.mark.integration
+class TestSessionExecutionTimeout:
+    """Regression tests for the timed-out kill.
+
+    The kill used to run pkill as root, which gets EPERM inside the
+    cap-stripped session container (CAP_DROP ALL + CHOWN) — timed-out
+    executions leaked their processes with open sockets.
+    """
+
+    @staticmethod
+    def _count_exec_processes(session: str) -> int:
+        probe = subprocess.run(
+            [
+                "docker",
+                "exec",
+                session,
+                "bash",
+                "-c",
+                "pgrep -f 'onyx-exec-' | wc -l",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        return int(probe.stdout.strip() or "0")
+
+    def test_timeout_kills_the_executed_process(
+        self, executor: DockerExecutor, session: str
+    ) -> None:
+        result = executor.execute_python_in_session(
+            session,
+            code="import time\nprint('start', flush=True)\ntime.sleep(120)\n",
+            stdin=None,
+            timeout_ms=3_000,
+            max_output_bytes=10_000,
+        )
+        assert result.timed_out is True
+        assert self._count_exec_processes(session) == 0
+
+    def test_streaming_abandonment_kills_the_executed_process(
+        self, executor: DockerExecutor, session: str
+    ) -> None:
+        """A client that stops consuming the SSE mid-run used to leak the
+        process: the kill only ran on the timeout path, and GeneratorExit
+        skipped it."""
+        gen = executor.execute_python_in_session_streaming(
+            session,
+            code="import time\nprint('start', flush=True)\ntime.sleep(120)\n",
+            stdin=None,
+            timeout_ms=60_000,
+            max_output_bytes=10_000,
+        )
+        for _ in gen:
+            break
+        gen.close()
+        assert self._count_exec_processes(session) == 0
+
+
+@pytest.mark.integration
 class TestSessionLifecycle:
     def test_workspace_and_installs_persist_across_executions(
         self, executor: DockerExecutor, session: str

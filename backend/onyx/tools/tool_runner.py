@@ -4,6 +4,9 @@ from typing import Any
 
 import onyx.tracing.framework._error_tracing as _error_tracing
 from onyx.chat.models import ChatMessageSimple
+from onyx.configs.chat_configs import (
+    TOOL_EXECUTION_TIMEOUT_SECONDS as TOOL_EXECUTION_TIMEOUT_SECONDS_CONFIG,
+)
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDocsResponse
 from onyx.db.memory import UserMemoryContext
@@ -54,8 +57,15 @@ QUERIES_FIELD = "queries"
 URLS_FIELD = "urls"
 GENERIC_TOOL_ERROR_MESSAGE = "Tool failed with error: {error}"
 
-# 10 minute timeout for tool execution to prevent indefinite hangs
-TOOL_EXECUTION_TIMEOUT_SECONDS = 10 * 60
+# Wall-clock budget for one batch of parallel tool calls. Sits above the
+# code-interpreter executor's per-execution timeout so the executor's
+# structured timed_out result reaches the model instead of a tombstone.
+TOOL_EXECUTION_TIMEOUT_SECONDS = TOOL_EXECUTION_TIMEOUT_SECONDS_CONFIG
+
+# The coding agent runs its own multi-cycle LLM loop (MAX_CODING_AGENT_CYCLES),
+# so it needs a far larger safety net than ordinary tools. This should never
+# fire in practice — it only bounds a wedged run.
+CODING_AGENT_TOOL_TIMEOUT_SECONDS = 40 * 60
 
 # Mapping of tool name to the field that should be merged when multiple calls exist
 MERGEABLE_TOOL_FIELDS: dict[str, str] = {
@@ -474,11 +484,17 @@ def run_tool_calls(
         for tool, tool_call, override_kwargs in tool_run_params
     ]
 
+    # The coding agent's internal loop dwarfs ordinary tool runtimes; widen the
+    # batch budget when one is in the batch so the safety net stays a net.
+    batch_timeout = TOOL_EXECUTION_TIMEOUT_SECONDS
+    if any(isinstance(tool, CodingAgentTool) for tool, _, _ in tool_run_params):
+        batch_timeout = max(batch_timeout, CODING_AGENT_TOOL_TIMEOUT_SECONDS)
+
     tool_run_results: list[ToolResponse | None] = run_functions_tuples_in_parallel(
         functions_with_args,
         allow_failures=True,  # Continue even if some tools fail
         max_workers=max_concurrent_tools,
-        timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
+        timeout=batch_timeout,
     )
 
     # A None result means the threadpool layer lost the call (timeout or worker
