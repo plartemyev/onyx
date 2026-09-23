@@ -53,8 +53,12 @@ New env vars: `SESSION_MAX_LIFETIME_SEC`, `SESSION_NETWORK_MODE`,
 Replacement for `onyxdotapp/python-executor-sci`, built from a pinned dated
 Arch snapshot (`archlinux:base-20260920.0.596911`):
 
-- pacman: `python`, `python-pip`, `uv`, `python-poetry`, `ffmpeg`,
-  `libsndfile`, `git`
+- pacman: `python`, `python-pip`, `python-requests`, `uv`, `python-poetry`,
+  `ffmpeg`, `libsndfile`, `git`, `jdk-openjdk`, `plantuml`, `noto-fonts`.
+  PlantUML needs the JDK and at least one font: with no fonts on the system,
+  it dies in Java AWT ("Fontconfig head is null"). Verified in-image:
+  `plantuml -checkonly d.puml` (exit 0 valid / nonzero + no output invalid),
+  `plantuml -tsvg d.puml`, `plantuml -tpng d.puml`.
 - uv-installed research stack in `/opt/executor-venv` (requirements.in):
   numpy, scipy, pandas, matplotlib, pillow, opencv-python-headless, librosa,
   soundfile, requests, httpx, openpyxl

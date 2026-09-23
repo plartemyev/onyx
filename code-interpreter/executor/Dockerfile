@@ -9,12 +9,16 @@ FROM archlinux:base-20260920.0.596911
 # toolchain. The pinned base image means repo versions resolve at build time;
 # both package managers record their resolved sets for auditing. PlantUML
 # pulls a Java runtime; the full JDK is included so agents can also compile.
+# python-requests keeps `requests` importable by the base interpreter, not
+# just inside the baked venv. A font package is required: with no fonts on
+# the system, PlantUML dies in Java AWT ("Fontconfig head is null").
 RUN pacman-key --init \
     && pacman -Sy --noconfirm archlinux-keyring \
     && pacman -Su --noconfirm \
     && pacman -S --noconfirm --needed \
         python \
         python-pip \
+        python-requests \
         uv \
         python-poetry \
         ffmpeg \
@@ -23,6 +27,7 @@ RUN pacman-key --init \
         ca-certificates \
         jdk-openjdk \
         plantuml \
+        noto-fonts \
     && pacman -Scc --noconfirm \
     && rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
 
