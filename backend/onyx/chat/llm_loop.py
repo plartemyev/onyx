@@ -90,7 +90,10 @@ from onyx.tools.tool_implementations.image_analysis.analyze_image_tool import (
 from onyx.tools.tool_implementations.images.models import FinalImageGenerationResponse
 from onyx.tools.tool_implementations.memory.models import MemoryToolResponse
 from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
-from onyx.tools.tool_implementations.python.python_tool import PythonTool
+from onyx.tools.tool_implementations.python.python_tool import (
+    PythonTool,
+    fetch_workspace_state_note,
+)
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
 from onyx.tools.tool_implementations.web_search.utils import extract_url_snippet_map
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
@@ -1290,6 +1293,12 @@ def run_llm_loop(
         )
 
         reasoning_cycles = 0
+        # One-line workspace-state note for the first cycle: with a persistent
+        # sandbox, files from earlier turns survive but are invisible to this
+        # turn's conversation. Best-effort — None when there is no session.
+        workspace_state_note: str | None = None
+        if any(isinstance(tool, PythonTool) for tool in tools):
+            workspace_state_note = fetch_workspace_state_note(chat_session_id)
         turn_started_monotonic = time.monotonic()
         for llm_cycle_count in range(MAX_LLM_CYCLES):
             if check_is_connected is not None and not check_is_connected():
@@ -1442,6 +1451,12 @@ def run_llm_loop(
                 or always_cite_documents,
                 include_file_reminder=code_interpreter_file_generated,
             )
+            if llm_cycle_count == 0 and workspace_state_note:
+                reminder_message_text = (
+                    f"{workspace_state_note}\n\n{reminder_message_text}"
+                    if reminder_message_text
+                    else workspace_state_note
+                )
 
             reminder_msg = (
                 ChatMessageSimple(

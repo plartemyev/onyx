@@ -214,6 +214,54 @@ def _parse_declared_files(llm_kwargs: dict[str, Any]) -> list[ChatFile]:
     return declared[:DECLARED_FILES_MAX_COUNT]
 
 
+def fetch_workspace_state_note(
+    chat_session_id: str | None,
+    *,
+    max_entries: int = 15,
+) -> str | None:
+    """One-line summary of the persistent sandbox workspace, for turn start.
+
+    Sandbox files survive across turns but leave no trace in the conversation
+    (observed: a later turn re-downloaded a JDK that was still in the
+    workspace, then repaired its own mess). Best-effort: None when sessions
+    are disabled, unmapped, expired, or the listing fails.
+    """
+    if (
+        not chat_session_id
+        or not CODE_INTERPRETER_SESSIONS_ENABLED
+        or not CODE_INTERPRETER_BASE_URL
+    ):
+        return None
+    try:
+        ci_session_id = fetch_ci_session_id(chat_session_id)
+        if not ci_session_id:
+            return None
+        with CodeInterpreterClient() as client:
+            paths = client.list_session_files(ci_session_id)
+    except Exception:
+        logger.debug("Workspace listing unavailable for chat %s", chat_session_id)
+        return None
+
+    top_level = sorted(
+        {
+            path.split("/")[0]
+            for path in paths
+            if path and not path.split("/")[0].startswith(".")
+        }
+    )
+    if not top_level:
+        return None
+    shown = top_level[:max_entries]
+    more = len(top_level) - len(shown)
+    suffix = f"; and {more} more" if more > 0 else ""
+    return (
+        "Your persistent sandbox workspace already contains: "
+        + ", ".join(shown)
+        + suffix
+        + ". Reuse these files instead of recreating them."
+    )
+
+
 def _stage_declared_files(
     client: CodeInterpreterClient,
     ci_session_id: str | None,
@@ -251,9 +299,7 @@ def _stage_declared_files(
                 file_id = client.upload_file(declared_file.content, filename)
                 stage_specs.append({"path": filename, "file_id": file_id})
         except Exception:
-            logger.warning(
-                "Failed to stage declared file %s", declared_file.filename
-            )
+            logger.warning("Failed to stage declared file %s", declared_file.filename)
             failures.append(declared_file.filename)
             continue
         total_bytes += len(declared_file.content)
@@ -1148,9 +1194,7 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                 "if needed."
             )
             files_notice = (
-                f"{files_notice} {overflow_notice}"
-                if files_notice
-                else overflow_notice
+                f"{files_notice} {overflow_notice}" if files_notice else overflow_notice
             )
 
         result = LlmPythonExecutionResult(
