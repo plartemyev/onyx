@@ -72,6 +72,9 @@ services:
       # Whole-turn wall clock: forces the final answer instead of an unbounded
       # crawl when downloads/tool calls stall.
       - CHAT_TURN_BUDGET_SECONDS=1800
+      # download_file cap: the old 50 MB default rejected JDK-sized archives
+      # that the sandbox itself downloads fine. Bodies stream to a disk spool.
+      - BINARY_DOWNLOAD_MAX_SIZE_BYTES=524288000
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
   # processing). Match api_server's slow-inference tolerance plus the
