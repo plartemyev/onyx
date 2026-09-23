@@ -215,14 +215,31 @@ class DockerExecutor(BaseExecutor):
         """Extract files from the container workspace after execution using tar."""
         try:
             excludes = [*SESSION_CONTROL_EXCLUDES, *(extra_excludes or ())]
+            # Run as the exec user: the container drops every capability but
+            # CHOWN, so root cannot read the exec user's mode-600 files, and
+            # one unreadable file would fail the whole tar (empty snapshot).
             # Use tar to get all files from workspace (excluding control paths)
-            tar_cmd = [self.docker_binary, "exec", container_name, "tar", "-c"]
+            tar_cmd = [
+                self.docker_binary,
+                "exec",
+                "-u",
+                EXEC_USER,
+                container_name,
+                "tar",
+                "-c",
+            ]
             for exclude in excludes:
                 tar_cmd.extend(["--exclude", exclude])
             tar_cmd.extend(["-C", "/workspace", "."])
             tar_result = subprocess.run(tar_cmd, capture_output=True, timeout=60)
 
             if tar_result.returncode != 0:
+                logger.warning(
+                    "Workspace snapshot tar failed (%d) in %s: %s",
+                    tar_result.returncode,
+                    container_name,
+                    (tar_result.stderr or b"").decode(errors="replace")[-500:],
+                )
                 return tuple()
 
             entries = []
@@ -254,6 +271,7 @@ class DockerExecutor(BaseExecutor):
 
             return tuple(entries)
         except (subprocess.TimeoutExpired, Exception):
+            logger.exception("Workspace snapshot extraction failed in %s", container_name)
             return tuple()
 
     def _build_run_command(

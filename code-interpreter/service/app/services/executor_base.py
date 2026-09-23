@@ -123,8 +123,17 @@ SESSION_EXPIRES_AT_KEY = "code-interpreter.expires-at"
 SESSION_EXPIRY_FILE = ".onyx-session-expires"
 # Per-session virtualenv created in the workspace. Excluded from snapshots.
 SESSION_VENV_DIR = ".venv"
+# Java's per-user fontconfig cache, created under the workspace home the
+# first time a JVM tool (e.g. PlantUML) runs. Control data, not an artifact,
+# and its cache files are mode-600, which would fail a root-run snapshot tar.
+JAVA_CONTROL_DIR = ".java"
 # Control files that must never surface as workspace artifacts.
-SESSION_CONTROL_EXCLUDES = (SESSION_EXPIRY_FILE, SESSION_VENV_DIR, "__main__.py")
+SESSION_CONTROL_EXCLUDES = (
+    SESSION_EXPIRY_FILE,
+    SESSION_VENV_DIR,
+    "__main__.py",
+    JAVA_CONTROL_DIR,
+)
 
 
 class SessionNotFoundError(LookupError):
