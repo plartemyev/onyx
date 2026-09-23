@@ -10,6 +10,20 @@ services:
       context: https://github.com/plartemyev/searxng.git#feat/browser-masquerade
       dockerfile: container/browser.dockerfile
     restart: unless-stopped
+    # Cap blast radius: a browser-pool leak must not starve the host again
+    # (2 GB fits the pool of 3 headed Chromium lanes plus the worker).
+    mem_limit: 2g
+    healthcheck:
+      # No wget/curl in this image; python3 ships with searxng.
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:8080/healthz", timeout=4)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
     volumes:
