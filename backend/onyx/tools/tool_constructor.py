@@ -29,6 +29,7 @@ from onyx.server.features.mcp.credentials import (
     MCPCredentialsError,
     resolve_mcp_credentials,
 )
+from onyx.server.features.tool.tool_visibility import should_expose_tool_to_fe
 from onyx.tools.built_in_tools import get_built_in_tool_by_id
 from onyx.tools.interface import Tool
 from onyx.tools.models import DynamicSchemaInfo, SearchToolUsage
@@ -245,8 +246,17 @@ def _construct_tools_impl(
         if not db_tool_model.enabled:
             continue
 
-        # If allowed_tool_ids is specified, skip tools not in the allowed list
-        if allowed_tool_ids is not None and db_tool_model.id not in allowed_tool_ids:
+        # If allowed_tool_ids is specified, skip tools not in the allowed list.
+        # The whitelist encodes the user's chat-toggle choices, and the UI can
+        # only name tools it sees: it is built from the tool snapshots sent to
+        # the frontend. Tools hidden from the frontend (expose_to_frontend
+        # False) stay governed by persona attachment alone, so a whitelist
+        # sent because one visible tool was disabled cannot silently cut them.
+        if (
+            allowed_tool_ids is not None
+            and db_tool_model.id not in allowed_tool_ids
+            and should_expose_tool_to_fe(db_tool_model)
+        ):
             continue
 
         if db_tool_model.in_code_tool_id:
