@@ -48,6 +48,8 @@ DOWNLOAD_TOOL_GUIDANCE = """
 Use the `download_file` tool to fetch files from direct URLs (like https://example.com/image.jpg) and show them to the user. \
 It runs with full browser-like request protection, so it succeeds where downloads in the Python sandbox are blocked. \
 The URLs must point at the file itself, not a web page containing the file. \
+Never construct a download URL from memory: resolve the exact asset URL first, via the provider's release API (GitHub API `releases/latest`), a search result, or the download link on the release page. \
+A wrong URL returns a web page or a 404 — the failure reason tells you which. \
 At most 5 URLs are downloaded per call; the result tells you if extra URLs were skipped, and you can call the tool again for the rest. \
 Downloaded images are described for you automatically: the result includes an `annotation` for each image, so you normally do not need analyze_image for them. \
 To share a downloaded image in your reply, embed it exactly once with markdown: ![filename](file_url). \
@@ -98,7 +100,25 @@ Internet access for this session is disabled. Do not make external web requests,
 PYTHON_TOOL_DOWNLOAD_GUIDANCE = """
 When downloading files, check `Content-Length` first, stream the body to disk in chunks, and print progress every few MB. \
 Budget each download (about 120 seconds per file): if the transfer trickles (under roughly 100 KB/s after 30 seconds), abort it, report the bytes received, and move on. \
-`urllib`'s `timeout=` only bounds a single socket read, not the whole transfer, so it cannot stop a slow trickle.
+`urllib`'s `timeout=` only bounds a single socket read, not the whole transfer, so it cannot stop a slow trickle. \
+For large files (over ~50 MB) prefer the `download_file` tool over in-sandbox downloads when possible.
+""".strip()
+
+# Tool-argument file writes: passing content as a `files` argument keeps the
+# text verbatim (JSON-encoded by the tool call itself) instead of hand-escaped
+# code strings — the old triple-quote escaping burned cycles on SyntaxErrors.
+PYTHON_TOOL_FILES_GUIDANCE = """
+To create a text file, pass it through the `files` argument (each item: {"filename", "content"}) instead of embedding the text in code strings — no quoting or escaping is needed. \
+Use code-written files only when the content is computed at runtime.
+""".strip()
+
+# Workspace hygiene: the persistent workspace's current directory is the shared,
+# user-visible one. Bulk extractions (a JDK archive: hundreds of files) belong in
+# a scratch subdirectory; only final deliverables belong at the top level.
+PYTHON_TOOL_WORKSPACE_GUIDANCE = """
+The current directory is the shared workspace: every file written there is exported to the chat with a download link. \
+Keep scratch work (archive extractions, intermediate downloads, extracted trees) in a subdirectory such as `work/`, \
+and copy only the final deliverables to the current directory.
 """.strip()
 
 # Guidance when the code-interpreter supports persistent sessions: the sandbox
@@ -110,6 +130,8 @@ The sandbox is persistent for this chat: files you write and packages you instal
 Build multi-step work across calls — download data in one call, process it in the next; pip install once, import in later calls. \
 Save all state in the current directory (or its subdirectories). Never write to `/tmp`, `/root`, or anywhere outside the working directory: only the working directory persists and is shared with the user. \
 Variables do not persist between calls, so persist any needed intermediate results to files in the current directory.
+{files_guidance}
+{workspace_guidance}
 The sandbox has pip, uv, and poetry. Install with `pip install <package>` (or `uv pip install <package>`); installs persist for the rest of the chat. \
 You have numpy, scipy, pandas, matplotlib, Pillow, OpenCV, librosa, soundfile, requests, httpx, and openpyxl preinstalled.
 Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
@@ -130,6 +152,7 @@ Use the `run_python` tool to execute Python code in an isolated sandbox. The too
 Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
 The current directory in the file system can be used to save and persist user files. Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
 Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
+{files_guidance}
 {network_guidance}
 {download_guidance}
 Use `openpyxl` to read and write Excel files. You have access to libraries like numpy, pandas, scipy, matplotlib, and PIL.

@@ -30,11 +30,13 @@ from onyx.prompts.tool_prompts import (
     MEMORY_GUIDANCE,
     OPEN_URLS_GUIDANCE,
     PYTHON_TOOL_DOWNLOAD_GUIDANCE,
+    PYTHON_TOOL_FILES_GUIDANCE,
     PYTHON_TOOL_LEGACY_GUIDANCE,
     PYTHON_TOOL_LEGACY_NETWORK_GUIDANCE,
     PYTHON_TOOL_NETWORK_DISABLED_GUIDANCE,
     PYTHON_TOOL_NETWORK_ENABLED_GUIDANCE,
     PYTHON_TOOL_SESSION_GUIDANCE,
+    PYTHON_TOOL_WORKSPACE_GUIDANCE,
     TOOL_DESCRIPTION_SEARCH_GUIDANCE,
     TOOL_SECTION_HEADER,
     WEB_SEARCH_GUIDANCE,
@@ -313,6 +315,11 @@ def _build_python_tool_guidance() -> str:
         timeout_seconds=CODE_INTERPRETER_DEFAULT_TIMEOUT_MS / 1000,
         network_guidance=f"{network_guidance}{extra}",
         download_guidance=download_guidance,
+        files_guidance=PYTHON_TOOL_FILES_GUIDANCE,
+        # The shared-workspace note only matters when the workspace persists.
+        workspace_guidance=(
+            PYTHON_TOOL_WORKSPACE_GUIDANCE if _python_tool_sessions_available() else ""
+        ),
     )
 
 
