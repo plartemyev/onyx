@@ -176,6 +176,17 @@ HARD_DELETE_CHATS = os.environ.get("HARD_DELETE_CHATS", "").lower() == "true"
 NUM_INTERNET_SEARCH_RESULTS = int(os.environ.get("NUM_INTERNET_SEARCH_RESULTS") or 10)
 NUM_INTERNET_SEARCH_CHUNKS = int(os.environ.get("NUM_INTERNET_SEARCH_CHUNKS") or 50)
 
+# SearXNG request timeouts. Browser-backed SearXNG instances fetch engine
+# pages through a real Chromium (multi-second fetches, challenge warm-up
+# renders), and a pacing proxy in front of SearXNG can hold a request for a
+# few seconds more. The read timeout must cover queue wait + search time.
+SEARXNG_CONNECT_TIMEOUT_SECONDS = float(
+    os.environ.get("SEARXNG_CONNECT_TIMEOUT_SECONDS") or 10
+)
+SEARXNG_READ_TIMEOUT_SECONDS = float(
+    os.environ.get("SEARXNG_READ_TIMEOUT_SECONDS") or 90
+)
+
 VESPA_SEARCHER_THREADS = int(os.environ.get("VESPA_SEARCHER_THREADS") or 2)
 
 # Whether or not to use the semantic & keyword search expansions for Basic Search

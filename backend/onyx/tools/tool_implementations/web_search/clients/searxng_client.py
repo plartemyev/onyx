@@ -3,6 +3,10 @@ from urllib.parse import urljoin
 import requests
 from fastapi import HTTPException
 
+from onyx.configs.chat_configs import (
+    SEARXNG_CONNECT_TIMEOUT_SECONDS,
+    SEARXNG_READ_TIMEOUT_SECONDS,
+)
 from onyx.tools.tool_implementations.web_search.models import (
     WebSearchProvider,
     WebSearchResult,
@@ -12,7 +16,12 @@ from onyx.utils.retry_wrapper import retry_builder
 
 logger = setup_logger()
 
-_SEARXNG_TIMEOUT_SECONDS = (5, 30)
+# (connect, read). The read side must cover pacing-proxy queue wait plus a
+# browser-backed SearXNG search (see chat_configs for tuning).
+_SEARXNG_TIMEOUT_SECONDS = (
+    SEARXNG_CONNECT_TIMEOUT_SECONDS,
+    SEARXNG_READ_TIMEOUT_SECONDS,
+)
 
 # Max image-search results attached per query
 _MAX_IMAGE_RESULTS = 5
@@ -240,7 +249,7 @@ class SearXNGClient(WebSearchProvider):
             response = requests.post(
                 f"{self._searxng_base_url}/search",
                 data=payload,
-                timeout=5,
+                timeout=_SEARXNG_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
         except requests.HTTPError as e:

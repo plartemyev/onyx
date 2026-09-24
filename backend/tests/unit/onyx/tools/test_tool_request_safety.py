@@ -4,10 +4,17 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import pytest
 import requests
 
+from onyx.configs.chat_configs import (
+    SEARXNG_CONNECT_TIMEOUT_SECONDS,
+    SEARXNG_READ_TIMEOUT_SECONDS,
+)
 from onyx.tools.tool_implementations.custom.openapi_parsing import MethodSpec
 from onyx.tools.tool_implementations.web_search.clients.searxng_client import (
     SearXNGClient,
 )
+
+# (connect, read) pair the client must pass to every HTTP call.
+_SEARXNG_TIMEOUT = (SEARXNG_CONNECT_TIMEOUT_SECONDS, SEARXNG_READ_TIMEOUT_SECONDS)
 
 
 @pytest.mark.parametrize("value", ["a/b?admin=true#fragment", "café +&role=admin%20"])
@@ -45,12 +52,12 @@ def test_searxng_search_has_connect_and_read_timeouts() -> None:
             call(
                 "https://example.com/search",
                 data={"q": "query", "format": "json"},
-                timeout=(5, 30),
+                timeout=_SEARXNG_TIMEOUT,
             ),
             call(
                 "https://example.com/search",
                 data={"q": "query", "format": "json", "categories": "images"},
-                timeout=(5, 30),
+                timeout=_SEARXNG_TIMEOUT,
             ),
         ]
 
@@ -69,9 +76,11 @@ def test_searxng_connection_has_connect_and_read_timeouts() -> None:
             "brand": {"GIT_URL": "https://github.com/searxng/searxng"}
         }
         assert client.test_connection() == {"status": "ok"}
-        get.assert_called_once_with("https://example.com/config", timeout=(5, 30))
+        get.assert_called_once_with(
+            "https://example.com/config", timeout=_SEARXNG_TIMEOUT
+        )
         post.assert_called_once_with(
             "https://example.com/search",
             data={"q": "test", "format": "json"},
-            timeout=5,
+            timeout=_SEARXNG_TIMEOUT,
         )
