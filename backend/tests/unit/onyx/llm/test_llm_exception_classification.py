@@ -72,3 +72,33 @@ def test_413_in_message_classified_when_status_code_absent() -> None:
     # status_code 500 won't match the numeric branch, but the body text will.
     _, code, _ = litellm_exception_to_error_msg(exc, None)
     assert code == "REQUEST_TOO_LARGE"
+
+
+def test_ollama_context_overflow_message_classified_as_context_too_long() -> None:
+    """Ollama surfaces context overflow as a plain 400 BadRequestError with
+    its own message; it must map to the user-safe context message, not the
+    raw upstream text."""
+    exc = BadRequestError(
+        "Not enough tokens to include the last user message and subsequent "
+        "messages. Required: 28953, Available: 28391",
+        model="ornith-1.5:9b",
+        llm_provider="ollama",
+    )
+    msg, code, is_retryable = litellm_exception_to_error_msg(exc, None)
+    assert code == "CONTEXT_TOO_LONG"
+    assert is_retryable is True
+    assert "Context window exceeded" in msg
+    assert "Not enough tokens" not in msg
+
+
+def test_is_context_overflow_exception_detects_ollama_error() -> None:
+    from onyx.llm.utils import is_context_overflow_exception
+
+    exc = BadRequestError(
+        "Not enough tokens to include the last user message and subsequent "
+        "messages. Required: 28953, Available: 28391",
+        model="ornith-1.5:9b",
+        llm_provider="ollama",
+    )
+    assert is_context_overflow_exception(exc) is True
+    assert is_context_overflow_exception(ValueError("unrelated")) is False
