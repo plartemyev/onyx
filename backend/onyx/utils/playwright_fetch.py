@@ -143,6 +143,45 @@ def _discover_chromium() -> str | None:
     return None
 
 
+def _cleanup_stale_x_locks() -> None:
+    """Remove X lock/socket leftovers from a previous container run.
+
+    The container filesystem survives restarts while processes do not: a
+    stale lock for the display makes a freshly started Xvfb exit at once,
+    and a stale socket then looks like a working display.
+    """
+    display_number = _XVFB_DISPLAY.lstrip(":")
+    stale_paths = (
+        f"/tmp/.X{display_number}-lock",  # noqa: S108
+        f"/tmp/.X11-unix/X{display_number}",  # noqa: S108
+    )
+    for path in stale_paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Could not remove stale X server file %s", path)
+
+
+def _kill_xvfb() -> None:
+    """Force-kill a failed Xvfb start and drop the module handle.
+
+    Caller must hold `_xvfb_lock`. `kill()` (SIGKILL) rather than
+    `terminate()`: a Xvfb stuck on a broken display may ignore SIGTERM, and
+    the goal here is prompt cleanup, not graceful shutdown.
+    """
+    global _xvfb_process
+    if _xvfb_process is None:
+        return
+    try:
+        _xvfb_process.kill()
+        _xvfb_process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _xvfb_process = None
+
+
 def _ensure_display() -> str | None:
     """Return an X display for a headed browser, starting Xvfb if needed.
 
@@ -166,6 +205,7 @@ def _ensure_display() -> str | None:
             # at image build; recreate it when absent (ephemeral /tmp, odd
             # base images).
             os.makedirs("/tmp/.X11-unix", exist_ok=True)  # noqa: S108
+            _cleanup_stale_x_locks()
             _xvfb_process = subprocess.Popen(
                 [
                     xvfb,
@@ -182,15 +222,26 @@ def _ensure_display() -> str | None:
         except OSError:
             logger.warning("Failed to start Xvfb; falling back to headless browser")
             return None
-        # Standard X11 socket path convention (not application temp storage).
-        socket_path = f"/tmp/.X11-unix/X{_XVFB_DISPLAY.lstrip(':')}"  # noqa: S108
-        for _ in range(50):  # up to 5s for the display socket to appear
-            if os.path.exists(socket_path):
-                break
-            time.sleep(0.1)
         atexit.register(_shutdown_xvfb)
-        logger.info("Started Xvfb on %s for headed browser fetches", _XVFB_DISPLAY)
-        return _XVFB_DISPLAY
+        # Wait for a live process AND a fresh socket: a leftover socket from
+        # a stopped X server must not count as a working display.
+        socket_path = f"/tmp/.X11-unix/X{_XVFB_DISPLAY.lstrip(':')}"  # noqa: S108
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if _xvfb_process.poll() is not None:
+                break
+            if os.path.exists(socket_path):
+                logger.info(
+                    "Started Xvfb on %s for headed browser fetches", _XVFB_DISPLAY
+                )
+                return _XVFB_DISPLAY
+            time.sleep(0.1)
+        logger.warning(
+            "Xvfb on %s did not come up; falling back to headless browser",
+            _XVFB_DISPLAY,
+        )
+        _kill_xvfb()
+        return None
 
 
 def _shutdown_xvfb() -> None:
