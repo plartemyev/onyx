@@ -23,9 +23,13 @@ from onyx.chat.llm_step import run_llm_step, run_llm_step_pkt_generator
 from onyx.chat.models import ChatMessageSimple, LlmStepResult, ToolCallSimple
 from onyx.chat.prompt_utils import build_language_section, with_language_section
 from onyx.configs.chat_configs import (
+    DR_MAX_INTERMEDIATE_REPORT_TOKENS,
     DR_REPORT_LLM_TIMEOUT_S,
     DR_RESEARCH_AGENT_FORCE_REPORT_S,
     DR_RESEARCH_AGENT_TIMEOUT_S,
+    DR_SUBAGENT_CONTEXT_TOKENS,
+    DR_TEMPERATURE_REPORT,
+    DR_TEMPERATURE_RESEARCH_AGENT,
 )
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDocsResponse
@@ -100,6 +104,19 @@ RESEARCH_AGENT_TIMEOUT_MESSAGE = (
 MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS = 10000
 
 
+def _subagent_context_tokens(llm: LLM) -> int:
+    """Prompt token cap for one research sub-agent step.
+
+    Sub-agent search results accumulate in their history cycle over cycle;
+    the cap bounds how large that prompt can grow so each cycle stays a
+    bounded prefill on slow inference. Falls back to the model's full input
+    budget when no cap is configured.
+    """
+    if DR_SUBAGENT_CONTEXT_TOKENS is None:
+        return llm.config.max_input_tokens
+    return min(llm.config.max_input_tokens, DR_SUBAGENT_CONTEXT_TOKENS)
+
+
 def generate_intermediate_report(
     research_topic: str,
     history: list[ChatMessageSimple],
@@ -123,6 +140,21 @@ def generate_intermediate_report(
         state_container = ChatStateContainer()
         # The report streams to the UI, so it carries the reply-language line.
         report_prompt = with_language_section(RESEARCH_REPORT_PROMPT, language_section)
+        max_report_tokens = (
+            DR_MAX_INTERMEDIATE_REPORT_TOKENS
+            if DR_MAX_INTERMEDIATE_REPORT_TOKENS is not None
+            else MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS
+        )
+        if DR_MAX_INTERMEDIATE_REPORT_TOKENS is not None:
+            # The report is consumed by the orchestrator, not a user; when the
+            # deployment asks for compact reports, say so explicitly instead
+            # of relying on the sampling cap alone.
+            report_prompt += (
+                f"\n\nCRITICAL - Keep the report under {max_report_tokens} tokens "
+                f"(about {int(max_report_tokens * 0.75)} words). Summarize only "
+                "the facts relevant to the research task, each with its "
+                "citation; do not transcribe the research history."
+            )
         system_prompt = ChatMessageSimple(
             message=report_prompt,
             token_count=token_counter(report_prompt),
@@ -142,7 +174,7 @@ def generate_intermediate_report(
             simple_chat_history=history,
             reminder_message=reminder_message,
             context_files=None,
-            available_tokens=llm.config.max_input_tokens,
+            available_tokens=_subagent_context_tokens(llm),
         )
 
         intermediate_report_generator = run_llm_step_pkt_generator(
@@ -156,10 +188,11 @@ def generate_intermediate_report(
             reasoning_effort=reasoning_effort,
             final_documents=None,
             user_identity=user_identity,
-            max_tokens=MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS,
+            max_tokens=max_report_tokens,
             use_existing_tab_index=True,
             is_deep_research=True,
             timeout_override=DR_REPORT_LLM_TIMEOUT_S,
+            temperature=DR_TEMPERATURE_REPORT,
         )
 
         while True:
@@ -358,7 +391,8 @@ def run_research_agent_call(
                     reminder_message=reminder_message,
                     context_files=None,
                     available_tokens=max(
-                        0, llm.config.max_input_tokens - tool_token_budget
+                        0,
+                        _subagent_context_tokens(llm) - tool_token_budget,
                     ),
                 )
 
@@ -395,6 +429,10 @@ def run_research_agent_call(
                     # in these situations but it at least allows a chance of recovery. None of the tool calls should
                     # be this long.
                     max_tokens=1000,
+                    # Search steps: moderate diversity helps query and source
+                    # coverage; the call format stays constrained by the
+                    # low-ish value.
+                    temperature=DR_TEMPERATURE_RESEARCH_AGENT,
                 )
                 if has_reasoned:
                     reasoning_cycles += 1

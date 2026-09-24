@@ -136,6 +136,10 @@ Carry the ones that support your answer into your response: copy the markdown an
 Never invent or modify a file URL, and leave out images or files that do not support your answer.
 
 Provide inline citations in the format [1], [2], [3], etc. based on the citations included by the research agents.
+
+Before writing, verify the answer: check every key number, date, and factual claim against the research summaries. \
+Prefer figures that multiple cited sources support. If a figure rests on a single source or the sources conflict, \
+either leave it out or keep it while explicitly marking it as unverified or disputed.
 """.strip()
 
 

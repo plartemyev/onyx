@@ -94,6 +94,42 @@ DR_RESEARCH_AGENT_TIMEOUT_S = int(
 DR_RESEARCH_AGENT_FORCE_REPORT_S = int(
     os.environ.get("DR_RESEARCH_AGENT_FORCE_REPORT_S") or 12 * 60
 )
+
+
+# Per-call sampling temperatures for the Deep Research phases. `None` (the
+# default) keeps the session/model-configured temperature for every step.
+# When set, each phase gets a value that fits its job instead of one number
+# for everything: planning benefits from diversity, tool-calling cycles need
+# format reliability, and report writing benefits from near-determinism so
+# figures and wording stay consistent.
+def _optional_float_env(name: str) -> float | None:
+    value = os.environ.get(name)
+    return float(value) if value else None
+
+
+def _optional_int_env(name: str) -> int | None:
+    value = os.environ.get(name)
+    return int(value) if value else None
+
+
+DR_TEMPERATURE_PLAN = _optional_float_env("DR_TEMPERATURE_PLAN")
+DR_TEMPERATURE_ORCHESTRATOR = _optional_float_env("DR_TEMPERATURE_ORCHESTRATOR")
+DR_TEMPERATURE_RESEARCH_AGENT = _optional_float_env("DR_TEMPERATURE_RESEARCH_AGENT")
+DR_TEMPERATURE_REPORT = _optional_float_env("DR_TEMPERATURE_REPORT")
+
+# Cap on the tokens a research sub-agent's prompt may occupy. Sub-agent
+# search results accumulate in their history cycle over cycle; without a cap
+# the prompt grows toward the model's max input tokens, which on slow
+# hardware turns every sub-agent cycle into a long prefill. Oldest messages
+# are dropped first when the cap is hit. `None` = uncapped.
+DR_SUBAGENT_CONTEXT_TOKENS = _optional_int_env("DR_SUBAGENT_CONTEXT_TOKENS")
+# Cap on a research sub-agent's intermediate report output tokens. These
+# reports are consumed by the orchestrator, not by users, so a large cap
+# mostly costs generation time on slow inference. `None` = the built-in
+# default (10000) in research_agent.py.
+DR_MAX_INTERMEDIATE_REPORT_TOKENS = _optional_int_env(
+    "DR_MAX_INTERMEDIATE_REPORT_TOKENS"
+)
 # Timeout for non-streaming secondary LLM flows (e.g. search section-relevance
 # classification and section-expansion selection). These are short, low-effort
 # calls; the bound exists so a stalled provider connection fails fast into the

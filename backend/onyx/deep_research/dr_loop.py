@@ -23,6 +23,9 @@ from onyx.configs.chat_configs import (
     DR_MAX_ORCHESTRATOR_CYCLES,
     DR_MAX_ORCHESTRATOR_CYCLES_REASONING,
     DR_REPORT_LLM_TIMEOUT_S,
+    DR_TEMPERATURE_ORCHESTRATOR,
+    DR_TEMPERATURE_PLAN,
+    DR_TEMPERATURE_REPORT,
     SKIP_DEEP_RESEARCH_CLARIFICATION,
 )
 from onyx.configs.constants import MessageType
@@ -172,6 +175,7 @@ def generate_final_report(
             is_deep_research=True,
             pre_answer_processing_time=pre_answer_processing_time,
             timeout_override=DR_REPORT_LLM_TIMEOUT_S,
+            temperature=DR_TEMPERATURE_REPORT,
         )
 
         # Weak models sometimes answer the tool-free report step by replaying
@@ -216,6 +220,7 @@ def generate_final_report(
                 is_deep_research=True,
                 pre_answer_processing_time=pre_answer_processing_time,
                 timeout_override=DR_REPORT_LLM_TIMEOUT_S,
+                temperature=DR_TEMPERATURE_REPORT,
             )
             has_reasoned = has_reasoned or has_reasoned_retry
 
@@ -367,6 +372,7 @@ def run_deep_research_llm_loop(
                     user_identity=user_identity,
                     is_deep_research=True,
                     pre_answer_processing_time=clarification_tool_duration,
+                    temperature=DR_TEMPERATURE_ORCHESTRATOR,
                 )
 
                 if not llm_step_result.tool_calls:
@@ -427,6 +433,9 @@ def run_deep_research_llm_loop(
                 final_documents=None,
                 user_identity=user_identity,
                 is_deep_research=True,
+                # Theorising step: a little sampling diversity widens the
+                # angle coverage of the plan.
+                temperature=DR_TEMPERATURE_PLAN,
             )
 
             while True:
@@ -617,6 +626,9 @@ def run_deep_research_llm_loop(
                     # The generation here should never be very long as it's just the tool calls.
                     # This prevents timeouts where the model gets into an endless loop of null or bad tokens.
                     max_tokens=1024,
+                    # Tool-calling step: reliability of the call format
+                    # matters more than diversity.
+                    temperature=DR_TEMPERATURE_ORCHESTRATOR,
                 )
                 if has_reasoned:
                     reasoning_cycles += 1
