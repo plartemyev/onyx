@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, TypeVar
 
-from playwright.sync_api import BrowserContext, Playwright, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel
 
@@ -412,93 +412,114 @@ def start_playwright() -> tuple[Playwright, BrowserContext]:
 
     Used by both the long-lived web-connector crawl and (via the browser
     pool) the tool fetchers. Caller owns lifecycle and must call
-    `context.close()` + `playwright.stop()` when done.
+    `context.close()` + `playwright.stop()` when done. If the launch
+    sequence fails, this function tears the Playwright instance down itself
+    before propagating.
     """
     playwright = sync_playwright().start()
 
-    executable_path = _discover_chromium()
-    if executable_path is None:
-        logger.warning(
-            "No distro Chromium found (looked in %s) and CHROMIUM_EXECUTABLE_PATH "
-            "is unset; using Playwright's bundled browser, which is easier for "
-            "bot detectors to fingerprint",
-            ", ".join(_CHROMIUM_CANDIDATE_PATHS),
+    browser: Browser | None = None
+    try:
+        executable_path = _discover_chromium()
+        if executable_path is None:
+            logger.warning(
+                "No distro Chromium found (looked in %s) and CHROMIUM_EXECUTABLE_PATH "
+                "is unset; using Playwright's bundled browser, which is easier for "
+                "bot detectors to fingerprint",
+                ", ".join(_CHROMIUM_CANDIDATE_PATHS),
+            )
+
+        display = _ensure_display()
+        headed = display is not None
+        env: dict[str, str | int | float] = dict(os.environ)
+        if display:
+            env["DISPLAY"] = display
+
+        browser = playwright.chromium.launch(
+            headless=not headed,
+            executable_path=executable_path,
+            ignore_default_args=_OMIT_DEFAULT_ARGS,
+            args=_LAUNCH_ARGS,
+            env=env,
         )
 
-    display = _ensure_display()
-    headed = display is not None
-    env: dict[str, str | int | float] = dict(os.environ)
-    if display:
-        env["DISPLAY"] = display
-
-    browser = playwright.chromium.launch(
-        headless=not headed,
-        executable_path=executable_path,
-        ignore_default_args=_OMIT_DEFAULT_ARGS,
-        args=_LAUNCH_ARGS,
-        env=env,
-    )
-
-    # Build the claimed identity from the real binary version.
-    chrome_full = browser.version  # e.g. "153.0.8010.52"
-    chrome_major = chrome_full.split(".", 1)[0]
-    user_agent = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        f"(KHTML, like Gecko) Chrome/{chrome_major}.0.0.0 Safari/537.36"
-    )
-    sec_ch_ua = (
-        f'"Chromium";v="{chrome_major}", "Google Chrome";v="{chrome_major}", '
-        '"Not:A-Brand";v="24"'
-    )
-
-    context = browser.new_context(
-        user_agent=user_agent,
-        viewport={"width": 1440, "height": 900},
-        locale="en-US",
-        timezone_id="America/Los_Angeles",
-        has_touch=False,
-        java_script_enabled=True,
-        color_scheme="light",
-        ignore_https_errors=True,
-    )
-
-    context.set_extra_http_headers(
-        {
-            "Accept": DEFAULT_HEADERS["Accept"],
-            "Accept-Language": DEFAULT_HEADERS["Accept-Language"],
-            "Sec-Fetch-Dest": DEFAULT_HEADERS["Sec-Fetch-Dest"],
-            "Sec-Fetch-Mode": DEFAULT_HEADERS["Sec-Fetch-Mode"],
-            "Sec-Fetch-Site": DEFAULT_HEADERS["Sec-Fetch-Site"],
-            "Sec-Fetch-User": DEFAULT_HEADERS["Sec-Fetch-User"],
-            "Sec-CH-UA": sec_ch_ua,
-            "Sec-CH-UA-Mobile": DEFAULT_HEADERS["Sec-CH-UA-Mobile"],
-            "Sec-CH-UA-Platform": DEFAULT_HEADERS["Sec-CH-UA-Platform"],
-        }
-    )
-
-    context.add_init_script(_stealth_init_script(chrome_major, chrome_full))
-
-    if (
-        WEB_CONNECTOR_OAUTH_CLIENT_ID
-        and WEB_CONNECTOR_OAUTH_CLIENT_SECRET
-        and WEB_CONNECTOR_OAUTH_TOKEN_URL
-    ):
-        # Imported lazily so the OAuth deps don't get pulled in unless configured.
-        from oauthlib.oauth2 import BackendApplicationClient
-        from requests_oauthlib import OAuth2Session
-
-        client = BackendApplicationClient(client_id=WEB_CONNECTOR_OAUTH_CLIENT_ID)
-        oauth = OAuth2Session(client=client)
-        token = oauth.fetch_token(
-            token_url=WEB_CONNECTOR_OAUTH_TOKEN_URL,
-            client_id=WEB_CONNECTOR_OAUTH_CLIENT_ID,
-            client_secret=WEB_CONNECTOR_OAUTH_CLIENT_SECRET,
+        # Build the claimed identity from the real binary version.
+        chrome_full = browser.version  # e.g. "153.0.8010.52"
+        chrome_major = chrome_full.split(".", 1)[0]
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{chrome_major}.0.0.0 Safari/537.36"
         )
+        sec_ch_ua = (
+            f'"Chromium";v="{chrome_major}", "Google Chrome";v="{chrome_major}", '
+            '"Not:A-Brand";v="24"'
+        )
+
+        context = browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": 1440, "height": 900},
+            locale="en-US",
+            timezone_id="America/Los_Angeles",
+            has_touch=False,
+            java_script_enabled=True,
+            color_scheme="light",
+            ignore_https_errors=True,
+        )
+
         context.set_extra_http_headers(
-            {"Authorization": "Bearer {}".format(token["access_token"])}
+            {
+                "Accept": DEFAULT_HEADERS["Accept"],
+                "Accept-Language": DEFAULT_HEADERS["Accept-Language"],
+                "Sec-Fetch-Dest": DEFAULT_HEADERS["Sec-Fetch-Dest"],
+                "Sec-Fetch-Mode": DEFAULT_HEADERS["Sec-Fetch-Mode"],
+                "Sec-Fetch-Site": DEFAULT_HEADERS["Sec-Fetch-Site"],
+                "Sec-Fetch-User": DEFAULT_HEADERS["Sec-Fetch-User"],
+                "Sec-CH-UA": sec_ch_ua,
+                "Sec-CH-UA-Mobile": DEFAULT_HEADERS["Sec-CH-UA-Mobile"],
+                "Sec-CH-UA-Platform": DEFAULT_HEADERS["Sec-CH-UA-Platform"],
+            }
         )
 
-    return playwright, context
+        context.add_init_script(_stealth_init_script(chrome_major, chrome_full))
+
+        if (
+            WEB_CONNECTOR_OAUTH_CLIENT_ID
+            and WEB_CONNECTOR_OAUTH_CLIENT_SECRET
+            and WEB_CONNECTOR_OAUTH_TOKEN_URL
+        ):
+            # Imported lazily so the OAuth deps don't get pulled in unless configured.
+            from oauthlib.oauth2 import BackendApplicationClient
+            from requests_oauthlib import OAuth2Session
+
+            client = BackendApplicationClient(client_id=WEB_CONNECTOR_OAUTH_CLIENT_ID)
+            oauth = OAuth2Session(client=client)
+            token = oauth.fetch_token(
+                token_url=WEB_CONNECTOR_OAUTH_TOKEN_URL,
+                client_id=WEB_CONNECTOR_OAUTH_CLIENT_ID,
+                client_secret=WEB_CONNECTOR_OAUTH_CLIENT_SECRET,
+            )
+            context.set_extra_http_headers(
+                {"Authorization": "Bearer {}".format(token["access_token"])}
+            )
+
+        return playwright, context
+    except BaseException:
+        # Stop Playwright before propagating: its node driver process keeps
+        # running otherwise, leaking about 130 MiB per failed start.
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close browser after a failed launch", exc_info=True
+                )
+        try:
+            playwright.stop()
+        except Exception:
+            logger.debug(
+                "Failed to stop Playwright after a failed launch", exc_info=True
+            )
+        raise
 
 
 @contextmanager
