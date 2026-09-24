@@ -73,6 +73,23 @@ services:
       # Load the Ollama model with num_ctx above Onyx's max input tokens so
       # template overhead and generation never push the prompt over context.
       - OLLAMA_NUM_CTX_HEADROOM=8192
+      # Per-phase sampling temperatures for Deep Research (None = session
+      # temperature everywhere). Planning/theorising gets diversity, tool
+      # calls stay near-deterministic for format reliability, research
+      # searches sit in between, and reports are computed at near-zero so
+      # key figures come out consistent and checkable.
+      - DR_TEMPERATURE_PLAN=0.6
+      - DR_TEMPERATURE_ORCHESTRATOR=0.2
+      - DR_TEMPERATURE_RESEARCH_AGENT=0.4
+      - DR_TEMPERATURE_REPORT=0.1
+      # Bound how large a research sub-agent's prompt may grow (search
+      # results accumulate cycle over cycle). Keeps each sub-agent cycle a
+      # bounded prefill instead of creeping toward the full context window.
+      - DR_SUBAGENT_CONTEXT_TOKENS=24000
+      # Sub-agent reports feed the orchestrator, not people. 2500 tokens is
+      # ~4 minutes of generation on this GPU instead of ~17 at the default
+      # 10000, and the final report gets a tighter, denser input.
+      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=2500
       # 25 -> 50 retrieved chunks fed to the LLM per search
       - MAX_CHUNKS_FED_TO_CHAT=50
       # Tool-calling reimplementation evaluation: dump full request history,
@@ -113,6 +130,13 @@ services:
       - MAX_LLM_CYCLES=22
       - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN=0.10
       - OLLAMA_NUM_CTX_HEADROOM=8192
+      # Deep Research temperature phases + sub-agent caps (see api_server).
+      - DR_TEMPERATURE_PLAN=0.6
+      - DR_TEMPERATURE_ORCHESTRATOR=0.2
+      - DR_TEMPERATURE_RESEARCH_AGENT=0.4
+      - DR_TEMPERATURE_REPORT=0.1
+      - DR_SUBAGENT_CONTEXT_TOKENS=24000
+      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=2500
       - MAX_CHUNKS_FED_TO_CHAT=50
       - CODE_INTERPRETER_SESSIONS_ENABLED=true
       - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
