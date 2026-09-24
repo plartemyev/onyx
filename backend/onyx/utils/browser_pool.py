@@ -15,7 +15,10 @@ thread, sequentially, so jobs to one provider queue up behind each other
 while different providers run in parallel.
 
 Lanes cap out at MAX_LANES (least-recently-used is retired) and self-exit
-after LANE_IDLE_TTL_SECONDS without work.
+after LANE_IDLE_TTL_SECONDS without work. A lane whose browser process
+died (OOM kill, crash) is rebuilt before the next job is served, and any
+job that still hits the dead browser tears the lane down for the same
+reason.
 """
 
 from __future__ import annotations
@@ -42,6 +45,8 @@ class BrowserSession(Protocol):
 
     def close(self) -> None: ...
 
+    def is_alive(self) -> bool: ...
+
 
 class _Shutdown:
     """Sentinel telling a lane thread to tear down and exit."""
@@ -61,6 +66,15 @@ class PooledBrowserSession:
         from onyx.utils.playwright_fetch import start_playwright
 
         return cls(start_playwright)
+
+    def is_alive(self) -> bool:
+        """False once the underlying browser process has gone away.
+
+        `BrowserContext.browser` is None only for contexts created outside a
+        normal browser (Android/Electron), never for ours.
+        """
+        browser = self.context.browser
+        return browser is not None and browser.is_connected()
 
     def close(self) -> None:
         try:
@@ -154,6 +168,16 @@ class _BrowserLane:
             deadline = time.monotonic() + LANE_IDLE_TTL_SECONDS
             try:
                 if self._session is None:
+                    self._session = self._factory()
+                elif not self._session.is_alive():
+                    # The browser process died between jobs (OOM kill,
+                    # driver crash). Rebuild before serving so the caller
+                    # does not get a request failed against dead handles.
+                    logger.warning(
+                        "Browser lane %s browser process is gone; rebuilding",
+                        self.provider,
+                    )
+                    self._teardown()
                     self._session = self._factory()
                 future.set_result(job(self._session.context))
             except BaseException as exc:  # noqa: BLE001 — surfaced to the caller

@@ -115,12 +115,23 @@ class ScrapeSessionContext:
         self.playwright, self.playwright_context = start_playwright()
 
     def stop(self) -> None:
+        # Each step is guarded: a close() failure (e.g. browser already
+        # dead) must not skip stopping Playwright, whose node driver process
+        # would otherwise leak.
         if self.playwright_context:
-            self.playwright_context.close()
+            try:
+                self.playwright_context.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close web connector Playwright context", exc_info=True
+                )
             self.playwright_context = None
 
         if self.playwright:
-            self.playwright.stop()
+            try:
+                self.playwright.stop()
+            except Exception:
+                logger.debug("Failed to stop web connector Playwright", exc_info=True)
             self.playwright = None
 
 
@@ -754,7 +765,21 @@ class WebConnector(LoadConnector, SlimConnector):
                 except Exception as e:
                     session_ctx.last_error = f"Failed to fetch '{initial_url}': {e}"
                     logger.exception(session_ctx.last_error)
-                    session_ctx.initialize()
+                    try:
+                        # A dead browser poisons every later page; rebuild
+                        # before retrying.
+                        session_ctx.initialize()
+                    except Exception as rebuild_exc:
+                        # The browser cannot be rebuilt in this state
+                        # (missing Chromium, broken display). Fail the crawl
+                        # with the rebuild error instead of retrying every
+                        # URL against a dead session.
+                        logger.exception(
+                            "Failed to rebuild the browser session; aborting the crawl"
+                        )
+                        raise RuntimeError(
+                            f"Browser rebuild failed after '{initial_url}' fetch error"
+                        ) from rebuild_exc
                     continue
                 finally:
                     retry_count += 1
