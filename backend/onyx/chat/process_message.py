@@ -116,7 +116,7 @@ from onyx.hooks.points.query_processing import (
     QueryProcessingPayload,
     QueryProcessingResponse,
 )
-from onyx.llm.exceptions import ClassifiedLLMError
+from onyx.llm.exceptions import ClassifiedLLMError, LLMStreamCancelled
 from onyx.llm.factory import get_llm_for_persona, get_llm_token_counter
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.models import LLMErrorInfo, ReasoningEffort
@@ -1439,6 +1439,7 @@ def _run_models(
                     chat_session_id=str(setup.chat_session_id),
                     all_injected_file_metadata=setup.all_injected_file_metadata,
                     user_language=setup.user_memory_context.user_info.language,
+                    check_is_connected=setup.check_is_connected,
                 )
             else:
                 run_llm_loop(
@@ -1477,6 +1478,16 @@ def _run_models(
                 return
 
             model_succeeded[model_idx] = True
+
+        except LLMStreamCancelled:
+            # The stop signal aborted an in-flight LLM stream. Same bookkeeping
+            # as the early-return above: the writer's stop-button path owns the
+            # partial snapshot; this is not a model error.
+            logger.info(
+                "Model %d (%s) stream aborted by user stop signal",
+                model_idx,
+                setup.model_display_names[model_idx],
+            )
 
         except Exception as e:
             model_errored[model_idx] = True

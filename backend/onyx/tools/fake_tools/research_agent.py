@@ -47,6 +47,7 @@ from onyx.deep_research.utils import (
     check_special_tool_calls,
     create_think_tool_token_processor,
 )
+from onyx.llm.exceptions import LLMStreamCancelled
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.models import ReasoningEffort, ToolChoiceOptions
 from onyx.prompts.deep_research.dr_tool_prompts import (
@@ -104,6 +105,11 @@ RESEARCH_AGENT_TIMEOUT_MESSAGE = (
 MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS = 10000
 
 
+def _stop_requested(check_is_connected: Callable[[], bool] | None) -> bool:
+    """True when the user pressed stop for this chat session."""
+    return check_is_connected is not None and not check_is_connected()
+
+
 def _subagent_context_tokens(llm: LLM) -> int:
     """Prompt token cap for one research sub-agent step.
 
@@ -128,6 +134,7 @@ def generate_intermediate_report(
     placement: Placement,
     language_section: str,
     reasoning_effort: ReasoningEffort = ReasoningEffort.LOW,
+    should_abort: Callable[[], bool] | None = None,
 ) -> str:
     # NOTE: This step outputs a lot of tokens and has been observed to run for more than 10 minutes in a nontrivial percentage of
     # research tasks. This is also model / inference provider dependent.
@@ -193,6 +200,7 @@ def generate_intermediate_report(
             is_deep_research=True,
             timeout_override=DR_REPORT_LLM_TIMEOUT_S,
             temperature=DR_TEMPERATURE_REPORT,
+            should_abort=should_abort,
         )
 
         while True:
@@ -268,6 +276,7 @@ def run_research_agent_call(
     user_identity: LLMUserIdentity | None,
     language_section: str,
     reasoning_effort: ReasoningEffort = ReasoningEffort.LOW,
+    check_is_connected: Callable[[], bool] | None = None,
 ) -> ResearchAgentCallResult | None:
     turn_index = research_agent_call.placement.turn_index
     tab_index = research_agent_call.placement.tab_index
@@ -433,6 +442,9 @@ def run_research_agent_call(
                     # coverage; the call format stays constrained by the
                     # low-ish value.
                     temperature=DR_TEMPERATURE_RESEARCH_AGENT,
+                    # Abort the provider stream when the user presses stop;
+                    # LLMStreamCancelled is handled by the except below.
+                    should_abort=check_is_connected,
                 )
                 if has_reasoned:
                     reasoning_cycles += 1
@@ -469,6 +481,7 @@ def run_research_agent_call(
                             turn_index=turn_index,
                             tab_index=tab_index,
                         ),
+                        should_abort=check_is_connected,
                     )
                     span.span_data.output = final_report or None
                     return ResearchAgentCallResult(
@@ -660,6 +673,7 @@ def run_research_agent_call(
                     turn_index=turn_index,
                     tab_index=tab_index,
                 ),
+                should_abort=check_is_connected,
             )
             span.span_data.output = final_report or None
             return ResearchAgentCallResult(
@@ -667,6 +681,15 @@ def run_research_agent_call(
                 citation_mapping=citation_processor.get_seen_citations(),
             )
 
+        except LLMStreamCancelled:
+            # The stop signal aborted an in-flight LLM stream. Return quietly —
+            # the caller checks the stop signal after the parallel runner and
+            # ends the whole deep research run.
+            logger.info(
+                "Research agent for task '%s' stream aborted by user stop signal",
+                research_topic,
+            )
+            return None
         except Exception as e:
             logger.error("Error running research agent call: %s", e)
             emitter.emit(
@@ -716,6 +739,7 @@ def run_research_agent_calls(
     language_section: str,
     user_identity: LLMUserIdentity | None = None,
     reasoning_effort: ReasoningEffort = ReasoningEffort.LOW,
+    check_is_connected: Callable[[], bool] | None = None,
 ) -> CombinedResearchAgentCallResult:
     # Run all research agent calls in parallel with timeout
     functions_with_args = [
@@ -733,6 +757,7 @@ def run_research_agent_calls(
                 user_identity,
                 language_section,
                 reasoning_effort,
+                check_is_connected,
             ),
         )
         for research_agent_call, parent_tool_call_id in zip(
@@ -749,6 +774,9 @@ def run_research_agent_calls(
         timeout=DR_RESEARCH_AGENT_TIMEOUT_S,
         timeout_callback=_on_research_agent_timeout,
     )
+
+    if _stop_requested(check_is_connected):
+        raise LLMStreamCancelled("Research agents cancelled by user stop signal")
 
     updated_citation_mapping = citation_mapping
     updated_answers: list[str | None] = []

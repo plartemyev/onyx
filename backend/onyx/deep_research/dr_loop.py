@@ -44,6 +44,7 @@ from onyx.deep_research.utils import (
     check_special_tool_calls,
     create_think_tool_token_processor,
 )
+from onyx.llm.exceptions import LLMStreamCancelled
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.model_capabilities import model_is_reasoning_model
 from onyx.llm.models import ReasoningEffort, ToolChoiceOptions
@@ -86,6 +87,12 @@ logger = setup_logger()
 MAX_USER_MESSAGES_FOR_CONTEXT = 5
 MAX_FINAL_REPORT_TOKENS = 20000
 
+
+def _stop_requested(check_is_connected: Callable[[], bool] | None) -> bool:
+    """True when the user pressed stop for this chat session."""
+    return check_is_connected is not None and not check_is_connected()
+
+
 # Might be something like (this gives a lot of leeway for change but typically the models don't do this):
 # 0. Research topics 1-3
 # 1. Think
@@ -113,6 +120,7 @@ def generate_final_report(
     saved_reasoning: str | None = None,
     pre_answer_processing_time: float | None = None,
     all_injected_file_metadata: dict[str, FileToolMetadata] | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> bool:
     """Generate the final research report.
 
@@ -176,6 +184,7 @@ def generate_final_report(
             pre_answer_processing_time=pre_answer_processing_time,
             timeout_override=DR_REPORT_LLM_TIMEOUT_S,
             temperature=DR_TEMPERATURE_REPORT,
+            should_abort=should_abort,
         )
 
         # Weak models sometimes answer the tool-free report step by replaying
@@ -221,6 +230,7 @@ def generate_final_report(
                 pre_answer_processing_time=pre_answer_processing_time,
                 timeout_override=DR_REPORT_LLM_TIMEOUT_S,
                 temperature=DR_TEMPERATURE_REPORT,
+                should_abort=should_abort,
             )
             has_reasoned = has_reasoned or has_reasoned_retry
 
@@ -264,6 +274,7 @@ def run_deep_research_llm_loop(
     user_identity: LLMUserIdentity | None = None,
     chat_session_id: str | None = None,
     all_injected_file_metadata: dict[str, FileToolMetadata] | None = None,
+    check_is_connected: Callable[[], bool] | None = None,
 ) -> None:
     with trace(
         "run_deep_research_llm_loop",
@@ -373,6 +384,7 @@ def run_deep_research_llm_loop(
                     is_deep_research=True,
                     pre_answer_processing_time=clarification_tool_duration,
                     temperature=DR_TEMPERATURE_ORCHESTRATOR,
+                    should_abort=check_is_connected,
                 )
 
                 if not llm_step_result.tool_calls:
@@ -436,6 +448,7 @@ def run_deep_research_llm_loop(
                 # Theorising step: a little sampling diversity widens the
                 # angle coverage of the plan.
                 temperature=DR_TEMPERATURE_PLAN,
+                should_abort=check_is_connected,
             )
 
             while True:
@@ -520,6 +533,11 @@ def run_deep_research_llm_loop(
             citation_mapping: CitationMapping = {}
             final_turn_index: int = orchestrator_start_turn_index  # Track the final turn_index for stop packet
             for cycle in range(max_orchestrator_cycles):
+                # Stop button: end the run before starting another LLM step.
+                if _stop_requested(check_is_connected):
+                    raise LLMStreamCancelled(
+                        "Deep research cancelled by user stop signal"
+                    )
                 # Check if we've exceeded the time limit or reached the last cycle
                 # - if so, skip LLM and generate final report
                 elapsed_seconds = time.monotonic() - processing_start_time
@@ -550,6 +568,7 @@ def run_deep_research_llm_loop(
                         language_section=language_section,
                         pre_answer_processing_time=elapsed_seconds,
                         all_injected_file_metadata=all_injected_file_metadata,
+                        should_abort=check_is_connected,
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
                     break
@@ -629,6 +648,7 @@ def run_deep_research_llm_loop(
                     # Tool-calling step: reliability of the call format
                     # matters more than diversity.
                     temperature=DR_TEMPERATURE_ORCHESTRATOR,
+                    should_abort=check_is_connected,
                 )
                 if has_reasoned:
                     reasoning_cycles += 1
@@ -679,6 +699,7 @@ def run_deep_research_llm_loop(
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
                         all_injected_file_metadata=all_injected_file_metadata,
+                        should_abort=check_is_connected,
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
                     break
@@ -703,6 +724,7 @@ def run_deep_research_llm_loop(
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
                         all_injected_file_metadata=all_injected_file_metadata,
+                        should_abort=check_is_connected,
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
                     break
@@ -778,6 +800,7 @@ def run_deep_research_llm_loop(
                             pre_answer_processing_time=time.monotonic()
                             - processing_start_time,
                             all_injected_file_metadata=all_injected_file_metadata,
+                            should_abort=check_is_connected,
                         )
                         final_turn_index = report_turn_index + (
                             1 if report_reasoned else 0
@@ -819,6 +842,7 @@ def run_deep_research_llm_loop(
                             if reasoning_effort is not ReasoningEffort.AUTO
                             else ReasoningEffort.LOW
                         ),
+                        check_is_connected=check_is_connected,
                     )
 
                     citation_mapping = research_results.citation_mapping
