@@ -1562,6 +1562,9 @@ def run_llm_loop(
                     pre_answer_processing_time=pre_answer_processing_time,
                     reasoning_effort=reasoning_effort,
                     max_tokens=max_output_tokens,
+                    # Abort the provider stream itself when the user presses
+                    # stop; LLMStreamCancelled unwinds to the turn runner.
+                    should_abort=check_is_connected,
                 )
             except Exception as e:
                 # The model server tokenizes the prompt itself and can reject

@@ -20,6 +20,7 @@ from onyx.configs.app_configs import (
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDoc
 from onyx.file_store.models import ChatFileType
+from onyx.llm.exceptions import LLMStreamCancelled
 from onyx.llm.interfaces import (
     LLM,
     LanguageModelInput,
@@ -72,6 +73,11 @@ from onyx.utils.postgres_sanitization import sanitize_string
 from onyx.utils.text_processing import find_all_json_objects
 
 logger = setup_logger()
+
+# How often the stop-signal callback is consulted while an LLM stream is being
+# consumed. Coarse on purpose: a Redis EXISTS per chunk would be wasteful for
+# fast providers, while 0.5s keeps the stop button responsive for slow ones.
+_ABORT_CHECK_INTERVAL_S = 0.5
 
 _XML_INVOKE_BLOCK_RE = re.compile(
     r"<invoke\b(?P<attrs>[^>]*)>(?P<body>.*?)</invoke>",
@@ -1562,6 +1568,7 @@ def run_llm_step_pkt_generator(
     pre_answer_processing_time: float | None = None,
     timeout_override: int | None = None,
     temperature: float | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> Generator[Packet, None, tuple[LlmStepResult, bool]]:
     """Run an LLM step and stream the response as packets.
     NOTE: DO NOT TOUCH THIS FUNCTION BEFORE ASKING YUHONG, this is very finicky and
@@ -1597,6 +1604,10 @@ def run_llm_step_pkt_generator(
         pre_answer_processing_time: Optional time spent processing before the
             answer started, recorded in state_container for analytics.
         timeout_override: Optional timeout override for the LLM call.
+        should_abort: Optional callback checked while the stream is being
+            consumed. When it returns True (user pressed stop), the provider
+            stream is closed — which aborts server-side generation for
+            providers like Ollama — and LLMStreamCancelled is raised.
 
     Yields:
         Packet: Streaming packets containing:
@@ -1792,7 +1803,7 @@ def run_llm_step_pkt_generator(
                     obj=AgentResponseDelta(content=content_chunk),
                 )
 
-        for packet in llm.stream(
+        stream_iter = llm.stream(
             prompt=llm_msg_history,
             tools=tool_definitions,
             tool_choice=tool_choice,
@@ -1802,107 +1813,132 @@ def run_llm_step_pkt_generator(
             user_identity=user_identity,
             timeout_override=timeout_override,
             temperature=temperature,
-        ):
-            # On the first chunk, not at stream end: a mid-step stop persists
-            # from another thread and needs this step's params already there.
-            if stream_chunk_count == 0 and state_container:
-                state_container.set_request_params(get_llm_request_params())
-            stream_chunk_count += 1
-            if packet.usage:
-                usage = packet.usage
-                span_generation.span_data.usage = {
-                    "input_tokens": usage.prompt_tokens,
-                    "output_tokens": usage.completion_tokens,
-                    "cache_read_input_tokens": usage.cache_read_input_tokens,
-                    "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-                }
-                # Note: LLM cost tracking is now handled in multi_llm.py
-            finish_reason = packet.choice.finish_reason
-            if finish_reason:
-                finish_reasons.add(str(finish_reason))
-                terminal_finish_reason = str(finish_reason)
-            delta = packet.choice.delta
+        )
+        last_abort_check_time = time.monotonic()
+        try:
+            for packet in stream_iter:
+                # Stop button: bail out of the stream promptly instead of
+                # pulling the provider's remaining generation. Throttled so a
+                # fast provider does not turn this into a per-chunk cache hit.
+                if should_abort is not None:
+                    now = time.monotonic()
+                    if now - last_abort_check_time >= _ABORT_CHECK_INTERVAL_S:
+                        last_abort_check_time = now
+                        if should_abort():
+                            raise LLMStreamCancelled(
+                                "LLM stream cancelled by user stop signal"
+                            )
+                # On the first chunk, not at stream end: a mid-step stop persists
+                # from another thread and needs this step's params already there.
+                if stream_chunk_count == 0 and state_container:
+                    state_container.set_request_params(get_llm_request_params())
+                stream_chunk_count += 1
+                if packet.usage:
+                    usage = packet.usage
+                    span_generation.span_data.usage = {
+                        "input_tokens": usage.prompt_tokens,
+                        "output_tokens": usage.completion_tokens,
+                        "cache_read_input_tokens": usage.cache_read_input_tokens,
+                        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                    }
+                    # Note: LLM cost tracking is now handled in multi_llm.py
+                finish_reason = packet.choice.finish_reason
+                if finish_reason:
+                    finish_reasons.add(str(finish_reason))
+                    terminal_finish_reason = str(finish_reason)
+                delta = packet.choice.delta
 
-            # Weird behavior from some model providers, just log and ignore for now.
-            # Most providers emit 1-2 legitimately empty tail chunks per stream
-            # (usage summary + stop chunk), so this is debug-only; the stream-end
-            # "no actionable deltas" warning below covers the pathological case.
-            if (
-                not delta.content
-                and delta.reasoning_content is None
-                and not delta.tool_calls
-            ):
-                empty_chunk_count += 1
-                logger.debug(
-                    "LLM packet is empty (no content, reasoning, or tool calls). "
-                    "finish_reason=%s. Skipping.",
-                    finish_reason,
-                )
-                continue
-
-            if not first_action_recorded and _delta_has_action(delta):
-                span_generation.span_data.time_to_first_action_seconds = (
-                    time.monotonic() - stream_start_time
-                )
-                first_action_recorded = True
-            if _delta_has_action(delta):
-                actionable_chunk_count += 1
-
-            if custom_token_processor:
-                # The custom token processor can modify the deltas for specific custom logic
-                # It can also return a state so that it can handle aggregated delta logic etc.
-                # Loosely typed so the function can be flexible
-                modified_delta, processor_state = custom_token_processor(
-                    delta, processor_state
-                )
-                if modified_delta is None:
+                # Weird behavior from some model providers, just log and ignore for now.
+                # Most providers emit 1-2 legitimately empty tail chunks per stream
+                # (usage summary + stop chunk), so this is debug-only; the stream-end
+                # "no actionable deltas" warning below covers the pathological case.
+                if (
+                    not delta.content
+                    and delta.reasoning_content is None
+                    and not delta.tool_calls
+                ):
+                    empty_chunk_count += 1
+                    logger.debug(
+                        "LLM packet is empty (no content, reasoning, or tool calls). "
+                        "finish_reason=%s. Skipping.",
+                        finish_reason,
+                    )
                     continue
-                delta = modified_delta
 
-            # Should only happen once, frontend does not expect multiple
-            # ReasoningStart or ReasoningDone packets.
-            if delta.reasoning_content:
-                accumulated_reasoning += delta.reasoning_content
-                # Save reasoning incrementally to state container
-                if state_container:
-                    state_container.set_reasoning_tokens(accumulated_reasoning)
-                if not reasoning_start:
+                if not first_action_recorded and _delta_has_action(delta):
+                    span_generation.span_data.time_to_first_action_seconds = (
+                        time.monotonic() - stream_start_time
+                    )
+                    first_action_recorded = True
+                if _delta_has_action(delta):
+                    actionable_chunk_count += 1
+
+                if custom_token_processor:
+                    # The custom token processor can modify the deltas for specific custom logic
+                    # It can also return a state so that it can handle aggregated delta logic etc.
+                    # Loosely typed so the function can be flexible
+                    modified_delta, processor_state = custom_token_processor(
+                        delta, processor_state
+                    )
+                    if modified_delta is None:
+                        continue
+                    delta = modified_delta
+
+                # Should only happen once, frontend does not expect multiple
+                # ReasoningStart or ReasoningDone packets.
+                if delta.reasoning_content:
+                    accumulated_reasoning += delta.reasoning_content
+                    # Save reasoning incrementally to state container
+                    if state_container:
+                        state_container.set_reasoning_tokens(accumulated_reasoning)
+                    if not reasoning_start:
+                        yield Packet(
+                            placement=_current_placement(),
+                            obj=ReasoningStart(),
+                        )
                     yield Packet(
                         placement=_current_placement(),
-                        obj=ReasoningStart(),
+                        obj=ReasoningDelta(reasoning=delta.reasoning_content),
                     )
-                yield Packet(
-                    placement=_current_placement(),
-                    obj=ReasoningDelta(reasoning=delta.reasoning_content),
-                )
-                reasoning_start = True
+                    reasoning_start = True
 
-            if delta.content:
-                # Keep raw content for fallback extraction. Display content can be
-                # filtered and, in deep-research REQUIRED mode, routed as reasoning.
-                accumulated_raw_answer += delta.content
-                filtered_content = text_tool_call_content_filter.process(delta.content)
-                filtered_content = xml_tool_call_content_filter.process(
-                    filtered_content
-                )
-                filtered_content = qwen_tool_call_content_filter.process(
-                    filtered_content
-                )
-                if filtered_content:
-                    yield from _emit_content_chunk(filtered_content)
-
-            if delta.tool_calls:
-                yield from _close_reasoning_if_active()
-
-                for tool_call_delta in delta.tool_calls:
-                    # maybe_emit depends and update being called first and attaching the delta
-                    _update_tool_call_with_delta(id_to_tool_call_map, tool_call_delta)
-                    yield from maybe_emit_argument_delta(
-                        tool_calls_in_progress=id_to_tool_call_map,
-                        tool_call_delta=tool_call_delta,
-                        placement=_current_placement(),
-                        parsers=arg_parsers,
+                if delta.content:
+                    # Keep raw content for fallback extraction. Display content can be
+                    # filtered and, in deep-research REQUIRED mode, routed as reasoning.
+                    accumulated_raw_answer += delta.content
+                    filtered_content = text_tool_call_content_filter.process(
+                        delta.content
                     )
+                    filtered_content = xml_tool_call_content_filter.process(
+                        filtered_content
+                    )
+                    filtered_content = qwen_tool_call_content_filter.process(
+                        filtered_content
+                    )
+                    if filtered_content:
+                        yield from _emit_content_chunk(filtered_content)
+
+                if delta.tool_calls:
+                    yield from _close_reasoning_if_active()
+
+                    for tool_call_delta in delta.tool_calls:
+                        # maybe_emit depends and update being called first and attaching the delta
+                        _update_tool_call_with_delta(
+                            id_to_tool_call_map, tool_call_delta
+                        )
+                        yield from maybe_emit_argument_delta(
+                            tool_calls_in_progress=id_to_tool_call_map,
+                            tool_call_delta=tool_call_delta,
+                            placement=_current_placement(),
+                            parsers=arg_parsers,
+                        )
+
+        finally:
+            # Close the stream generator deterministically. On an abort this
+            # raises GeneratorExit inside llm.stream, whose own finally closes
+            # the isolated HTTP client — for providers like Ollama the
+            # connection drop is what stops server-side generation.
+            stream_iter.close()
 
         # Flush any tail text buffered by the filters while checking for split
         # markers or line boundaries.
@@ -2109,6 +2145,7 @@ def run_llm_step(
     pre_answer_processing_time: float | None = None,
     timeout_override: int | None = None,
     temperature: float | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> tuple[LlmStepResult, bool]:
     """Wrapper around run_llm_step_pkt_generator that consumes packets and emits them.
 
@@ -2133,6 +2170,7 @@ def run_llm_step(
         pre_answer_processing_time=pre_answer_processing_time,
         timeout_override=timeout_override,
         temperature=temperature,
+        should_abort=should_abort,
     )
 
     while True:

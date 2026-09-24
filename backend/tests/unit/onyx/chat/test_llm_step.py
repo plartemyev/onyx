@@ -1773,3 +1773,142 @@ class TestRunLlmStepTemperature:
             citation_processor=None,
         )
         assert llm_no_override.stream_kwargs["temperature"] is None
+
+
+class _AbortRecordingLLM(LLM):
+    """LLM whose stream() records whether the consumer closed the generator."""
+
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = chunks
+        self.closed = False
+
+    @property
+    def config(self) -> LLMConfig:
+        return LLMConfig(
+            model_provider="test",
+            model_name="test-model",
+            temperature=0.0,
+            max_input_tokens=8000,
+        )
+
+    def invoke(  # noqa: ARG002
+        self,
+        prompt: Any,
+        tools: Any = None,
+        tool_choice: Any = None,
+        structured_response_format: dict | None = None,
+        timeout_override: int | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: Any = None,
+        user_identity: Any = None,
+        total_timeout_override: float | None = None,
+        temperature: float | None = None,
+    ) -> Any:
+        raise NotImplementedError("stream-only stub")
+
+    def stream(  # noqa: ARG002
+        self,
+        prompt: Any,
+        tools: Any = None,
+        tool_choice: Any = None,
+        structured_response_format: dict | None = None,
+        timeout_override: int | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: Any = None,
+        user_identity: Any = None,
+        total_timeout_override: float | None = None,
+        temperature: float | None = None,
+    ) -> Any:
+        try:
+            for i, chunk in enumerate(self._chunks):
+                yield ModelResponseStream(
+                    id="stream-id",
+                    created="2026-09-24T00:00:00Z",
+                    choice=StreamingChoice(
+                        finish_reason="stop" if i == len(self._chunks) - 1 else None,
+                        delta=Delta(content=chunk),
+                    ),
+                )
+        finally:
+            self.closed = True
+
+
+class TestMidStreamAbort:
+    """The stop signal must abort an in-flight LLM stream.
+
+    On abort, run_llm_step_pkt_generator raises LLMStreamCancelled after
+    closing the stream generator — the close is what drops the provider HTTP
+    connection and stops server-side generation (e.g. Ollama).
+    """
+
+    def test_abort_raises_and_closes_stream(self, monkeypatch: Any) -> None:
+        import queue
+
+        from onyx.chat.emitter import Emitter
+        from onyx.chat.llm_step import run_llm_step
+        from onyx.chat.models import ChatMessageSimple
+        from onyx.configs.constants import MessageType as MsgType
+        from onyx.llm.exceptions import LLMStreamCancelled
+
+        # Check on every chunk so the test does not wait out the throttle.
+        monkeypatch.setattr(llm_step_module, "_ABORT_CHECK_INTERVAL_S", 0.0)
+
+        llm = _AbortRecordingLLM(chunks=["Hello", " world", "!"])
+        emitter = Emitter(merged_queue=queue.Queue())
+        history = [
+            ChatMessageSimple(
+                message="Say hi.",
+                token_count=5,
+                message_type=MsgType.USER,
+            )
+        ]
+
+        with pytest.raises(LLMStreamCancelled):
+            run_llm_step(
+                emitter=emitter,
+                history=history,
+                tool_definitions=[],
+                tool_choice=ToolChoiceOptions.NONE,
+                llm=llm,
+                placement=Placement(turn_index=0),
+                state_container=None,
+                citation_processor=None,
+                should_abort=lambda: True,
+            )
+
+        assert llm.closed, "stream generator was not closed on abort"
+
+    def test_no_abort_runs_to_completion(self, monkeypatch: Any) -> None:
+        import queue
+
+        from onyx.chat.emitter import Emitter
+        from onyx.chat.llm_step import run_llm_step
+        from onyx.chat.models import ChatMessageSimple
+        from onyx.configs.constants import MessageType as MsgType
+
+        # A throttled check that never fires must not disturb the stream.
+        monkeypatch.setattr(llm_step_module, "_ABORT_CHECK_INTERVAL_S", 3600.0)
+
+        llm = _AbortRecordingLLM(chunks=["Hello", " world"])
+        emitter = Emitter(merged_queue=queue.Queue())
+        history = [
+            ChatMessageSimple(
+                message="Say hi.",
+                token_count=5,
+                message_type=MsgType.USER,
+            )
+        ]
+
+        result, _ = run_llm_step(
+            emitter=emitter,
+            history=history,
+            tool_definitions=[],
+            tool_choice=ToolChoiceOptions.NONE,
+            llm=llm,
+            placement=Placement(turn_index=0),
+            state_container=None,
+            citation_processor=None,
+            should_abort=lambda: False,
+        )
+
+        assert result.answer == "Hello world"
