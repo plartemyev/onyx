@@ -43,6 +43,41 @@ ONE_MILLION = 1_000_000
 CHUNKS_PER_DOC_ESTIMATE = 5
 MAX_LITELLM_USER_ID_LENGTH = 64
 
+# Case-insensitive markers that identify a "prompt exceeds the model's
+# context" rejection across providers. Serving layers tokenize the prompt
+# themselves, so their count can exceed Onyx's estimate (chat-template
+# overhead, tokenizer drift on tool output); these signatures let the chat
+# loop detect the rejection and retry with a smaller history budget.
+_CONTEXT_OVERFLOW_MARKERS = (
+    "not enough tokens to include",  # Ollama
+    "input length exceeds context length",  # llama.cpp
+    "context_length_exceeded",  # OpenAI
+    "maximum context length",  # OpenAI / OpenAI-compatible
+    "context window",  # generic
+    "prompt is too long",  # Anthropic
+    "too many input tokens",  # Anthropic / Bedrock
+    "prompt too large",  # Bedrock
+    "context length was exceeded",  # Groq
+)
+
+
+def is_context_overflow_exception(e: Exception) -> bool:
+    """Whether the exception is a prompt-exceeds-context rejection."""
+    from litellm.exceptions import ContextWindowExceededError
+
+    if isinstance(e, ClassifiedLLMError):
+        return e.error_code == "CONTEXT_WINDOW_EXCEEDED"
+
+    core_exception = _unwrap_nested_exception(e)
+    if isinstance(core_exception, ContextWindowExceededError):
+        return True
+    return _has_context_overflow_marker(str(core_exception))
+
+
+def _has_context_overflow_marker(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return any(marker in lowered for marker in _CONTEXT_OVERFLOW_MARKERS)
+
 
 def truncate_litellm_user_id(user_id: str) -> str:
     """Truncate the LiteLLM `user` field maximum length."""
@@ -185,6 +220,27 @@ def litellm_exception_to_error_msg(
                 )
         error_code = "CONTEXT_TOO_LONG"
         is_retryable = False
+    elif _has_context_overflow_marker(str(core_exception)):
+        # Providers surface context overflow through different exception
+        # types (Ollama sends it as a plain 400 BadRequestError). Give it
+        # the same user-safe treatment as the typed branch above.
+        error_msg = (
+            "Context window exceeded: The model server rejected the request "
+            "because the input is too long for the model to process."
+        )
+        if llm is not None:
+            try:
+                max_context = get_max_input_tokens(
+                    model_name=llm.config.model_name,
+                    model_provider=llm.config.model_provider,
+                )
+                error_msg += f" Your invoked model ({llm.config.model_name}) has a maximum context size of {max_context}."
+            except Exception:
+                logger.warning(
+                    "Unable to get maximum input token for LiteLLM exception handling"
+                )
+        error_code = "CONTEXT_TOO_LONG"
+        is_retryable = True
     elif isinstance(core_exception, ContentPolicyViolationError):
         error_msg = "Content policy violation: Your request violates the content policy. Please revise your input."
         error_code = "CONTENT_POLICY"

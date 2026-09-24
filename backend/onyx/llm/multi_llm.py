@@ -195,7 +195,9 @@ class LLMRateLimitError(Exception):
     """
 
 
-def _consume_stream_with_timeout(stream: Any, total_timeout: float | None) -> list[Any]:
+def _consume_stream_with_timeout(
+    stream: Any, total_timeout: float | None, chunks_sink: list[Any] | None = None
+) -> list[Any]:
     """Drain a litellm stream, capping total wall-clock time when set.
 
     The socket read timeout only bounds the gap between packets, so keepalive
@@ -206,14 +208,23 @@ def _consume_stream_with_timeout(stream: Any, total_timeout: float | None) -> li
     (see invoke()) so the ``finally`` block force-closes the underlying HTTP
     connection. Without that, generation servers like Ollama never learn the
     client is gone and keep generating server-side.
+
+    When ``chunks_sink`` is given, every chunk is appended to it as it
+    arrives, so a caller retrying after a mid-stream exception can tell
+    whether the server had already produced output.
     """
     if total_timeout is None:
-        return list(stream)
+        chunks = list(stream)
+        if chunks_sink is not None:
+            chunks_sink.extend(chunks)
+        return chunks
 
     deadline = time.monotonic() + total_timeout
     chunks: list[Any] = []
     for chunk in stream:
         chunks.append(chunk)
+        if chunks_sink is not None:
+            chunks_sink.append(chunk)
         if time.monotonic() > deadline:
             raise LLMTimeoutError(
                 f"LLM streaming call exceeded total timeout of {total_timeout}s"
@@ -1233,47 +1244,34 @@ class LitellmLLM(LLM):
         user_identity: LLMUserIdentity | None = None,
         total_timeout_override: float | None = None,
     ) -> ModelResponse:
-        from litellm import HTTPHandler
+        from litellm import CustomStreamWrapper as LiteLLMCustomStreamWrapper
+        from litellm import HTTPHandler, stream_chunk_builder
         from litellm import ModelResponse as LiteLLMModelResponse
+        from litellm.exceptions import APIConnectionError as LiteLLMAPIConnectionError
+        from litellm.exceptions import (
+            InternalServerError as LiteLLMInternalServerError,
+        )
+        from litellm.exceptions import (
+            ServiceUnavailableError as LiteLLMServiceUnavailableError,
+        )
+        from litellm.exceptions import Timeout as LiteLLMTimeout
 
         from onyx.llm.model_response import from_litellm_model_response
 
         # HTTPHandler Threading & Connection Pool Notes:
         # =============================================
-        # We create an isolated HTTPHandler ONLY for true OpenAI models (not OpenAI-compatible
-        # providers like glm-4.7, DeepSeek, etc.). This distinction is critical:
+        # Key points for invoke():
+        # 1. HTTPHandler only for providers in _uses_isolated_client(), plus
+        #    ollama_chat — Ollama keeps generating for as long as the client
+        #    connection stays open, and litellm routes ollama_chat over its
+        #    shared module-level client. A per-call handler lets the loop's
+        #    finally force-close the connection when we abandon the stream
+        #    (total-timeout breach, error), so the server cancels generation.
+        # 2. OpenAI-compatible providers fail with AttributeError on api_key
+        #    when handed an HTTPHandler; true OpenAI models need it (responses
+        #    API path). See stream() for the abandoned-stream pitfalls that
+        #    motivated per-call handlers (shared-pool corruption, GC deadlock).
         #
-        # 1. WHY ONLY TRUE OPENAI MODELS:
-        #    - True OpenAI models use litellm's "responses API" path which expects HTTPHandler
-        #    - OpenAI-compatible providers (model_provider="openai" with non-OpenAI models)
-        #      use the standard completion path which expects OpenAI SDK client objects
-        #    - Passing HTTPHandler to OpenAI-compatible providers causes:
-        #      AttributeError: 'HTTPHandler' object has no attribute 'api_key'
-        #      (because _get_openai_client() calls openai_client.api_key on line ~929)
-        #
-        # 2. WHY ISOLATED HTTPHandler FOR OPENAI:
-        #    - Prevents "Bad file descriptor" errors when multiple threads stream concurrently
-        #    - Shared connection pools can have stale connections or abandoned streams that
-        #      corrupt the pool state for other threads
-        #    - Each request gets its own fresh httpx.Client via HTTPHandler
-        #
-        # 3. WHY ANTHROPIC AND BEDROCK ALSO GET AN ISOLATED CLIENT:
-        #    - An abandoned sync stream is finalized by GC, which can fire on a thread
-        #      already inside the shared pool's non-reentrant lock and deadlock it,
-        #      wedging all later LLM calls (encode/httpcore#996; seen in prod).
-        #    - A per-call client keeps abandoned streams off the shared pool. The
-        #      litellm anthropic and bedrock handlers both use module_level_client
-        #      only when client is None.
-        #
-        # 4. PITFALL - is_true_openai_model() CHECK:
-        #    - Must use is_true_openai_model() NOT just check model_provider == "openai"
-        #    - Many OpenAI-compatible providers set model_provider="openai" but are NOT true
-        #      OpenAI models (glm-4.7, DeepSeek, local proxies, etc.)
-        #    - is_true_openai_model() checks both provider AND model name patterns
-        #
-        # This note may not be entirely accurate as there is a lot of complexity in the LiteLLM codebase around this
-        # and not every model path was traced thoroughly. It is also possible that in future versions of LiteLLM
-        # they will realize that their OpenAI handling is not threadsafe. Hope they will just fix it.
         # Cap the per-read timeout at the total budget. The deadline is only
         # checked between chunks, so without this a single blocking read could
         # overshoot a total shorter than the socket read timeout. No-op when the
@@ -1282,62 +1280,78 @@ class LitellmLLM(LLM):
         if total_timeout_override is not None:
             read_timeout = min(read_timeout, max(1, int(total_timeout_override)))
 
-        client = None
-        # Ollama keeps generating for as long as the client connection stays
-        # open, and litellm routes ollama_chat over its shared module-level
-        # client. A per-call HTTPHandler lets the finally below force-close the
-        # connection when we abandon a stream (total-timeout breach, error), so
-        # the server sees the disconnect and cancels generation.
-        if (
-            self._uses_isolated_client()
-            or self.config.model_provider == LlmProviderNames.OLLAMA_CHAT
-        ):
-            client = HTTPHandler(timeout=read_timeout)
+        # Transient failures (connection reset, ollama reloading the model
+        # for a different context length, blip during model swap) surface as
+        # connection errors before any output exists. invoke() streams
+        # internally and hands the caller a single response, so a retry is
+        # invisible and safe as long as nothing was consumed yet. Same
+        # retryable set and budget as the pre-chunk retry in stream().
+        retryable_exceptions = (
+            LiteLLMTimeout,
+            LiteLLMAPIConnectionError,
+            LiteLLMServiceUnavailableError,
+            LiteLLMInternalServerError,
+        )
+        max_attempts: int = 1 + LLM_FIRST_CHUNK_MAX_RETRIES
 
-        try:
-            # When env-only custom_config keys are injected (self-hosted
-            # deployments only), they are set under a global lock. Using
-            # stream=True here means the lock is only held during connection
-            # setup (not the full inference). The chunks are then collected
-            # outside the lock and reassembled into a single ModelResponse
-            # via stream_chunk_builder.
-            from litellm import CustomStreamWrapper as LiteLLMCustomStreamWrapper
-            from litellm import stream_chunk_builder
+        chunks: list[Any] = []
+        chunks_sink: list[Any] = []
+        for attempt in range(max_attempts):
+            client: HTTPHandler | None = None
+            chunks_sink.clear()
+            if (
+                self._uses_isolated_client()
+                or self.config.model_provider == LlmProviderNames.OLLAMA_CHAT
+            ):
+                client = HTTPHandler(timeout=read_timeout)
+            try:
+                stream_response = cast(
+                    LiteLLMCustomStreamWrapper,
+                    self._completion(
+                        prompt=prompt,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        stream=True,
+                        structured_response_format=structured_response_format,
+                        timeout_override=read_timeout,
+                        max_tokens=max_tokens,
+                        parallel_tool_calls=True,
+                        reasoning_effort=reasoning_effort,
+                        user_identity=user_identity,
+                        client=client,
+                    ),
+                )
+                chunks = _consume_stream_with_timeout(
+                    stream_response, total_timeout_override, chunks_sink
+                )
+                break
+            except retryable_exceptions as e:
+                if chunks_sink or attempt >= max_attempts - 1:
+                    raise
+                logger.warning(
+                    "Retrying pre-response invoke for model %s after %s on "
+                    "attempt %d/%d",
+                    self.config.model_name,
+                    type(e).__name__,
+                    attempt + 1,
+                    max_attempts,
+                )
+            finally:
+                if client is not None:
+                    client.close()
 
-            stream_response = cast(
-                LiteLLMCustomStreamWrapper,
-                self._completion(
-                    prompt=prompt,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    stream=True,
-                    structured_response_format=structured_response_format,
-                    timeout_override=read_timeout,
-                    max_tokens=max_tokens,
-                    parallel_tool_calls=True,
-                    reasoning_effort=reasoning_effort,
-                    user_identity=user_identity,
-                    client=client,
-                ),
-            )
-            chunks = _consume_stream_with_timeout(
-                stream_response, total_timeout_override
-            )
-            response = cast(
-                LiteLLMModelResponse,
-                stream_chunk_builder(chunks),
-            )
+        response = cast(
+            LiteLLMModelResponse,
+            stream_chunk_builder(chunks),
+        )
 
-            model_response = from_litellm_model_response(response)
+        model_response = from_litellm_model_response(response)
 
-            # Track LLM cost for Onyx-managed API keys
-            if model_response.usage:
-                self._track_llm_cost(model_response.usage)
+        # Track LLM cost for Onyx-managed API keys
+        if model_response.usage:
+            self._track_llm_cost(model_response.usage)
 
-            return model_response
-        finally:
-            if client is not None:
-                client.close()
+        return model_response
 
     def stream(
         self,
