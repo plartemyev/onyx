@@ -30,6 +30,8 @@ services:
       start_period: 45s
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
+      # instance secret, from the gitignored .env (see settings.yml)
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
     volumes:
       - ./searxng:/etc/searxng:ro
 

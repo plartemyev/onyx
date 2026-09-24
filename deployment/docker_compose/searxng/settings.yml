@@ -26,7 +26,8 @@ use_default_settings:
       - duckduckgo images
       - google images
 server:
-  secret_key: "a796f0cc637b6f11ec870fdb017b2704f8407104c1c0743a"
+  # Instance secret comes from the SEARXNG_SECRET environment variable
+  # (docker-compose.override.yml interpolates it from the gitignored .env).
   # Private instance: the limiter blocks API-style requests like Onyx's.
   limiter: false
 search:
