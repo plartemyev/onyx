@@ -4,7 +4,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from onyx.auth.permissions import has_global_permission
-from onyx.configs.model_configs import GEN_AI_TEMPERATURE
+from onyx.configs.model_configs import GEN_AI_TEMPERATURE, OLLAMA_NUM_CTX_HEADROOM
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import LLMModelFlowType, Permission
 from onyx.db.llm import (
@@ -85,7 +85,7 @@ def _build_model_kwargs(
         and configured_max_input_tokens
         and configured_max_input_tokens > 0
     ):
-        model_kwargs["num_ctx"] = configured_max_input_tokens
+        model_kwargs["num_ctx"] = configured_max_input_tokens + OLLAMA_NUM_CTX_HEADROOM
     return model_kwargs
 
 

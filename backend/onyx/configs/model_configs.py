@@ -83,6 +83,14 @@ if not 0.0 <= GEN_AI_INPUT_TOKEN_SAFETY_MARGIN < 1.0:
 
 GEN_AI_TEMPERATURE = float(os.environ.get("GEN_AI_TEMPERATURE") or 0)
 
+# Extra context-window headroom passed to Ollama (`num_ctx`) on top of the
+# model's configured max input tokens. The serving layer tokenizes the
+# prompt itself, so its count includes chat-template overhead and tokenizer
+# drift that Onyx's estimate misses; the headroom absorbs that difference
+# (and leaves room for generation) instead of surfacing a context-overflow
+# error. 0 keeps num_ctx exactly at max_input_tokens (upstream default).
+OLLAMA_NUM_CTX_HEADROOM = int(os.environ.get("OLLAMA_NUM_CTX_HEADROOM") or 0)
+
 # should be used if you are using a custom LLM inference provider that doesn't support
 # streaming format AND you are still using the langchain/litellm LLM class
 DISABLE_LITELLM_STREAMING = (
