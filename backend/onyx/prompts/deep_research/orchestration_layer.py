@@ -155,6 +155,17 @@ Provide inline citations in the format [1], [2], [3], etc. based on the citation
 """.strip()
 
 
+# Second attempt for the report step when the first produced no usable
+# answer — typically a small model replaying the research agents' tool-call
+# format instead of writing the report. The research history is full of
+# tool-call wire formats, so name the expected output shape explicitly.
+FINAL_REPORT_RETRY_NUDGE = """
+Your previous response did not contain the report. Do not call or imitate any tools, \
+and do not repeat the research agents' tool-call format. Respond with the final report \
+itself, as plain markdown text addressed to the user.
+""".strip()
+
+
 # Reasoning Model Variants of the prompts
 ORCHESTRATOR_PROMPT_REASONING = f"""
 You are an orchestrator agent for deep research. Your job is to conduct research by calling the {RESEARCH_AGENT_TOOL_NAME} tool with high level research tasks. \

@@ -9,7 +9,7 @@ from typing import cast
 from onyx.chat.chat_state import ChatStateContainer
 from onyx.chat.citation_processor import CitationMapping, DynamicCitationProcessor
 from onyx.chat.emitter import Emitter
-from onyx.chat.llm_loop import construct_message_history
+from onyx.chat.llm_loop import construct_message_history, try_fallback_tool_extraction
 from onyx.chat.llm_step import run_llm_step, run_llm_step_pkt_generator
 from onyx.chat.models import (
     ChatMessageSimple,
@@ -26,6 +26,7 @@ from onyx.configs.chat_configs import (
     SKIP_DEEP_RESEARCH_CLARIFICATION,
 )
 from onyx.configs.constants import MessageType
+from onyx.configs.model_configs import GEN_AI_INPUT_TOKEN_SAFETY_MARGIN
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import SupportedLanguage
 from onyx.db.tools import get_tool_by_name
@@ -46,6 +47,7 @@ from onyx.llm.models import ReasoningEffort, ToolChoiceOptions
 from onyx.prompts.deep_research.orchestration_layer import (
     CLARIFICATION_PROMPT,
     FINAL_REPORT_PROMPT,
+    FINAL_REPORT_RETRY_NUDGE,
     FIRST_CYCLE_REMINDER,
     FIRST_CYCLE_REMINDER_TOKENS,
     INTERNAL_SEARCH_CLARIFICATION_GUIDANCE,
@@ -140,7 +142,9 @@ def generate_final_report(
             simple_chat_history=history,
             reminder_message=reminder_message,
             context_files=None,
-            available_tokens=llm.config.max_input_tokens,
+            available_tokens=int(
+                llm.config.max_input_tokens * (1 - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN)
+            ),
             all_injected_file_metadata=all_injected_file_metadata,
             # The final report runs with no tools at all.
             available_tool_names=set(),
@@ -169,6 +173,51 @@ def generate_final_report(
             pre_answer_processing_time=pre_answer_processing_time,
             timeout_override=DR_REPORT_LLM_TIMEOUT_S,
         )
+
+        # Weak models sometimes answer the tool-free report step by replaying
+        # the research history's tool-call wire format. The streaming filter
+        # suppresses that markup, which can leave this step with no answer at
+        # all. Retry once with an explicit nudge instead of failing the run.
+        if llm_step_result.answer is None:
+            logger.warning(
+                "Deep research report step produced no answer; retrying with "
+                "a no-tools nudge"
+            )
+            nudge_msg = ChatMessageSimple(
+                message=FINAL_REPORT_RETRY_NUDGE,
+                token_count=token_counter(FINAL_REPORT_RETRY_NUDGE),
+                message_type=MessageType.USER,
+            )
+            final_report_history = construct_message_history(
+                system_prompt=system_prompt,
+                custom_agent_prompt=None,
+                simple_chat_history=[*history, nudge_msg],
+                reminder_message=reminder_message,
+                context_files=None,
+                available_tokens=int(
+                    llm.config.max_input_tokens * (1 - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN)
+                ),
+                all_injected_file_metadata=all_injected_file_metadata,
+                available_tool_names=set(),
+            )
+            llm_step_result, has_reasoned_retry = run_llm_step(
+                emitter=emitter,
+                history=final_report_history,
+                tool_definitions=[],
+                tool_choice=ToolChoiceOptions.NONE,
+                llm=llm,
+                reasoning_effort=reasoning_effort,
+                placement=Placement(turn_index=turn_index),
+                citation_processor=citation_processor,
+                state_container=state_container,
+                final_documents=final_documents,
+                user_identity=user_identity,
+                max_tokens=MAX_FINAL_REPORT_TOKENS,
+                is_deep_research=True,
+                pre_answer_processing_time=pre_answer_processing_time,
+                timeout_override=DR_REPORT_LLM_TIMEOUT_S,
+            )
+            has_reasoned = has_reasoned or has_reasoned_retry
 
         # Save citation mapping to state_container so citations are persisted
         state_container.set_citation_mapping(citation_processor.citation_to_doc)
@@ -226,7 +275,11 @@ def run_deep_research_llm_loop(
         # to work in most cases.
         if llm.config.max_input_tokens < 50000:
             raise RuntimeError(
-                "Cannot run Deep Research with an LLM that has less than 50,000 max input tokens"
+                "Deep Research requires a model with at least 50,000 max input "
+                f"tokens, but the selected model ({llm.config.model_name}) has "
+                f"{llm.config.max_input_tokens}. Pick a larger-context model in "
+                "chat, or raise this model's 'Max Input Tokens' under Admin "
+                "panel > LLM (if the model server actually supports it)."
             )
 
         initialize_litellm()
@@ -234,7 +287,13 @@ def run_deep_research_llm_loop(
         # Track processing start time for tool duration calculation
         processing_start_time = time.monotonic()
 
-        available_tokens = llm.config.max_input_tokens
+        # Same input safety margin as the regular chat loop: the serving
+        # layer's own tokenizer (plus chat-template overhead) always counts a
+        # few percent more than Onyx's estimate, so a full-cap prompt would
+        # get rejected by the model server.
+        available_tokens = int(
+            llm.config.max_input_tokens * (1 - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN)
+        )
 
         # The clarification, the research-agent reports and the final report reach the
         # user, so they carry the reply-language line. The plan and the research tasks
@@ -563,6 +622,23 @@ def run_deep_research_llm_loop(
                     reasoning_cycles += 1
 
                 tool_calls = llm_step_result.tool_calls or []
+                if not tool_calls:
+                    # Weak models sometimes emit the orchestrator's tool
+                    # calls as plain text in the native wire format instead
+                    # of using native tool calls. Parse the text before
+                    # giving up on the cycle, mirroring the regular chat
+                    # loop's fallback.
+                    llm_step_result, _ = try_fallback_tool_extraction(
+                        llm_step_result=llm_step_result,
+                        tool_choice=ToolChoiceOptions.REQUIRED,
+                        tool_defs=get_orchestrator_tools(
+                            include_think_tool=not is_reasoning_model
+                        ),
+                        turn_index=orchestrator_start_turn_index
+                        + cycle
+                        + reasoning_cycles,
+                    )
+                    tool_calls = llm_step_result.tool_calls or []
 
                 if not tool_calls and cycle == 0:
                     raise RuntimeError(
