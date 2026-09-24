@@ -23,7 +23,12 @@ from onyx.chat.models import ChatLoadedFile, ChatMessageSimple, ToolCallSimple
 from onyx.configs.constants import MessageType
 from onyx.file_store.models import ChatFileType
 from onyx.llm.constants import LlmProviderNames
-from onyx.llm.interfaces import LLMConfig, ToolChoiceOptions
+from onyx.llm.interfaces import LLM, LLMConfig, ToolChoiceOptions
+from onyx.llm.model_response import (
+    Delta,
+    ModelResponseStream,
+    StreamingChoice,
+)
 from onyx.llm.models import (
     AssistantMessage,
     ImageContentPart,
@@ -1668,3 +1673,103 @@ class TestQwenToolCallContentFilter:
         content_filter = _QwenToolCallContentFilter()
         content = "Plain text with no markup at all."
         assert content_filter.process(content) + content_filter.flush() == content
+
+
+class _RecordingStreamLLM(LLM):
+    """Minimal LLM that records the kwargs stream() received."""
+
+    def __init__(self, temperature: float) -> None:
+        self._temperature = temperature
+        self.stream_kwargs: dict[str, Any] = {}
+
+    @property
+    def config(self) -> LLMConfig:
+        return LLMConfig(
+            model_provider="test",
+            model_name="test-model",
+            temperature=self._temperature,
+            max_input_tokens=8000,
+        )
+
+    def invoke(  # noqa: ARG002
+        self,
+        prompt: Any,  # noqa: ARG002
+        tools: Any = None,  # noqa: ARG002
+        tool_choice: Any = None,  # noqa: ARG002
+        structured_response_format: dict | None = None,  # noqa: ARG002
+        timeout_override: int | None = None,  # noqa: ARG002
+        max_tokens: int | None = None,  # noqa: ARG002
+        reasoning_effort: Any = None,  # noqa: ARG002
+        user_identity: Any = None,  # noqa: ARG002
+        total_timeout_override: float | None = None,  # noqa: ARG002
+        temperature: float | None = None,  # noqa: ARG002
+    ) -> Any:
+        raise NotImplementedError("stream-only stub")
+
+    def stream(  # noqa: ARG002
+        self,
+        prompt: Any,  # noqa: ARG002
+        tools: Any = None,  # noqa: ARG002
+        tool_choice: Any = None,  # noqa: ARG002
+        structured_response_format: dict | None = None,  # noqa: ARG002
+        timeout_override: int | None = None,  # noqa: ARG002
+        max_tokens: int | None = None,  # noqa: ARG002
+        reasoning_effort: Any = None,  # noqa: ARG002
+        user_identity: Any = None,  # noqa: ARG002
+        temperature: float | None = None,
+    ) -> Any:
+        self.stream_kwargs = {"temperature": temperature}
+        yield ModelResponseStream(
+            id="stream-id",
+            created="2026-09-24T00:00:00Z",
+            choice=StreamingChoice(delta=Delta(content="hi")),
+        )
+
+
+class TestRunLlmStepTemperature:
+    def test_temperature_is_forwarded_to_stream(self) -> None:
+        import queue
+
+        from onyx.chat.emitter import Emitter
+        from onyx.chat.llm_step import run_llm_step
+        from onyx.chat.models import ChatMessageSimple
+        from onyx.configs.constants import MessageType as MsgType
+
+        llm = _RecordingStreamLLM(temperature=0.7)
+        emitter = Emitter(merged_queue=queue.Queue())
+        history = [
+            ChatMessageSimple(
+                message="Say hi.",
+                token_count=5,
+                message_type=MsgType.USER,
+            )
+        ]
+
+        result, _ = run_llm_step(
+            emitter=emitter,
+            history=history,
+            tool_definitions=[],
+            tool_choice=ToolChoiceOptions.NONE,
+            llm=llm,
+            placement=Placement(turn_index=0),
+            state_container=None,
+            citation_processor=None,
+            temperature=0.2,
+        )
+
+        assert result.answer == "hi"
+        assert llm.stream_kwargs["temperature"] == 0.2
+        # Without an override, the None sentinel reaches the LLM, which then
+        # falls back to its configured temperature.
+        llm_no_override = _RecordingStreamLLM(temperature=0.7)
+        run_llm_step(
+            emitter=emitter,
+            history=history,
+            tool_definitions=[],
+            tool_choice=ToolChoiceOptions.NONE,
+            llm=llm_no_override,
+            placement=Placement(turn_index=0),
+            state_container=None,
+            citation_processor=None,
+        )
+        assert llm_no_override.stream_kwargs["temperature"] is None

@@ -309,6 +309,7 @@ class MockLLM(LLM, MockLLMController):
         reasoning_effort: ReasoningEffort = ReasoningEffort.AUTO,
         user_identity: LLMUserIdentity | None = None,
         total_timeout_override: float | None = None,
+        temperature: float | None = None,
     ) -> ModelResponse:
         raise NotImplementedError("We only care about streaming atm")
 
@@ -322,6 +323,7 @@ class MockLLM(LLM, MockLLMController):
         max_tokens: int | None = None,  # noqa: ARG002
         reasoning_effort: ReasoningEffort = ReasoningEffort.AUTO,  # noqa: ARG002
         user_identity: LLMUserIdentity | None = None,  # noqa: ARG002
+        temperature: float | None = None,  # noqa: ARG002
     ) -> Iterator[ModelResponseStream]:
         if not self.stream_controller:
             return

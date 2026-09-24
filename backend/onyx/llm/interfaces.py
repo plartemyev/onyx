@@ -98,7 +98,14 @@ class LLM(abc.ABC):
         reasoning_effort: ReasoningEffort = ReasoningEffort.AUTO,
         user_identity: LLMUserIdentity | None = None,
         total_timeout_override: float | None = None,
+        temperature: float | None = None,
     ) -> "ModelResponse":
+        """Run one completion.
+
+        `temperature` overrides the LLM's configured sampling temperature for
+        this call only. Ignored for reasoning models, whose providers route
+        sampling through the reasoning params.
+        """
         raise NotImplementedError
 
     def stream(
@@ -111,5 +118,6 @@ class LLM(abc.ABC):
         max_tokens: int | None = None,
         reasoning_effort: ReasoningEffort = ReasoningEffort.AUTO,
         user_identity: LLMUserIdentity | None = None,
+        temperature: float | None = None,
     ) -> Iterator[ModelResponseStream]:
         raise NotImplementedError

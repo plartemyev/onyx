@@ -665,6 +665,7 @@ class LitellmLLM(LLM):
         max_tokens: int | None = None,
         user_identity: LLMUserIdentity | None = None,
         client: "HTTPHandler | None" = None,
+        temperature: float | None = None,
     ) -> Union["ModelResponse", "CustomStreamWrapper"]:
         # Lazy loading to avoid memory bloat for non-inference flows
         from litellm.exceptions import BadRequestError, RateLimitError, Timeout
@@ -797,7 +798,11 @@ class LitellmLLM(LLM):
             anthropic_omits_sampling_params(name) for name in model_identity_names
         )
         if not omits_sampling_params:
-            optional_kwargs["temperature"] = 1 if is_reasoning else self._temperature
+            optional_kwargs["temperature"] = (
+                1
+                if is_reasoning
+                else (temperature if temperature is not None else self._temperature)
+            )
 
         if stream and not is_vertex_model_rejecting_stream_options:
             optional_kwargs["stream_options"] = {"include_usage": True}
@@ -1243,6 +1248,7 @@ class LitellmLLM(LLM):
         reasoning_effort: ReasoningEffort = ReasoningEffort.AUTO,
         user_identity: LLMUserIdentity | None = None,
         total_timeout_override: float | None = None,
+        temperature: float | None = None,
     ) -> ModelResponse:
         from litellm import CustomStreamWrapper as LiteLLMCustomStreamWrapper
         from litellm import HTTPHandler, stream_chunk_builder
@@ -1319,6 +1325,7 @@ class LitellmLLM(LLM):
                         reasoning_effort=reasoning_effort,
                         user_identity=user_identity,
                         client=client,
+                        temperature=temperature,
                     ),
                 )
                 chunks = _consume_stream_with_timeout(
@@ -1363,6 +1370,7 @@ class LitellmLLM(LLM):
         max_tokens: int | None = None,
         reasoning_effort: ReasoningEffort = ReasoningEffort.AUTO,
         user_identity: LLMUserIdentity | None = None,
+        temperature: float | None = None,
     ) -> Iterator[ModelResponseStream]:
         from litellm import CustomStreamWrapper as LiteLLMCustomStreamWrapper
         from litellm import HTTPHandler
@@ -1441,6 +1449,7 @@ class LitellmLLM(LLM):
                         reasoning_effort=reasoning_effort,
                         user_identity=user_identity,
                         client=client,
+                        temperature=temperature,
                     ),
                 )
 

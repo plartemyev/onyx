@@ -1561,6 +1561,7 @@ def run_llm_step_pkt_generator(
     is_deep_research: bool = False,
     pre_answer_processing_time: float | None = None,
     timeout_override: int | None = None,
+    temperature: float | None = None,
 ) -> Generator[Packet, None, tuple[LlmStepResult, bool]]:
     """Run an LLM step and stream the response as packets.
     NOTE: DO NOT TOUCH THIS FUNCTION BEFORE ASKING YUHONG, this is very finicky and
@@ -1800,6 +1801,7 @@ def run_llm_step_pkt_generator(
             reasoning_effort=reasoning_effort,
             user_identity=user_identity,
             timeout_override=timeout_override,
+            temperature=temperature,
         ):
             # On the first chunk, not at stream end: a mid-step stop persists
             # from another thread and needs this step's params already there.
@@ -2106,6 +2108,7 @@ def run_llm_step(
     is_deep_research: bool = False,
     pre_answer_processing_time: float | None = None,
     timeout_override: int | None = None,
+    temperature: float | None = None,
 ) -> tuple[LlmStepResult, bool]:
     """Wrapper around run_llm_step_pkt_generator that consumes packets and emits them.
 
@@ -2129,6 +2132,7 @@ def run_llm_step(
         is_deep_research=is_deep_research,
         pre_answer_processing_time=pre_answer_processing_time,
         timeout_override=timeout_override,
+        temperature=temperature,
     )
 
     while True:
