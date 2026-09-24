@@ -3,14 +3,21 @@ use_default_settings:
     # The upstream defaults enable ~60 general engines. Every /search fans out
     # to all of them, and with outgoing.using_browser each request competes for
     # the Chromium pool — dozens of doomed regional/blocked engines stretched
-    # searches and timed out Onyx's client. Keep only a curated set that
-    # actually returns results from this network.
+    # searches and timed out Onyx's client. Keep only engines that actually
+    # return results from this network (verified live):
+    # - google / brave: hard bot-walls, pass via the human-input fallback
+    # - bing / duckduckgo: work outright
+    # - yahoo: flaky (1 result when it works), kept as spare redundancy
+    # - wikipedia: summary/infobox results
+    # qwant (JSON API 403s datacenter IPs, no UI to drive), fireball (403s on
+    # its settings POST before any search) and privacywall (serves an empty
+    # geo shell) cannot work from this network and stay out; google-cse needs
+    # Programmable Search credentials, wikidata only feeds the infobox.
     keep_only:
       # general
       - google
       - bing
       - duckduckgo
-      - qwant
       - yahoo
       - brave
       - wikipedia
@@ -18,7 +25,6 @@ use_default_settings:
       - bing images
       - duckduckgo images
       - google images
-      - qwant images
 server:
   secret_key: "a796f0cc637b6f11ec870fdb017b2704f8407104c1c0743a"
   # Private instance: the limiter blocks API-style requests like Onyx's.
@@ -65,10 +71,5 @@ engines:
     disabled: false
     timeout: 30.0
   - name: brave
-    disabled: false
-    timeout: 30.0
-  # Spare general-web engines: extra redundancy when a main engine
-  # gets CAPTCHA'd or rate-limited.
-  - name: qwant
     disabled: false
     timeout: 30.0
