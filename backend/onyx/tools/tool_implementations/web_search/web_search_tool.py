@@ -306,7 +306,10 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
             raise ToolCallException(
                 message=f"All web search queries failed: {error_details}",
                 llm_facing_message=(
-                    f"All web search queries failed. Query failures:\n{error_details}"
+                    "Web search is currently unavailable (all queries failed). "
+                    "Do not retry it this turn — continue with the information "
+                    "you already have, or fall back to other tools. Failures:\n"
+                    f"{error_details}"
                 ),
             )
 
