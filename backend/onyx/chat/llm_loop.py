@@ -70,6 +70,7 @@ from onyx.server.query_and_chat.streaming_models import (
     TopLevelBranching,
 )
 from onyx.tools.built_in_tools import CITEABLE_TOOLS_NAMES, STOPPING_TOOLS_NAMES
+from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.tools.constants import FILE_READER_TOOL_NAME
 from onyx.tools.interface import Tool
 from onyx.tools.models import (
@@ -1564,7 +1565,9 @@ def run_llm_loop(
                     max_tokens=max_output_tokens,
                     # Abort the provider stream itself when the user presses
                     # stop; LLMStreamCancelled unwinds to the turn runner.
-                    should_abort=check_is_connected,
+                    # check_is_connected answers "keep going?" — invert it to
+                    # the "stop requested?" polarity llm_step expects.
+                    should_abort=should_abort_from_connected(check_is_connected),
                 )
             except Exception as e:
                 # The model server tokenizes the prompt itself and can reject

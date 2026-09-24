@@ -1,4 +1,5 @@
 from uuid import UUID
+from collections.abc import Callable
 
 from onyx.cache.interface import CacheBackend
 
@@ -56,3 +57,19 @@ def reset_cancel_status(chat_session_id: UUID, cache: CacheBackend) -> None:
         cache: Tenant-aware cache backend
     """
     cache.delete(_get_fence_key(chat_session_id))
+
+
+def should_abort_from_connected(
+    check_is_connected: Callable[[], bool] | None,
+) -> Callable[[], bool] | None:
+    """Adapt a ``check_is_connected`` callback to ``should_abort`` polarity.
+
+    The two callbacks have opposite polarity: ``check_is_connected`` answers
+    "keep going?" (True = no stop requested), while ``should_abort`` asks
+    "stop requested?" (True = abort the LLM stream). Passing one straight
+    into the other aborts every healthy stream - or never aborts a stopped
+    one.
+    """
+    if check_is_connected is None:
+        return None
+    return lambda: not check_is_connected()

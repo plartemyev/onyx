@@ -92,6 +92,7 @@ from onyx.tools.utils import (
     tool_response_generated_files,
 )
 from onyx.tracing.framework.create import function_span
+from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 
@@ -444,7 +445,7 @@ def run_research_agent_call(
                     temperature=DR_TEMPERATURE_RESEARCH_AGENT,
                     # Abort the provider stream when the user presses stop;
                     # LLMStreamCancelled is handled by the except below.
-                    should_abort=check_is_connected,
+                    should_abort=should_abort_from_connected(check_is_connected),
                 )
                 if has_reasoned:
                     reasoning_cycles += 1
@@ -481,7 +482,7 @@ def run_research_agent_call(
                             turn_index=turn_index,
                             tab_index=tab_index,
                         ),
-                        should_abort=check_is_connected,
+                        should_abort=should_abort_from_connected(check_is_connected),
                     )
                     span.span_data.output = final_report or None
                     return ResearchAgentCallResult(
@@ -673,7 +674,7 @@ def run_research_agent_call(
                     turn_index=turn_index,
                     tab_index=tab_index,
                 ),
-                should_abort=check_is_connected,
+                should_abort=should_abort_from_connected(check_is_connected),
             )
             span.span_data.output = final_report or None
             return ResearchAgentCallResult(

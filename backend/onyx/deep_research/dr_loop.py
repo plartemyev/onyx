@@ -78,6 +78,7 @@ from onyx.tools.fake_tools.research_agent import run_research_agent_calls
 from onyx.tools.interface import Tool
 from onyx.tools.models import ToolCallInfo, ToolCallKickoff
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
+from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.tracing.framework.create import ChatTraceMetadata, function_span, trace
 from onyx.utils.logger import setup_logger
 from onyx.utils.timing import log_function_time
@@ -384,7 +385,7 @@ def run_deep_research_llm_loop(
                     is_deep_research=True,
                     pre_answer_processing_time=clarification_tool_duration,
                     temperature=DR_TEMPERATURE_ORCHESTRATOR,
-                    should_abort=check_is_connected,
+                    should_abort=should_abort_from_connected(check_is_connected),
                 )
 
                 if not llm_step_result.tool_calls:
@@ -448,7 +449,7 @@ def run_deep_research_llm_loop(
                 # Theorising step: a little sampling diversity widens the
                 # angle coverage of the plan.
                 temperature=DR_TEMPERATURE_PLAN,
-                should_abort=check_is_connected,
+                should_abort=should_abort_from_connected(check_is_connected),
             )
 
             while True:
@@ -568,7 +569,7 @@ def run_deep_research_llm_loop(
                         language_section=language_section,
                         pre_answer_processing_time=elapsed_seconds,
                         all_injected_file_metadata=all_injected_file_metadata,
-                        should_abort=check_is_connected,
+                        should_abort=should_abort_from_connected(check_is_connected),
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
                     break
@@ -648,7 +649,7 @@ def run_deep_research_llm_loop(
                     # Tool-calling step: reliability of the call format
                     # matters more than diversity.
                     temperature=DR_TEMPERATURE_ORCHESTRATOR,
-                    should_abort=check_is_connected,
+                    should_abort=should_abort_from_connected(check_is_connected),
                 )
                 if has_reasoned:
                     reasoning_cycles += 1
@@ -699,7 +700,7 @@ def run_deep_research_llm_loop(
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
                         all_injected_file_metadata=all_injected_file_metadata,
-                        should_abort=check_is_connected,
+                        should_abort=should_abort_from_connected(check_is_connected),
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
                     break
@@ -724,7 +725,7 @@ def run_deep_research_llm_loop(
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
                         all_injected_file_metadata=all_injected_file_metadata,
-                        should_abort=check_is_connected,
+                        should_abort=should_abort_from_connected(check_is_connected),
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
                     break
@@ -800,7 +801,7 @@ def run_deep_research_llm_loop(
                             pre_answer_processing_time=time.monotonic()
                             - processing_start_time,
                             all_injected_file_metadata=all_injected_file_metadata,
-                            should_abort=check_is_connected,
+                            should_abort=should_abort_from_connected(check_is_connected),
                         )
                         final_turn_index = report_turn_index + (
                             1 if report_reasoned else 0

@@ -1912,3 +1912,73 @@ class TestMidStreamAbort:
         )
 
         assert result.answer == "Hello world"
+
+    def test_check_is_connected_must_be_inverted_for_should_abort(
+        self, monkeypatch: Any
+    ) -> None:
+        """Regression: `check_is_connected` was passed straight through as
+        `should_abort`, aborting every healthy stream ~0.5s in.
+
+        `check_is_connected` answers True = keep going, `should_abort` wants
+        True = stop requested. Going through
+        :func:`should_abort_from_connected` must preserve both directions.
+        """
+        import queue
+
+        from onyx.chat.emitter import Emitter
+        from onyx.chat.llm_step import run_llm_step
+        from onyx.chat.models import ChatMessageSimple
+        from onyx.chat.stop_signal_checker import should_abort_from_connected
+        from onyx.configs.constants import MessageType as MsgType
+        from onyx.llm.exceptions import LLMStreamCancelled
+
+        monkeypatch.setattr(llm_step_module, "_ABORT_CHECK_INTERVAL_S", 0.0)
+
+        llm = _AbortRecordingLLM(chunks=["Hello", " world"])
+        emitter = Emitter(merged_queue=queue.Queue())
+        history = [
+            ChatMessageSimple(
+                message="Say hi.",
+                token_count=5,
+                message_type=MsgType.USER,
+            )
+        ]
+
+        # session healthy: check_is_connected returns True -> must NOT abort
+        connected_adapter = should_abort_from_connected(lambda: True)
+        assert connected_adapter is not None and connected_adapter() is False
+        result, _ = run_llm_step(
+            emitter=emitter,
+            history=history,
+            tool_definitions=[],
+            tool_choice=ToolChoiceOptions.NONE,
+            llm=llm,
+            placement=Placement(turn_index=0),
+            state_container=None,
+            citation_processor=None,
+            should_abort=connected_adapter,
+        )
+        assert result.answer == "Hello world"
+
+        # stop pressed: check_is_connected returns False -> must abort
+        stopped_adapter = should_abort_from_connected(lambda: False)
+        assert stopped_adapter is not None and stopped_adapter() is True
+        llm_stopped = _AbortRecordingLLM(chunks=["Hello"])
+        with pytest.raises(LLMStreamCancelled):
+            run_llm_step(
+                emitter=Emitter(merged_queue=queue.Queue()),
+                history=history,
+                tool_definitions=[],
+                tool_choice=ToolChoiceOptions.NONE,
+                llm=llm_stopped,
+                placement=Placement(turn_index=0),
+                state_container=None,
+                citation_processor=None,
+                should_abort=stopped_adapter,
+            )
+        assert llm_stopped.closed
+
+    def test_should_abort_from_connected_none_passthrough(self) -> None:
+        from onyx.chat.stop_signal_checker import should_abort_from_connected
+
+        assert should_abort_from_connected(None) is None
