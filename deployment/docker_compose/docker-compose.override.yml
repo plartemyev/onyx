@@ -1,9 +1,13 @@
 # Local additions merged on top of docker-compose.yml automatically.
 services:
   searxng:
-    # Fork with the masqueraded Chromium fetch pool (outgoing.using_browser).
+    # Fork with the masqueraded Chromium fetch pool (outgoing.using_browser),
+    # global per-provider send pacing and the human-like input fallback.
     # Engine requests go through a real, fingerprint-masqueraded browser:
     # no more CAPTCHA walls, wrong-query junk pages or Thai geo-mangling.
+    # Onyx connects DIRECTLY to this service (searxng_base_url in the web
+    # search provider settings points at http://searxng:8080): pacing now
+    # lives inside the fork, so the old searxng-pacer proxy is gone.
     image: searxng-browser:dev
     build:
       # build straight from the fork, no local checkout needed
@@ -11,8 +15,8 @@ services:
       dockerfile: container/browser.dockerfile
     restart: unless-stopped
     # Cap blast radius: a browser-pool leak must not starve the host again
-    # (2 GB fits the pool of 3 headed Chromium lanes plus the worker).
-    mem_limit: 2g
+    # (3 GB fits the pool of 6 headed Chromium lanes plus the worker).
+    mem_limit: 3g
     healthcheck:
       # No wget/curl in this image; python3 ships with searxng.
       test:
@@ -28,23 +32,6 @@ services:
       - SEARXNG_BASE_URL=http://searxng:8080/
     volumes:
       - ./searxng:/etc/searxng:ro
-
-  # Pacing proxy for Onyx -> SearXNG: spaces /search start times with a
-  # random 1-6s gap (upstream fetches run concurrently). Point Onyx's
-  # searxng_base_url at this service.
-  searxng-pacer:
-    image: python:3.13-alpine
-    restart: unless-stopped
-    command: python /app/pacer.py
-    environment:
-      - UPSTREAM=http://searxng:8080
-      - DELAY_MIN=1
-      - DELAY_MAX=6
-      - MAX_WAIT=20
-    volumes:
-      - ./pacer/pacer.py:/app/pacer.py:ro
-    depends_on:
-      - searxng
 
   # Deep Research / long-run chat tuning for slow local inference (48h budget).
   # Merged into the api_server service from docker-compose.yml by compose.
