@@ -1,4 +1,23 @@
-use_default_settings: true
+use_default_settings:
+  engines:
+    # The upstream defaults enable ~60 general engines. Every /search fans out
+    # to all of them, and with outgoing.using_browser each request competes for
+    # the small Chromium pool — dozens of doomed regional/blocked engines
+    # stretched searches to ~20s and timed out Onyx's client. Keep only a
+    # curated set that actually returns results from this network.
+    keep_only:
+      # general
+      - google
+      - bing
+      - duckduckgo
+      - qwant
+      - yahoo
+      - wikipedia
+      # images (Onyx interleaves image results into web search answers)
+      - bing images
+      - duckduckgo images
+      - google images
+      - qwant images
 server:
   secret_key: "a796f0cc637b6f11ec870fdb017b2704f8407104c1c0743a"
   # Private instance: the limiter blocks API-style requests like Onyx's.
@@ -15,7 +34,8 @@ outgoing:
   using_browser: true
   browser_pool_size: 3
   request_timeout: 20.0
-# Engine overrides merge by name with the defaults.
+# Engine overrides merge by name with the defaults. google / bing / yahoo are
+# disabled in the upstream defaults; the rest stay enabled.
 engines:
   - name: google
     disabled: false
@@ -23,17 +43,11 @@ engines:
   - name: bing
     disabled: false
     timeout: 20.0
-  # Spare general-web engines: extra redundancy when a main engine
-  # gets CAPTCHA'd or rate-limited.
-  - name: qwant
-    disabled: false
-    timeout: 20.0
   - name: yahoo
     disabled: false
     timeout: 20.0
-  - name: fireball
-    disabled: false
-    timeout: 20.0
-  - name: privacywall
+  # Spare general-web engines: extra redundancy when a main engine
+  # gets CAPTCHA'd or rate-limited.
+  - name: qwant
     disabled: false
     timeout: 20.0
