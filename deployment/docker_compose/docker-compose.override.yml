@@ -29,8 +29,9 @@ services:
     volumes:
       - ./searxng:/etc/searxng:ro
 
-  # Pacing proxy for Onyx -> SearXNG: serializes /search calls with a
-  # random 1-6s gap. Point Onyx's searxng_base_url at this service.
+  # Pacing proxy for Onyx -> SearXNG: spaces /search start times with a
+  # random 1-6s gap (upstream fetches run concurrently). Point Onyx's
+  # searxng_base_url at this service.
   searxng-pacer:
     image: python:3.13-alpine
     restart: unless-stopped
