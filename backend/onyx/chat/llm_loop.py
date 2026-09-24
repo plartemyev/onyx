@@ -18,6 +18,7 @@ from onyx.chat.citation_processor import (
 from onyx.chat.citation_utils import update_citation_processor_from_tool_response
 from onyx.chat.emitter import Emitter
 from onyx.chat.llm_step import (
+    _looks_like_qwen_tool_call_payload,
     _looks_like_text_tool_call_payload,
     _looks_like_xml_tool_call_payload,
     extract_tool_calls_from_response_text,
@@ -53,7 +54,7 @@ from onyx.llm.exceptions import ClassifiedLLMError
 from onyx.llm.interfaces import LLM, LLMUserIdentity, ToolChoiceOptions
 from onyx.llm.model_capabilities import is_true_openai_model
 from onyx.llm.models import ReasoningEffort
-from onyx.llm.utils import model_supports_image_input
+from onyx.llm.utils import is_context_overflow_exception, model_supports_image_input
 from onyx.prompts.chat_prompts import (
     IMAGE_GEN_REMINDER,
     NON_VISION_IMAGE_MARKER,
@@ -112,6 +113,14 @@ _NON_VISION_MARKER_TOKEN_FALLBACK = 40
 # Used when no token_counter is available to measure the in-turn compaction
 # stub. TOOL_CALL_RESPONSE_COMPACTED is ~130 chars (~33 tokens).
 _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK = 34
+
+# Model servers tokenize the prompt themselves, so their count can exceed
+# Onyx's estimate even inside the safety margin (chat-template overhead,
+# tool-output tokenization drift). When the server rejects a cycle's prompt
+# as over context, the loop retries the same cycle with the history budget
+# shrunk by this factor per retry, giving the real tokenizer headroom.
+CONTEXT_OVERFLOW_BUDGET_SHRINK = 0.2
+CONTEXT_OVERFLOW_MAX_RETRIES = 2
 
 
 class ContextWindowExceededError(ClassifiedLLMError):
@@ -273,7 +282,7 @@ def _build_empty_llm_response_error(
     )
 
 
-def _try_fallback_tool_extraction(
+def try_fallback_tool_extraction(
     llm_step_result: LlmStepResult,
     tool_choice: ToolChoiceOptions,
     tool_defs: list[dict],
@@ -283,7 +292,8 @@ def _try_fallback_tool_extraction(
 
     This is a last resort fallback for low quality LLMs or those that don't have
     tool calling from the serving layer. Also triggers if there's reasoning but
-    no answer and no tool calls.
+    no answer and no tool calls. Shared with the deep-research loop, whose
+    orchestrator steps consume tool calls straight from the LLM step result.
 
     Args:
         llm_step_result: The result from the LLM step
@@ -305,6 +315,11 @@ def _try_fallback_tool_extraction(
         or _looks_like_xml_tool_call_payload(llm_step_result.raw_answer)
         or _looks_like_xml_tool_call_payload(llm_step_result.reasoning)
     )
+    qwen_tool_call_text_detected = no_tool_calls and (
+        _looks_like_qwen_tool_call_payload(llm_step_result.answer)
+        or _looks_like_qwen_tool_call_payload(llm_step_result.raw_answer)
+        or _looks_like_qwen_tool_call_payload(llm_step_result.reasoning)
+    )
     text_tool_call_text_detected = no_tool_calls and (
         _looks_like_text_tool_call_payload(llm_step_result.answer)
         or _looks_like_text_tool_call_payload(llm_step_result.raw_answer)
@@ -314,6 +329,7 @@ def _try_fallback_tool_extraction(
         (tool_choice == ToolChoiceOptions.REQUIRED and no_tool_calls)
         or reasoning_but_no_answer_or_tools
         or xml_tool_call_text_detected
+        or qwen_tool_call_text_detected
         or text_tool_call_text_detected
     )
 
@@ -1300,6 +1316,7 @@ def run_llm_loop(
         if any(isinstance(tool, PythonTool) for tool in tools):
             workspace_state_note = fetch_workspace_state_note(chat_session_id)
         turn_started_monotonic = time.monotonic()
+        context_overflow_retries = 0
         for llm_cycle_count in range(MAX_LLM_CYCLES):
             if check_is_connected is not None and not check_is_connected():
                 logger.info(
@@ -1482,7 +1499,10 @@ def run_llm_loop(
                 + (reminder_msg.token_count if reminder_msg else 0)
             )
             cycle_history_budget = _cycle_history_token_budget(
-                available_tokens=available_tokens,
+                available_tokens=int(
+                    available_tokens
+                    * (1 - CONTEXT_OVERFLOW_BUDGET_SHRINK * context_overflow_retries)
+                ),
                 tool_token_budget=tool_token_budget,
                 remaining_cycles=MAX_LLM_CYCLES - llm_cycle_count - 1,
                 worst_case_cycle_tokens=worst_case_cycle_tokens,
@@ -1524,24 +1544,53 @@ def run_llm_loop(
             # This measures how long the user waits before the answer starts streaming
             pre_answer_processing_time = time.monotonic() - loop_start_time
 
-            llm_step_result, has_reasoned = run_llm_step(
-                emitter=emitter,
-                history=truncated_message_history,
-                tool_definitions=tool_defs,
-                tool_choice=tool_choice,
-                llm=llm,
-                placement=Placement(turn_index=llm_cycle_count + reasoning_cycles),
-                citation_processor=citation_processor,
-                state_container=state_container,
-                # The rich docs representation is passed in so that when yielding the answer, it can also
-                # immediately yield the full set of found documents. This gives us the option to show the
-                # final set of documents immediately if desired.
-                final_documents=gathered_documents,
-                user_identity=user_identity,
-                pre_answer_processing_time=pre_answer_processing_time,
-                reasoning_effort=reasoning_effort,
-                max_tokens=max_output_tokens,
-            )
+            try:
+                llm_step_result, has_reasoned = run_llm_step(
+                    emitter=emitter,
+                    history=truncated_message_history,
+                    tool_definitions=tool_defs,
+                    tool_choice=tool_choice,
+                    llm=llm,
+                    placement=Placement(turn_index=llm_cycle_count + reasoning_cycles),
+                    citation_processor=citation_processor,
+                    state_container=state_container,
+                    # The rich docs representation is passed in so that when yielding the answer, it can also
+                    # immediately yield the full set of found documents. This gives us the option to show the
+                    # final set of documents immediately if desired.
+                    final_documents=gathered_documents,
+                    user_identity=user_identity,
+                    pre_answer_processing_time=pre_answer_processing_time,
+                    reasoning_effort=reasoning_effort,
+                    max_tokens=max_output_tokens,
+                )
+            except Exception as e:
+                # The model server tokenizes the prompt itself and can reject
+                # it as over context even when Onyx's budget said it fits.
+                # Retry the same cycle with a smaller history budget instead
+                # of failing the whole turn (the server raised before any
+                # packet was emitted, so nothing was streamed yet).
+                if (
+                    context_overflow_retries < CONTEXT_OVERFLOW_MAX_RETRIES
+                    and not out_of_cycles
+                    and is_context_overflow_exception(e)
+                ):
+                    context_overflow_retries += 1
+                    logger.warning(
+                        "Model server rejected the cycle %d prompt as over "
+                        "context; retrying with the history budget shrunk "
+                        "to %d%%",
+                        llm_cycle_count,
+                        int(
+                            100
+                            * (
+                                1
+                                - CONTEXT_OVERFLOW_BUDGET_SHRINK
+                                * context_overflow_retries
+                            )
+                        ),
+                    )
+                    continue
+                raise
             if has_reasoned:
                 reasoning_cycles += 1
 
@@ -1551,7 +1600,7 @@ def run_llm_loop(
             # already-generated text, and an early benign trigger (e.g.
             # reasoning without an answer) must not consume the budget for a
             # genuine text-format tool call in a later cycle.
-            llm_step_result, _ = _try_fallback_tool_extraction(
+            llm_step_result, _ = try_fallback_tool_extraction(
                 llm_step_result=llm_step_result,
                 tool_choice=tool_choice,
                 tool_defs=tool_defs,

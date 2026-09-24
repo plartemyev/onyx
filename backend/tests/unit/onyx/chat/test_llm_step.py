@@ -9,8 +9,10 @@ from onyx.chat.llm_step import (
     _extract_text_tool_calls_from_response_text,
     _extract_tool_call_kickoffs,
     _increment_turns,
+    _looks_like_qwen_tool_call_payload,
     _looks_like_text_tool_call_payload,
     _parse_tool_args_to_dict,
+    _QwenToolCallContentFilter,
     _resolve_tool_arguments,
     _TextToolCallContentFilter,
     _XmlToolCallContentFilter,
@@ -1486,3 +1488,183 @@ class TestTextToolCallContentFilter:
         content_filter = _TextToolCallContentFilter(set())
         content = "[Tool Call] name=anything id=x args={}\n"
         assert content_filter.process(content) == content
+
+
+class TestQwenToolCallExtraction:
+    def _tool_defs(self) -> list[dict]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "research_agent",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"task": {"type": "string"}},
+                        "required": ["task"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "internal_search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "queries": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            }
+                        },
+                        "required": ["queries"],
+                    },
+                },
+            },
+        ]
+
+    def _placement(self) -> Placement:
+        return Placement(turn_index=0, tab_index=0, sub_turn_index=None)
+
+    def test_extracts_qwen_style_block(self) -> None:
+        response_text = (
+            "<tool_call>\n"
+            "<function=research_agent>\n"
+            "<parameter=task>\n"
+            "Research pricing data\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=self._tool_defs(),
+            placement=self._placement(),
+        )
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_name == "research_agent"
+        assert tool_calls[0].tool_args == {"task": "Research pricing data"}
+
+    def test_extracts_multiple_qwen_blocks_in_order(self) -> None:
+        response_text = "".join(
+            f"<tool_call>\n<function=research_agent>\n<parameter=task>\nTask {i}\n</parameter>\n</function>\n</tool_call>"
+            for i in range(3)
+        )
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=self._tool_defs(),
+            placement=self._placement(),
+        )
+        assert len(tool_calls) == 3
+        assert [call.tool_args["task"] for call in tool_calls] == [
+            "Task 0",
+            "Task 1",
+            "Task 2",
+        ]
+        # Each extracted call gets its own tab slot.
+        assert [call.placement.tab_index for call in tool_calls] == [0, 1, 2]
+
+    def test_qwen_json_array_parameter_is_parsed(self) -> None:
+        response_text = (
+            "<tool_call>\n"
+            "<function=internal_search>\n"
+            "<parameter=queries>\n"
+            '["alpha", "beta"]\n'
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=self._tool_defs(),
+            placement=self._placement(),
+        )
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool_args == {"queries": ["alpha", "beta"]}
+
+    def test_ignores_unknown_tool_in_qwen_block(self) -> None:
+        response_text = (
+            "<tool_call>\n"
+            "<function=not_a_real_tool>\n"
+            "<parameter=task>\n"
+            "Research pricing data\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        tool_calls = extract_tool_calls_from_response_text(
+            response_text=response_text,
+            tool_definitions=self._tool_defs(),
+            placement=self._placement(),
+        )
+        assert tool_calls == []
+
+    def test_detector_flags_qwen_payload(self) -> None:
+        assert _looks_like_qwen_tool_call_payload(
+            "<tool_call>\n<function=research_agent>\n</function>\n</tool_call>"
+        )
+        assert _looks_like_qwen_tool_call_payload(
+            '<tool_call>{"name": "research_agent", "arguments": {}}</tool_call>'
+        )
+        assert not _looks_like_qwen_tool_call_payload("Plain answer text.")
+        assert not _looks_like_qwen_tool_call_payload(None)
+
+
+class TestQwenToolCallContentFilter:
+    def test_strips_complete_block(self) -> None:
+        content_filter = _QwenToolCallContentFilter()
+        content = (
+            "Some narration.\n"
+            "<tool_call>\n"
+            "<function=research_agent>\n"
+            "<parameter=task>\n"
+            "Research pricing data\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>\n"
+            "Answer continues."
+        )
+        # The newline that followed the dropped block stays, so the joined
+        # output has the narration, a blank line, then the tail.
+        assert content_filter.process(content) + content_filter.flush() == (
+            "Some narration.\n\nAnswer continues."
+        )
+
+    def test_strips_block_split_across_chunks(self) -> None:
+        content = (
+            "Before <tool_call>\n<function=research_agent>\n<parameter=task>\nT\n"
+            "</parameter>\n</function>\n</tool_call> after"
+        )
+        content_filter = _QwenToolCallContentFilter()
+        pieces = [content[i : i + 5] for i in range(0, len(content), 5)]
+        outputs = [content_filter.process(piece) for piece in pieces]
+        outputs.append(content_filter.flush())
+        assert "".join(outputs) == "Before  after"
+
+    def test_code_fence_content_passes_through(self) -> None:
+        content_filter = _QwenToolCallContentFilter()
+        content = (
+            "Example:\n"
+            "```xml\n"
+            "<tool_call>\n<function=research_agent>\n</function>\n</tool_call>\n"
+            "```\n"
+            "Done."
+        )
+        assert content_filter.process(content) + content_filter.flush() == content
+
+    def test_flush_drops_unterminated_block(self) -> None:
+        content_filter = _QwenToolCallContentFilter()
+        emitted = content_filter.process(
+            "Intro.\n<tool_call>\n<function=research_agent>\n<parameter=task>\nTask"
+        )
+        assert emitted == "Intro.\n"
+        assert content_filter.flush() == ""
+
+    def test_malformed_block_over_cap_flushes_as_prose(self) -> None:
+        content_filter = _QwenToolCallContentFilter()
+        emitted = content_filter.process("<tool_call> " + "x" * 25000)
+        assert "xxxx" in emitted + content_filter.flush()
+
+    def test_no_leading_text_is_preserved_verbatim(self) -> None:
+        content_filter = _QwenToolCallContentFilter()
+        content = "Plain text with no markup at all."
+        assert content_filter.process(content) + content_filter.flush() == content

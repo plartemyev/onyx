@@ -281,6 +281,119 @@ class _TextToolCallContentFilter:
         return pending
 
 
+_QWEN_TOOL_CALL_OPEN_MARKER = "<tool_call>"
+_QWEN_TOOL_CALL_CLOSE_MARKER = "</tool_call>"
+# Keep this many trailing chars buffered outside blocks so a marker split
+# across stream chunks is never emitted prematurely.
+_QWEN_MARKER_TAIL_CHARS = len(_QWEN_TOOL_CALL_CLOSE_MARKER) - 1
+
+
+class _QwenToolCallContentFilter:
+    """Streaming filter that strips Qwen-style `<tool_call>` blocks from text.
+
+    Qwen-family models (and models fine-tuned on their format) emit
+    `<tool_call>...</tool_call>` blocks as plain content when the serving
+    layer fails to parse them into native tool calls. The markup is never
+    meaningful prose, so complete blocks are dropped wherever they appear;
+    unlike the other filters this one runs regardless of which tools the
+    request exposes (leaks happen in tool-free report steps too). Code fences
+    are respected: examples inside ``` fences pass through. A block that
+    never closes is held until _MAX_BLOCK_CHARS, then flushed as prose so a
+    malformed block cannot eat the rest of the answer.
+    """
+
+    _MAX_BLOCK_CHARS = 20000
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._inside_block = False
+        self._in_code_fence = False
+
+    def _drop_block_body(self, output_parts: list[str]) -> bool:
+        """Consume the current block body from pending. False = need more input."""
+        close_idx = self._pending.lower().find(_QWEN_TOOL_CALL_CLOSE_MARKER)
+        if close_idx == -1:
+            if len(self._pending) > self._MAX_BLOCK_CHARS:
+                # Malformed block that never closes — emit it as prose rather
+                # than swallowing the rest of the answer.
+                output_parts.append(self._pending)
+                self._pending = ""
+                self._inside_block = False
+                return False
+            return False
+        self._pending = self._pending[close_idx + len(_QWEN_TOOL_CALL_CLOSE_MARKER) :]
+        self._inside_block = False
+        return True
+
+    def _scan_outside_block(self, output_parts: list[str]) -> bool:
+        """Scan outside blocks. False = need more input before continuing."""
+        lowered = self._pending.lower()
+        call_idx = lowered.find(_QWEN_TOOL_CALL_OPEN_MARKER)
+
+        if self._in_code_fence:
+            # Everything is literal inside a fence; only the closing fence
+            # marker changes state. Consume the whole "\n```" sequence so the
+            # closing fence is never re-scanned as a new fence opener.
+            fence_idx = lowered.find("\n```")
+            if fence_idx == -1:
+                self._emit_all_but_tail(output_parts)
+                return False
+            output_parts.append(self._pending[: fence_idx + 4])
+            self._pending = self._pending[fence_idx + 4 :]
+            self._in_code_fence = False
+            return True
+
+        fence_idx = lowered.find("```")
+        if call_idx != -1 and (fence_idx == -1 or call_idx < fence_idx):
+            # Drop the whole block, opener included; the answer body before
+            # it is definite and gets emitted here.
+            if call_idx:
+                output_parts.append(self._pending[:call_idx])
+            self._pending = self._pending[call_idx + len(_QWEN_TOOL_CALL_OPEN_MARKER) :]
+            self._inside_block = True
+            return True
+        if fence_idx != -1:
+            output_parts.append(self._pending[: fence_idx + 3])
+            self._pending = self._pending[fence_idx + 3 :]
+            self._in_code_fence = True
+            return True
+        self._emit_all_but_tail(output_parts)
+        return False
+
+    def _emit_all_but_tail(self, output_parts: list[str]) -> None:
+        emit_upto = len(self._pending) - _QWEN_MARKER_TAIL_CHARS
+        if emit_upto > 0:
+            output_parts.append(self._pending[:emit_upto])
+            self._pending = self._pending[emit_upto:]
+
+    def process(self, content: str) -> str:
+        if not content:
+            return ""
+
+        self._pending += content
+        output_parts: list[str] = []
+        while True:
+            if self._inside_block:
+                if not self._drop_block_body(output_parts):
+                    break
+            else:
+                if not self._scan_outside_block(output_parts):
+                    break
+
+        return "".join(output_parts)
+
+    def flush(self) -> str:
+        pending = self._pending
+        self._pending = ""
+        was_inside_block = self._inside_block
+        self._inside_block = False
+        if was_inside_block:
+            # Unterminated block at stream end — markup, not prose; drop it.
+            # Fallback extraction still sees the raw text if it can parse it.
+            return ""
+        return pending
+
+
 def _matching_open_marker_prefix_len(text: str) -> int:
     """Return longest suffix of text that matches prefix of "<function_calls"."""
     max_len = min(len(text), len(_FUNCTION_CALLS_OPEN_MARKER) - 1)
@@ -327,6 +440,21 @@ def _looks_like_xml_tool_call_payload(text: str | None) -> bool:
         return False
     lowered = text.lower()
     return "<function_calls" in lowered and "<invoke" in lowered
+
+
+def _looks_like_qwen_tool_call_payload(text: str | None) -> bool:
+    """Detect Qwen-style marshaled tool calls emitted as plain text.
+
+    Qwen-family models (and models fine-tuned on their format) emit
+    `<tool_call>` blocks as content when the serving layer fails to parse
+    them into native tool calls. Two body shapes exist: the XML-ish
+    `<function=NAME>` form and the JSON `{"name": ..., "arguments": ...}`
+    form. Detection intentionally stays coarse (any `<tool_call>` opener) so
+    both shapes trigger fallback extraction and never leak as answers.
+    """
+    if not text:
+        return False
+    return "<tool_call>" in text.lower()
 
 
 _TEXT_TOOL_CALL_LINE_RE = re.compile(
@@ -650,15 +778,28 @@ def extract_tool_calls_from_response_text(
             tool_name_to_def=tool_name_to_def,
         )
 
-    # Models that saw Onyx's flattened `[Tool Call]` history format sometimes
-    # emit it as content. Parse those lines so imitated calls execute instead
-    # of dead-cycling. Identical (tool, args) pairs already matched by the
-    # JSON/XML passes are skipped so a call never executes twice; duplicates
-    # within a single pass are kept, matching the JSON pass's behavior.
+    # Models that saw marshaled tool-call formats in their history or their
+    # training data sometimes emit them as content instead of using native
+    # tool calls: Qwen-family `<tool_call>` blocks and Onyx's former
+    # flattened `[Tool Call]` history lines. Parse both so imitated calls
+    # execute instead of dead-cycling. Identical (tool, args) pairs already
+    # matched by the JSON/XML passes are skipped so a call never executes
+    # twice; duplicates within a single pass are kept, matching the JSON
+    # pass's behavior.
     existing_call_keys = {
         (tool_name, json.dumps(tool_args, sort_keys=True))
         for tool_name, tool_args in matched_tool_calls
     }
+    for tool_name, tool_args in _extract_qwen_tool_calls_from_response_text(
+        response_text=response_text,
+        tool_name_to_def=tool_name_to_def,
+    ):
+        call_key = (tool_name, json.dumps(tool_args, sort_keys=True))
+        if call_key in existing_call_keys:
+            continue
+        existing_call_keys.add(call_key)
+        matched_tool_calls.append((tool_name, tool_args))
+
     for tool_name, tool_args in _extract_text_tool_calls_from_response_text(
         response_text=response_text,
         tool_name_to_def=tool_name_to_def,
@@ -725,6 +866,62 @@ def _extract_xml_tool_calls_from_response_text(
             tool_args[parameter_name] = _parse_xml_parameter_value(
                 raw_value=parameter_match.group("value"),
                 string_attr=string_attr,
+            )
+
+        matched_tool_calls.append((tool_name, tool_args))
+
+    return matched_tool_calls
+
+
+_QWEN_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<tool_call>\s*<function=(?P<name>[^<>=]+)>(?P<body>.*?)</function>\s*</tool_call>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_QWEN_PARAMETER_RE = re.compile(
+    r"<parameter=(?P<name>[^<>=]+)>(?P<value>.*?)</parameter>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_qwen_tool_calls_from_response_text(
+    response_text: str,
+    tool_name_to_def: dict[str, dict],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Extract Qwen-style tool calls from response text.
+
+    Supports the format Qwen3/Qwen3.5-family models emit natively and
+    sometimes reproduce as plain content when the serving layer fails to
+    parse it:
+    <tool_call>
+    <function=research_agent>
+    <parameter=task>
+    Find pricing data
+    </parameter>
+    </function>
+    </tool_call>
+    """
+    matched_tool_calls: list[tuple[str, dict[str, Any]]] = []
+
+    for block_match in _QWEN_TOOL_CALL_BLOCK_RE.finditer(response_text):
+        tool_name = block_match.group("name").strip()
+        if tool_name not in tool_name_to_def:
+            # Accept the sanitized spelling too: the model may copy the name
+            # from the sanitized tool schema rather than the original one.
+            sanitized = sanitize_tool_name(tool_name)
+            if sanitized in tool_name_to_def:
+                tool_name = sanitized
+            else:
+                continue
+
+        tool_args: dict[str, Any] = {}
+        for parameter_match in _QWEN_PARAMETER_RE.finditer(block_match.group("body")):
+            parameter_name = parameter_match.group("name").strip()
+            if not parameter_name:
+                continue
+            tool_args[parameter_name] = _parse_xml_parameter_value(
+                raw_value=parameter_match.group("value"),
+                string_attr=None,
             )
 
         matched_tool_calls.append((tool_name, tool_args))
@@ -1466,6 +1663,10 @@ def run_llm_step_pkt_generator(
                 text_tool_call_names.add(schema_name)
                 text_tool_call_names.add(sanitize_tool_name(schema_name))
     text_tool_call_content_filter = _TextToolCallContentFilter(text_tool_call_names)
+    # Qwen-family `<tool_call>` blocks are markup regardless of which tools
+    # this step exposes (weak models leak them in tool-free report steps too),
+    # so this filter does not consult tool names.
+    qwen_tool_call_content_filter = _QwenToolCallContentFilter()
 
     processor_state: Any = None
 
@@ -1682,6 +1883,9 @@ def run_llm_step_pkt_generator(
                 filtered_content = xml_tool_call_content_filter.process(
                     filtered_content
                 )
+                filtered_content = qwen_tool_call_content_filter.process(
+                    filtered_content
+                )
                 if filtered_content:
                     yield from _emit_content_chunk(filtered_content)
 
@@ -1704,9 +1908,18 @@ def run_llm_step_pkt_generator(
         filtered_content_tail = xml_tool_call_content_filter.process(
             filtered_content_tail
         )
+        filtered_content_tail = qwen_tool_call_content_filter.process(
+            filtered_content_tail
+        )
         if filtered_content_tail:
             yield from _emit_content_chunk(filtered_content_tail)
         filtered_content_tail = xml_tool_call_content_filter.flush()
+        filtered_content_tail = qwen_tool_call_content_filter.process(
+            filtered_content_tail
+        )
+        if filtered_content_tail:
+            yield from _emit_content_chunk(filtered_content_tail)
+        filtered_content_tail = qwen_tool_call_content_filter.flush()
         if filtered_content_tail:
             yield from _emit_content_chunk(filtered_content_tail)
 
@@ -1754,15 +1967,17 @@ def run_llm_step_pkt_generator(
         # raw output instead of returning an empty answer, which would raise a
         # misleading EmptyLLMResponseError downstream. Skipped for REQUIRED tool
         # choice, where empty pre-tool content is expected (fallback extraction).
-        # Also skipped when the raw output is XML tool-call markup: run_llm_loop's
-        # fallback extraction will parse it into a real tool call, so surfacing it
-        # as an answer would leak raw markup to the client and pollute context.
+        # Also skipped when the raw output is marshaled tool-call markup:
+        # run_llm_loop's fallback extraction will parse it into a real tool
+        # call, so surfacing it as an answer would leak raw markup to the
+        # client and pollute context.
         if (
             tool_choice != ToolChoiceOptions.REQUIRED
             and not tool_calls
             and not accumulated_answer.strip()
             and accumulated_raw_answer.strip()
             and not _looks_like_xml_tool_call_payload(accumulated_raw_answer)
+            and not _looks_like_qwen_tool_call_payload(accumulated_raw_answer)
         ):
             logger.warning(
                 "Answer empty after content/citation processing; recovering raw "

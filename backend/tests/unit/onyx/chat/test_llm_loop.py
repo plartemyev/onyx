@@ -13,7 +13,7 @@ from onyx.chat.llm_loop import (
     EmptyLLMResponseError,
     _build_empty_llm_response_error,
     _cycle_history_token_budget,
-    _try_fallback_tool_extraction,
+    try_fallback_tool_extraction,
     construct_message_history,
     count_message_replay_tokens,
     run_llm_loop,
@@ -1550,7 +1550,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
             tool_defs=self._tool_defs(),
@@ -1581,7 +1581,7 @@ class TestFallbackToolExtraction:
             ],
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
             tool_defs=self._tool_defs(),
@@ -1598,7 +1598,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
             tool_defs=self._tool_defs(),
@@ -1619,7 +1619,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
             tool_defs=self._tool_defs(),
@@ -1645,7 +1645,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
             tool_defs=self._tool_defs(),
@@ -1675,7 +1675,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
             tool_defs=self._tool_defs(),
@@ -1704,7 +1704,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
             tool_defs=self._tool_defs(),
@@ -1727,7 +1727,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.AUTO,
             tool_defs=self._tool_defs(),
@@ -1744,7 +1744,7 @@ class TestFallbackToolExtraction:
             tool_calls=None,
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
             tool_defs=self._tool_defs(),
@@ -1768,7 +1768,7 @@ class TestFallbackToolExtraction:
             tool_calls=[existing_call],
         )
 
-        result, attempted = _try_fallback_tool_extraction(
+        result, attempted = try_fallback_tool_extraction(
             llm_step_result=llm_step_result,
             tool_choice=ToolChoiceOptions.REQUIRED,
             tool_defs=self._tool_defs(),
