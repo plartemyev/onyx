@@ -56,6 +56,10 @@ services:
       - SEARXNG_DEBUG_LOG_LEVEL=INFO
     volumes:
       - ./searxng:/etc/searxng:ro
+      # Named volume so the geo-locale cache (/var/cache/searxng/
+      # ip_locale.json) survives container recreations: restarts then reuse
+      # the resolved identity instead of re-querying the geoip services.
+      - searxng-cache:/var/cache/searxng
 
   # Deep Research / long-run chat tuning for slow local inference (48h budget).
   # Merged into the api_server service from docker-compose.yml by compose.
@@ -192,3 +196,7 @@ services:
   cache:
     ports:
       - "127.0.0.1:16379:6379"
+
+volumes:
+  # Holds /var/cache/searxng for the searxng service (geo-locale cache).
+  searxng-cache:
