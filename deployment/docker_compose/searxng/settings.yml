@@ -45,14 +45,10 @@ general:
 # per-provider pacing waits and the human-input fallback.
 outgoing:
   using_browser: true
-  # TEMPORARY 1 lane (2026-09-25): all headed lane windows stack on the same
-  # Xvfb with no window manager, and X delivers the simulated clicks to
-  # whichever window is topmost — not always the lane being driven (bing's
-  # typed search "never navigated" because the input landed in another
-  # lane's window). One window removes the overlap until the pool gets
-  # per-lane X displays. Human sessions serialize on the pointer anyway, so
-  # the human path loses nothing; fetch-path endpoints queue behind it.
-  browser_pool_size: 1
+  # Each lane runs its own Chromium on its own Xvfb display (one pointer
+  # per lane), so parallel human sessions cannot steal each other's
+  # clicks. 6 lanes = 6 browser processes: keep an eye on container RAM.
+  browser_pool_size: 6
   # On a persistent bot challenge, drive the provider's search UI with real
   # X input (Bezier mouse with jitter, typing, a natural search-button
   # click) instead of giving up (searx/network/human_input.py).
