@@ -7,7 +7,9 @@ use_default_settings:
     # return results from this network (verified live):
     # - google / brave: hard bot-walls, pass via the human-input fallback
     # - bing / duckduckgo: work outright
-    # - yahoo: flaky (1 result when it works), kept as spare redundancy
+    # - wikipedia: summary/infobox results
+    # - yahoo: disabled 2026-09-25, search.yahoo.com answers HTTP 500 to every
+    #   query (upstream endpoint breakage, zero results since the rebuild)
     # - wikipedia: summary/infobox results
     # qwant (JSON API 403s datacenter IPs, no UI to drive), fireball (403s on
     # its settings POST before any search) and privacywall (serves an empty
@@ -18,7 +20,6 @@ use_default_settings:
       - google
       - bing
       - duckduckgo
-      - yahoo
       - brave
       - wikipedia
       # images (Onyx interleaves image results into web search answers)
@@ -35,18 +36,32 @@ search:
     - html
     # Required by Onyx; requests use format=json.
     - json
+# TEMPORARY (2026-09-25): diagnose the google challenge flow; remove when done
+general:
+  debug: true
 # Browser fetch pool: engine requests go through a masqueraded Chromium
 # (see searx/network/browser.py in the fork). Needs engine timeouts high
 # enough for browser-speed fetches, including challenge warm-up renders,
 # per-provider pacing waits and the human-input fallback.
 outgoing:
   using_browser: true
-  # 6 lanes: more concurrent engine fetches, cookies still persist per lane.
-  browser_pool_size: 6
+  # TEMPORARY 1 lane (2026-09-25): all headed lane windows stack on the same
+  # Xvfb with no window manager, and X delivers the simulated clicks to
+  # whichever window is topmost — not always the lane being driven (bing's
+  # typed search "never navigated" because the input landed in another
+  # lane's window). One window removes the overlap until the pool gets
+  # per-lane X displays. Human sessions serialize on the pointer anyway, so
+  # the human path loses nothing; fetch-path endpoints queue behind it.
+  browser_pool_size: 1
   # On a persistent bot challenge, drive the provider's search UI with real
   # X input (Bezier mouse with jitter, typing, a natural search-button
   # click) instead of giving up (searx/network/human_input.py).
   browser_human_fallback: true
+  # Maximum stealth mode: drive the provider's search UI like a human for
+  # EVERY supported request up front, not only as a challenge fallback.
+  # Much slower per search (interactive typing/clicking), but the provider
+  # only ever sees visits from the cookie-trained desktop browser.
+  browser_max_stealth: true
   # Global per-provider send pacing (searx/network/pacing.py): requests to
   # the same upstream host are spaced a random 1-5s apart, whatever engine
   # or search sent them; different providers never block each other. max_wait
@@ -56,21 +71,29 @@ outgoing:
     delay_min_seconds: 1.0
     delay_max_seconds: 5.0
     max_wait_seconds: 20.0
-  request_timeout: 30.0
-# Engine overrides merge by name with the defaults. google / bing / yahoo /
-# brave are disabled in the upstream defaults; the rest stay enabled.
+  request_timeout: 60.0
+# Engine overrides merge by name with the defaults. google / bing / brave are
+# disabled in the upstream defaults; the rest stay enabled.
 # Timeouts: the budget also covers the pacing wait (up to 5s, 20s under a
-# burst) plus browser-speed fetches, so 30s all around.
+# burst) plus browser-speed fetches including challenge solving, so 60s all
+# around. Onyx's client read timeout (SEARXNG_READ_TIMEOUT_SECONDS, 90s) must
+# stay above this budget.
 engines:
+  # TEMPORARY (2026-09-25): google disabled while the IP cooldown runs.
+  # google still routes this datacenter IP to /sorry on fresh searches and
+  # escalates the reCAPTCHA checkbox click to a dynamic image-grid challenge
+  # (needs vision to solve; the click itself lands since the strict-mode
+  # frame fix). Re-enable (disabled: false) and test with:
+  #   docker exec onyx-searxng-1 python -c "import
+  #   urllib.request,urllib.parse,json;d=json.loads(urllib.request.urlopen(
+  #   'http://localhost:8080/search?q=test&format=json&engines=google',
+  #   timeout=120).read());print(len(d.get('results',[])))"
   - name: google
-    disabled: false
-    timeout: 30.0
+    disabled: true
+    timeout: 60.0
   - name: bing
     disabled: false
-    timeout: 30.0
-  - name: yahoo
-    disabled: false
-    timeout: 30.0
+    timeout: 60.0
   - name: brave
     disabled: false
-    timeout: 30.0
+    timeout: 60.0

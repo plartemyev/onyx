@@ -13,6 +13,23 @@ services:
       # build straight from the fork, no local checkout needed
       context: https://github.com/plartemyev/searxng.git#feat/browser-masquerade
       dockerfile: container/browser.dockerfile
+    # Same command as the image ENTRYPOINT plus granian's backpressure cap:
+    # with ~7 engines per search, a 16-search Onyx burst used to spawn 100+
+    # WSGI threads that all queued on the 6 browser lanes and timed out
+    # together. Backpressure bounds in-flight requests (≈4 searches' worth of
+    # engine fetches); the rest queue at the HTTP layer within Onyx's 90s
+    # client read timeout instead of piling onto the lanes.
+    entrypoint:
+      - granian
+      - --interface
+      - wsgi
+      - --host
+      - "::"
+      - --port
+      - "8080"
+      - --backpressure
+      - "28"
+      - searx.webapp:app
     restart: unless-stopped
     # Cap blast radius: a browser-pool leak must not starve the host again
     # (3 GB fits the pool of 6 headed Chromium lanes plus the worker).
@@ -32,6 +49,11 @@ services:
       - SEARXNG_BASE_URL=http://searxng:8080/
       # instance secret, from the gitignored .env (see settings.yml)
       - SEARXNG_SECRET=${SEARXNG_SECRET}
+      # TEMPORARY (2026-09-25): human-flow INFO lines stay visible while the
+      # google IP cooldown is watched (google currently serves unsolvable
+      # challenges to this IP; see the runbook note from 2026-09-25).
+      # Remove this env and general.debug in settings.yml once google clears.
+      - SEARXNG_DEBUG_LOG_LEVEL=INFO
     volumes:
       - ./searxng:/etc/searxng:ro
 
