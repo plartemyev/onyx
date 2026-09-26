@@ -76,6 +76,14 @@ outgoing:
   # /tmp/captcha_debug). Off for duty; flip on (and create the dump dir)
   # while debugging the browser flow.
   browser_debug_trace: false
+  # Page crawling endpoint (/crawl): lets Onyx's fetchers drive these same
+  # masqueraded lanes for page fetches, so search and crawl traffic comes
+  # from one fleet of cookie-trained identities. Internal docker network
+  # only; optional shared-secret header via browser_crawl_secret.
+  browser_crawl_endpoint: true
+  # Body cap for binary crawls; matches Onyx's BINARY_DOWNLOAD_MAX_SIZE_BYTES
+  # (the body is buffered in this container's RAM: 3g limit, 6 lanes).
+  browser_crawl_max_bytes: 524288000
   # Vision-assisted image-grid CAPTCHA solving (searx/network/captcha_vision.py,
   # a self-contained capability of the searxng fork -- nothing in Onyx knows
   # about it). When a challenge escalates to an image grid, the screenshot and

@@ -43,6 +43,9 @@ from pydantic import BaseModel
 
 from onyx.configs.app_configs import (
     CHROMIUM_EXECUTABLE_PATH,
+    SEARXNG_CRAWL_ENDPOINT,
+    SEARXNG_CRAWL_MAX_BYTES,
+    SEARXNG_CRAWL_TIMEOUT_SECONDS,
     WEB_BROWSER_CHROME_MAJOR_VERSION,
     WEB_BROWSER_LOCALE,
     WEB_BROWSER_TIMEZONE,
@@ -596,6 +599,93 @@ def _run_on_pool(provider: str, job: Callable[[BrowserContext], T]) -> T:
     return get_browser_pool().run(provider, job)
 
 
+# -- SearXNG crawl endpoint client --------------------------------------------
+
+
+def _crawl_via_searxng_render(
+    url: str, *, navigation_timeout_ms: int
+) -> RenderedPage | None:
+    """Render one page through the SearXNG /crawl endpoint.
+
+    The remote side drives its masqueraded browser pool: redirects are
+    followed (final URL reported), challenges get the usual grace period,
+    and a Google Translate landing is rewritten to the original page over
+    there. Returns None when the crawl failed entirely.
+    """
+    import requests
+
+    timeout_s = max(5, min(120, navigation_timeout_ms // 1000))
+    try:
+        response = requests.get(
+            SEARXNG_CRAWL_ENDPOINT.rstrip("/"),
+            params={"url": url, "mode": "render", "timeout": timeout_s},
+            timeout=(10, SEARXNG_CRAWL_TIMEOUT_SECONDS),
+        )
+    except requests.RequestException as exc:
+        logger.warning(
+            "SearXNG crawl endpoint unreachable for %s (%s)",
+            url,
+            exc.__class__.__name__,
+        )
+        return None
+    if response.status_code != 200:
+        logger.warning(
+            "SearXNG crawl of %s failed: HTTP %s %s",
+            url,
+            response.status_code,
+            response.text[:200],
+        )
+        return None
+    payload = response.json()
+    return RenderedPage(
+        html=payload.get("html") or "",
+        final_url=payload.get("final_url") or url,
+        status=payload.get("status"),
+    )
+
+
+def _crawl_via_searxng_bytes(
+    url: str, *, navigation_timeout_ms: int
+) -> DownloadedContent | None:
+    """Fetch raw bytes through the SearXNG /crawl endpoint (browser TLS +
+    cookies on the remote side). Returns None on failure."""
+    import requests
+
+    timeout_s = max(5, min(120, navigation_timeout_ms // 1000))
+    try:
+        response = requests.get(
+            SEARXNG_CRAWL_ENDPOINT.rstrip("/"),
+            params={
+                "url": url,
+                "mode": "bytes",
+                "timeout": timeout_s,
+                "max_bytes": SEARXNG_CRAWL_MAX_BYTES,
+            },
+            timeout=(10, SEARXNG_CRAWL_TIMEOUT_SECONDS),
+        )
+    except requests.RequestException as exc:
+        logger.warning(
+            "SearXNG crawl endpoint unreachable for %s (%s)",
+            url,
+            exc.__class__.__name__,
+        )
+        return None
+    if response.status_code != 200:
+        logger.warning(
+            "SearXNG byte crawl of %s failed: HTTP %s %s",
+            url,
+            response.status_code,
+            response.text[:200],
+        )
+        return None
+    return DownloadedContent(
+        content=response.content,
+        final_url=response.headers.get("X-Final-URL") or url,
+        content_type=response.headers.get("content-type"),
+        status=int(response.headers.get("X-Crawl-Status") or 0) or None,
+    )
+
+
 def _warm_up_and_retry_fetch(
     context: BrowserContext,
     url: str,
@@ -751,6 +841,11 @@ def fetch_content_bytes(
         )
         return None
 
+    if SEARXNG_CRAWL_ENDPOINT:
+        return _crawl_via_searxng_bytes(
+            url, navigation_timeout_ms=navigation_timeout_ms
+        )
+
     from onyx.tools.tool_implementations.open_url.onyx_web_crawler import (
         looks_like_image_url,
     )
@@ -866,6 +961,11 @@ def fetch_rendered_html(
             "Refusing Playwright fallback for %s (%s)", url, exc.__class__.__name__
         )
         return None
+
+    if SEARXNG_CRAWL_ENDPOINT:
+        return _crawl_via_searxng_render(
+            url, navigation_timeout_ms=navigation_timeout_ms
+        )
 
     try:
         return _run_on_pool(

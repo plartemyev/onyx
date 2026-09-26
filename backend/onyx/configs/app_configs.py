@@ -1289,6 +1289,24 @@ BROWSER_PROFILE_LANES = int(os.environ.get("BROWSER_PROFILE_LANES", "0") or "0")
 WEB_BROWSER_LOCALE = os.environ.get("WEB_BROWSER_LOCALE", "en-US")
 WEB_BROWSER_TIMEZONE = os.environ.get("WEB_BROWSER_TIMEZONE", "America/Los_Angeles")
 
+# Page crawling via the SearXNG instance's /crawl endpoint (its masqueraded
+# browser pool). When set, the browser-backed fetches of open_url /
+# download_file go to that endpoint instead of driving a local Chromium:
+# one browser fleet serves search and crawl traffic, so crawls come from
+# the same cookie-trained identities as the searches. Empty (default)
+# keeps the local browser pool. The endpoint must be enabled on the
+# SearXNG side (outgoing.browser_crawl_endpoint).
+SEARXNG_CRAWL_ENDPOINT = os.environ.get("SEARXNG_CRAWL_ENDPOINT", "")
+# Overall read budget for one crawl call, including the wait for a free
+# browser lane on the SearXNG side.
+SEARXNG_CRAWL_TIMEOUT_SECONDS = float(
+    os.environ.get("SEARXNG_CRAWL_TIMEOUT_SECONDS") or 90
+)
+# Body size cap the SearXNG side enforces for binary crawls; keep at or
+# above BINARY_DOWNLOAD_MAX_SIZE_BYTES so large downloads are not cut off
+# by the proxy instead of by the tool's own cap.
+SEARXNG_CRAWL_MAX_BYTES = int(os.environ.get("SEARXNG_CRAWL_MAX_BYTES") or 52428800)
+
 # Outbound fetch pacing for OnyxWebCrawler (open_url + download_file +
 # analyze_image): requests sharing a provider (imgur, reddit, ...) are
 # serialized and spaced a random gap apart, so image CDNs and search engines
