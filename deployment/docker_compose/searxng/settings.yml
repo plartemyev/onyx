@@ -74,7 +74,8 @@ outgoing:
   browser_post_search_browsing: true
   # Diagnostic tracing (DOM captures, typed-value logs, solver dumps to
   # /tmp/captcha_debug). Off for duty; flip on (and create the dump dir)
-  # while debugging the browser flow.
+  # while debugging the browser flow. The /crawl response then also carries
+  # a per-lane memory snapshot for affinity diagnostics.
   browser_debug_trace: false
   # Page crawling endpoint (/crawl): lets Onyx's fetchers drive these same
   # masqueraded lanes for page fetches, so search and crawl traffic comes
