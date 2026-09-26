@@ -131,11 +131,23 @@ services:
       - CODE_INTERPRETER_MAX_STAGED_FILES=100
       - CODE_INTERPRETER_MAX_STAGED_BYTES=524288000
       - CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS=100
-      # One tool call (batch) budget; must stay above the per-exec budget above.
-      - TOOL_EXECUTION_TIMEOUT_SECONDS=240
+      # One tool call (batch) budget. Must stay above the per-exec budget
+      # above, and above the slowest legitimate search/crawl chain: a
+      # challenge-hit search may retry twice at human pace (<= ~6 min), a
+      # retried crawl or download <= ~9.5 min; 1200s = 2x that, so a slow
+      # but delivering tool call is never tombstoned as "lost".
+      - TOOL_EXECUTION_TIMEOUT_SECONDS=1200
       # Whole-turn wall clock: forces the final answer instead of an unbounded
-      # crawl when downloads/tool calls stall.
-      - CHAT_TURN_BUDGET_SECONDS=1800
+      # crawl when downloads/tool calls stall. 2x the batch budget so a turn
+      # can still hold two slow batches plus local inference time.
+      - CHAT_TURN_BUDGET_SECONDS=3600
+      # Deep Research wall clocks, retuned for the paced search/crawl chains
+      # (tools run sequentially inside research agents). Ordering matters:
+      # agent force-report < agent timeout < overall force-report, and all
+      # above TOOL_EXECUTION_TIMEOUT_SECONDS.
+      - DR_FORCE_REPORT_S=3600
+      - DR_RESEARCH_AGENT_TIMEOUT_S=2700
+      - DR_RESEARCH_AGENT_FORCE_REPORT_S=1800
       # download_file cap: the old 50 MB default rejected JDK-sized archives
       # that the sandbox itself downloads fine. Bodies stream to a disk spool.
       - BINARY_DOWNLOAD_MAX_SIZE_BYTES=524288000
@@ -186,8 +198,15 @@ services:
       - CODE_INTERPRETER_MAX_STAGED_FILES=100
       - CODE_INTERPRETER_MAX_STAGED_BYTES=524288000
       - CODE_INTERPRETER_MAX_GENERATED_ARTIFACTS=100
-      - TOOL_EXECUTION_TIMEOUT_SECONDS=240
-      - CHAT_TURN_BUDGET_SECONDS=1800
+      # One tool call (batch) budget; must stay above the per-exec budget above
+      # and above the slowest legitimate search/crawl chain (see api_server).
+      - TOOL_EXECUTION_TIMEOUT_SECONDS=1200
+      # Whole-turn wall clock (see api_server above).
+      - CHAT_TURN_BUDGET_SECONDS=3600
+      # Deep Research wall clocks (see api_server above) for scheduled runs.
+      - DR_FORCE_REPORT_S=3600
+      - DR_RESEARCH_AGENT_TIMEOUT_S=2700
+      - DR_RESEARCH_AGENT_FORCE_REPORT_S=1800
       # The Arch research executor bundles PlantUML; mention it in run_python
       # guidance (api_server below and here for scheduled chat runs).
       - PYTHON_SANDBOX_PLANTUML=true
