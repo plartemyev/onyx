@@ -140,15 +140,14 @@ services:
       # guidance then tells the model to validate and render .puml diagrams
       # locally instead of trying to install something.
       - PYTHON_SANDBOX_PLANTUML=true
-      # Shared persistent Chromium profiles for the browser-pool lanes
-      # (open_url / download_file / web connector fetches): the SAME
-      # lane-N dirs the SearXNG browser lanes use, so search + crawl traffic
-      # comes from one coherent per-lane identity instead of two. The lane
-      # count must match SearXNG's browser_pool_size (6); an flock per lane
-      # dir makes concurrent use exclusive, and a lane held by SearXNG
-      # degrades this side to an ephemeral context instead of failing.
-      # The egress IP is Thai: the browser clock must agree with it.
+      # Shared profile volume with the SearXNG browser lanes: Onyx runs as
+      # root while SearXNG runs as its own user, so each operator gets a
+      # DISJOINT lane-index range on the same volume (SearXNG: lane-0..5,
+      # Onyx: lane-6..11). Pointing both at the same range for one shared
+      # identity requires matching UIDs first. Onyx still gains persistent
+      # per-lane profiles: cookies and earned clearances survive restarts.
       - BROWSER_PROFILE_DIR=/var/lib/searxng/lanes
+      - BROWSER_PROFILE_FIRST_INDEX=6
       - BROWSER_PROFILE_LANES=6
       - WEB_BROWSER_TIMEZONE=Asia/Bangkok
     volumes:
@@ -185,10 +184,11 @@ services:
       # The Arch research executor bundles PlantUML; mention it in run_python
       # guidance (api_server below and here for scheduled chat runs).
       - PYTHON_SANDBOX_PLANTUML=true
-      # Shared persistent Chromium profiles (see api_server above): the web
-      # connector's crawls run here, on the same lane identities the search
-      # side uses. Lane count must match SearXNG's browser_pool_size.
+      # Shared profile volume with the SearXNG browser lanes (see
+      # api_server above): the web connector's crawls run here, on the
+      # disjoint Onyx lane range 6..11.
       - BROWSER_PROFILE_DIR=/var/lib/searxng/lanes
+      - BROWSER_PROFILE_FIRST_INDEX=6
       - BROWSER_PROFILE_LANES=6
       - WEB_BROWSER_TIMEZONE=Asia/Bangkok
     volumes:

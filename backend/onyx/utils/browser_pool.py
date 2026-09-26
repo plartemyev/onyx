@@ -34,7 +34,11 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, Protocol, TypeVar
 
-from onyx.configs.app_configs import BROWSER_PROFILE_DIR, BROWSER_PROFILE_LANES
+from onyx.configs.app_configs import (
+    BROWSER_PROFILE_DIR,
+    BROWSER_PROFILE_FIRST_INDEX,
+    BROWSER_PROFILE_LANES,
+)
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -102,13 +106,18 @@ def _acquire_profile_lease(provider: str | None) -> _ProfileLease:
     """Take the provider's preferred shared profile lane, or any free one.
 
     Returns an ephemeral lease (no dir) when profiles are disabled or every
-    lane is held by another process — fetches must never fail for lack of a
-    profile.
+    lane of the configured range is in use — fetches must never fail for
+    lack of a profile.
     """
     if not BROWSER_PROFILE_DIR or BROWSER_PROFILE_LANES <= 0:
         return _ProfileLease(None)
 
-    order = list(range(BROWSER_PROFILE_LANES))
+    order = list(
+        range(
+            BROWSER_PROFILE_FIRST_INDEX,
+            BROWSER_PROFILE_FIRST_INDEX + BROWSER_PROFILE_LANES,
+        )
+    )
     if provider:
         preferred = _stable_lane_index(provider, BROWSER_PROFILE_LANES)
         order.remove(preferred)
@@ -119,6 +128,9 @@ def _acquire_profile_lease(provider: str | None) -> _ProfileLease:
         lane_path = os.path.join(BROWSER_PROFILE_DIR, f"lane-{index}")
         try:
             handle = open(lock_path, "a", encoding="utf-8")  # noqa: SIM115
+            # the volume may be shared with another container running as a
+            # different UID; a lock file it created must stay lockable here
+            os.chmod(lock_path, 0o666)  # noqa: S103 — shared-volume lock, by design
         except OSError:
             continue
         try:
@@ -128,6 +140,7 @@ def _acquire_profile_lease(provider: str | None) -> _ProfileLease:
             continue
         try:
             os.makedirs(lane_path, exist_ok=True)
+            os.chmod(lane_path, 0o777)  # noqa: S103 — shared-volume profile dir, by design
         except OSError:
             fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()
@@ -198,7 +211,7 @@ _POLL_INTERVAL_SECONDS = 2.0
 class _BrowserLane:
     """A worker thread owning one Playwright instance + BrowserContext."""
 
-    def __init__(self, provider: str, factory: Callable[[], BrowserSession]) -> None:
+    def __init__(self, provider: str, factory: Callable[[str], BrowserSession]) -> None:
         self.provider = provider
         self._factory = factory
         self._jobs: queue.Queue[
