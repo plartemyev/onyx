@@ -1298,10 +1298,13 @@ WEB_BROWSER_TIMEZONE = os.environ.get("WEB_BROWSER_TIMEZONE", "America/Los_Angel
 # keeps the local browser pool. The endpoint must be enabled on the
 # SearXNG side (outgoing.browser_crawl_endpoint).
 SEARXNG_CRAWL_ENDPOINT = os.environ.get("SEARXNG_CRAWL_ENDPOINT", "")
-# Overall read budget for one crawl call, including the wait for a free
-# browser lane on the SearXNG side.
+# Overall read budget for one crawl call, including the origin pacing gap,
+# the bounded lane wait and the challenge graces on the SearXNG side. That
+# side budgets timeout_s + 150s per call (timeout_s <= 120s from here), so
+# the worst is ~270s; this is 2x that, so a slow crawl is never cut off
+# mid-flight by the client while the SearXNG side is still working.
 SEARXNG_CRAWL_TIMEOUT_SECONDS = float(
-    os.environ.get("SEARXNG_CRAWL_TIMEOUT_SECONDS") or 90
+    os.environ.get("SEARXNG_CRAWL_TIMEOUT_SECONDS") or 540
 )
 # Body size cap the SearXNG side enforces for binary crawls; keep at or
 # above BINARY_DOWNLOAD_MAX_SIZE_BYTES so large downloads are not cut off

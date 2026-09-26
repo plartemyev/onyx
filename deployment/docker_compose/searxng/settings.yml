@@ -99,6 +99,10 @@ outgoing:
     context_size: 58192
     timeout: 360
     max_rounds: 12
+    # Wall-clock cap for one whole solve attempt (all rounds and votes).
+    # Bounds how long a lane can be held by a challenge that never clears:
+    # ~2x the slowest solve observed to succeed (~12min).
+    session_budget: 1500
     # 5 samples per round at rising temperature, per-tile strict-majority
     # quorum: the model localizes the right region reliably but flickers on
     # a tile or two between samples. ~35s per sample, so a round costs
@@ -108,19 +112,32 @@ outgoing:
   # Global per-provider send pacing (searx/network/pacing.py): requests to
   # the same upstream host are spaced a random 1-5s apart, whatever engine
   # or search sent them; different providers never block each other. max_wait
-  # bounds the queue so a burst drains instead of piling up forever.
+  # bounds the queue so a burst drains instead of piling up forever. This
+  # layer governs searxng's own HTTP sends; browser-lane traffic (the
+  # max-stealth searches and /crawl requests) is paced by the origin gate
+  # below instead.
   pacing:
     enabled: true
     delay_min_seconds: 1.0
     delay_max_seconds: 5.0
     max_wait_seconds: 20.0
+  # Per-origin human pacing for browser-lane traffic
+  # (searx/network/browser.py): successive requests to the SAME site keep a
+  # minimum jittered gap even across lanes, as if one attentive person were
+  # doing the research; different origins stay parallel. [min, max] seconds;
+  # a burst waits at most 45s per request before it goes.
+  browser_origin_gap_search: [4, 10]
+  browser_origin_gap_site: [8, 20]
   request_timeout: 60.0
 # Engine overrides merge by name with the defaults. google / bing / brave are
 # disabled in the upstream defaults; the rest stay enabled.
-# Timeouts: the budget also covers the pacing wait (up to 5s, 20s under a
-# burst) plus browser-speed fetches including challenge solving, so 60s all
-# around. Onyx's client read timeout (SEARXNG_READ_TIMEOUT_SECONDS, 90s) must
-# stay above this budget.
+# Timeouts: the budget covers the origin pacing gap (4-10s, bursts more),
+# the bounded lane wait (usually seconds; browsing preemption at 20s) and
+# browser-speed fetches including challenge solving. Onyx's client read
+# timeout (SEARXNG_READ_TIMEOUT_SECONDS, 450s = 2x the worst attempt) must
+# stay above this budget; its retries land 20s/40s later, paced like a
+# person re-querying, and by then a banked clearance often lets the search
+# through.
 engines:
   # 2026-09-26 (evening): live-tested again on this residential IP. The
   # lane identity is now fully self-consistent (real distro Chromium, no
@@ -140,11 +157,13 @@ engines:
     # Normal search returns in ~20-40s on a warm lane. If google challenges
     # the lane, the request fails at this budget while the lane keeps
     # solving in the background and earns clearance for later requests
-    # (Onyx's client read timeout is 90s; the budget must stay below it).
+    # (Onyx's client read timeout is 450s; the budget must stay below it).
     timeout: 85.0
   - name: bing
     disabled: false
-    timeout: 60.0
+    # 2x the worst warm-lane search observed (~35s incl. render + settle).
+    timeout: 75.0
   - name: brave
     disabled: false
-    timeout: 60.0
+    # 2x the worst warm-lane search observed (~35s incl. render + settle).
+    timeout: 75.0

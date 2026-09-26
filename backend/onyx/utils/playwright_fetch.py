@@ -28,6 +28,7 @@ Fingerprint posture (what actually moves the needle with antibot services):
 import atexit
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -107,8 +108,10 @@ IMAGE_FETCH_HEADERS: dict[str, str] = {
 DEFAULT_BOT_CHALLENGE_GRACE_MS = 5000
 
 # Total per-navigation budget for Playwright `goto` / wait_for_load_state.
-# Generous because we *want* to absorb a Cloudflare interstitial.
-DEFAULT_NAVIGATION_TIMEOUT_MS = 30000
+# Generous because we *want* to absorb a Cloudflare interstitial. This is
+# ~2x the patience a person shows a loading page: slow pages deliver
+# instead of failing.
+DEFAULT_NAVIGATION_TIMEOUT_MS = 60000
 
 # Total budget for binary downloads (download_file). Covers the 50 MB
 # download cap at ~430 KB/s; slower links are trickles worth aborting rather
@@ -601,6 +604,16 @@ def _run_on_pool(provider: str, job: Callable[[BrowserContext], T]) -> T:
 
 # -- SearXNG crawl endpoint client --------------------------------------------
 
+# One paced retry per crawl: the first attempt may meet a bot wall or a
+# 5xx, and a person would try the link again shortly, not in a machine
+# burst. Waited out with a human-sized jittered gap.
+_SEARXNG_CRAWL_ATTEMPTS = 2
+_SEARXNG_CRAWL_RETRY_WAIT_S = (12.0, 25.0)
+
+
+def _crawl_retry_wait() -> float:
+    return random.uniform(*_SEARXNG_CRAWL_RETRY_WAIT_S)
+
 
 def _crawl_via_searxng_render(
     url: str, *, navigation_timeout_ms: int
@@ -610,80 +623,121 @@ def _crawl_via_searxng_render(
     The remote side drives its masqueraded browser pool: redirects are
     followed (final URL reported), challenges get the usual grace period,
     and a Google Translate landing is rewritten to the original page over
-    there. Returns None when the crawl failed entirely.
+    there. Retries once after a human-sized gap on a wall or a 5xx.
+    Returns None when the crawl failed entirely.
     """
     import requests
 
     timeout_s = max(5, min(120, navigation_timeout_ms // 1000))
-    try:
-        response = requests.get(
-            SEARXNG_CRAWL_ENDPOINT.rstrip("/"),
-            params={"url": url, "mode": "render", "timeout": timeout_s},
-            timeout=(10, SEARXNG_CRAWL_TIMEOUT_SECONDS),
-        )
-    except requests.RequestException as exc:
-        logger.warning(
-            "SearXNG crawl endpoint unreachable for %s (%s)",
-            url,
-            exc.__class__.__name__,
-        )
-        return None
-    if response.status_code != 200:
-        logger.warning(
-            "SearXNG crawl of %s failed: HTTP %s %s",
-            url,
-            response.status_code,
-            response.text[:200],
-        )
-        return None
-    payload = response.json()
-    return RenderedPage(
-        html=payload.get("html") or "",
-        final_url=payload.get("final_url") or url,
-        status=payload.get("status"),
-    )
+    rendered: RenderedPage | None = None
+    for attempt in range(1, _SEARXNG_CRAWL_ATTEMPTS + 1):
+        rendered = None
+        retry = False
+        try:
+            response = requests.get(
+                SEARXNG_CRAWL_ENDPOINT.rstrip("/"),
+                params={"url": url, "mode": "render", "timeout": timeout_s},
+                timeout=(10, SEARXNG_CRAWL_TIMEOUT_SECONDS),
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    "SearXNG crawl of %s failed: HTTP %s %s",
+                    url,
+                    response.status_code,
+                    response.text[:200],
+                )
+                retry = True
+            else:
+                payload = response.json()
+                status = payload.get("status")
+                if payload.get("challenge") or (status is not None and status >= 500):
+                    logger.info(
+                        "SearXNG crawl of %s hit a wall (challenge=%s,"
+                        " status=%s) on attempt %d",
+                        url,
+                        payload.get("challenge"),
+                        status,
+                        attempt,
+                    )
+                    retry = True
+                else:
+                    rendered = RenderedPage(
+                        html=payload.get("html") or "",
+                        final_url=payload.get("final_url") or url,
+                        status=status,
+                    )
+        except requests.RequestException as exc:
+            logger.warning(
+                "SearXNG crawl endpoint unreachable for %s (%s)",
+                url,
+                exc.__class__.__name__,
+            )
+            retry = True
+        if rendered is not None or not retry or attempt == _SEARXNG_CRAWL_ATTEMPTS:
+            return rendered
+        time.sleep(_crawl_retry_wait())
+    return None
 
 
 def _crawl_via_searxng_bytes(
     url: str, *, navigation_timeout_ms: int
 ) -> DownloadedContent | None:
     """Fetch raw bytes through the SearXNG /crawl endpoint (browser TLS +
-    cookies on the remote side). Returns None on failure."""
+    cookies on the remote side). Retries once after a human-sized gap.
+    Returns None on failure."""
     import requests
 
     timeout_s = max(5, min(120, navigation_timeout_ms // 1000))
-    try:
-        response = requests.get(
-            SEARXNG_CRAWL_ENDPOINT.rstrip("/"),
-            params={
-                "url": url,
-                "mode": "bytes",
-                "timeout": timeout_s,
-                "max_bytes": SEARXNG_CRAWL_MAX_BYTES,
-            },
-            timeout=(10, SEARXNG_CRAWL_TIMEOUT_SECONDS),
-        )
-    except requests.RequestException as exc:
-        logger.warning(
-            "SearXNG crawl endpoint unreachable for %s (%s)",
-            url,
-            exc.__class__.__name__,
-        )
-        return None
-    if response.status_code != 200:
-        logger.warning(
-            "SearXNG byte crawl of %s failed: HTTP %s %s",
-            url,
-            response.status_code,
-            response.text[:200],
-        )
-        return None
-    return DownloadedContent(
-        content=response.content,
-        final_url=response.headers.get("X-Final-URL") or url,
-        content_type=response.headers.get("content-type"),
-        status=int(response.headers.get("X-Crawl-Status") or 0) or None,
-    )
+    downloaded: DownloadedContent | None = None
+    for attempt in range(1, _SEARXNG_CRAWL_ATTEMPTS + 1):
+        downloaded = None
+        retry = False
+        try:
+            response = requests.get(
+                SEARXNG_CRAWL_ENDPOINT.rstrip("/"),
+                params={
+                    "url": url,
+                    "mode": "bytes",
+                    "timeout": timeout_s,
+                    "max_bytes": SEARXNG_CRAWL_MAX_BYTES,
+                },
+                timeout=(10, SEARXNG_CRAWL_TIMEOUT_SECONDS),
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    "SearXNG byte crawl of %s failed: HTTP %s %s",
+                    url,
+                    response.status_code,
+                    response.text[:200],
+                )
+                retry = True
+            elif response.headers.get("X-Crawl-Challenge") or (
+                int(response.headers.get("X-Crawl-Status") or 0) >= 500
+            ):
+                logger.info(
+                    "SearXNG byte crawl of %s hit a wall on attempt %d",
+                    url,
+                    attempt,
+                )
+                retry = True
+            else:
+                downloaded = DownloadedContent(
+                    content=response.content,
+                    final_url=response.headers.get("X-Final-URL") or url,
+                    content_type=response.headers.get("content-type"),
+                    status=int(response.headers.get("X-Crawl-Status") or 0) or None,
+                )
+        except requests.RequestException as exc:
+            logger.warning(
+                "SearXNG crawl endpoint unreachable for %s (%s)",
+                url,
+                exc.__class__.__name__,
+            )
+            retry = True
+        if downloaded is not None or not retry or attempt == _SEARXNG_CRAWL_ATTEMPTS:
+            return downloaded
+        time.sleep(_crawl_retry_wait())
+    return None
 
 
 def _warm_up_and_retry_fetch(

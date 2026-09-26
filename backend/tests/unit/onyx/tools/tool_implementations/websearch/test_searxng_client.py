@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -122,6 +123,9 @@ def test_search_survives_image_search_failure(
 def test_search_still_fails_when_general_search_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # keep the paced retry from actually sleeping out its 20s/40s gaps
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
     def _post(
         url: str,  # noqa: ARG001
         data: dict[str, str],
@@ -139,6 +143,47 @@ def test_search_still_fails_when_general_search_fails(
 
     with pytest.raises(RuntimeError, match="general search down"):
         client.search("drake meme")
+
+
+def test_search_retries_a_challenge_hit_and_then_delivers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A challenge-hit search comes back HTTP 200 with zero results and
+    all engines unresponsive: the client surfaces that (instead of
+    silently delivering nothing) and the paced retry — spaced like a
+    person re-querying — picks up the lane's banked clearance."""
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    challenge_payload = {
+        "results": [],
+        "unresponsive_engines": [{"engine": "google", "error": "challenge"}],
+    }
+    calls = {"n": 0}
+
+    def _post(
+        url: str,  # noqa: ARG001
+        data: dict[str, str],
+        timeout: Any = None,  # noqa: ARG001
+    ) -> Any:
+        if data.get("categories") == "images":
+            response = MagicMock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {"results": []}
+            return response
+        calls["n"] += 1
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = (
+            challenge_payload if calls["n"] < 3 else GENERAL_PAYLOAD
+        )
+        return response
+
+    monkeypatch.setattr(searxng_client.requests, "post", _post)
+    client = SearXNGClient("http://localhost:8080")
+
+    results = client.search("drake meme")
+
+    assert calls["n"] == 3
+    assert [r.title for r in results][:2] == ["Meme history", "No image result"]
 
 
 def test_interleave_positions() -> None:

@@ -178,13 +178,16 @@ NUM_INTERNET_SEARCH_CHUNKS = int(os.environ.get("NUM_INTERNET_SEARCH_CHUNKS") or
 
 # SearXNG request timeouts. Browser-backed SearXNG instances fetch engine
 # pages through a real Chromium (multi-second fetches, challenge warm-up
-# renders), and a pacing proxy in front of SearXNG can hold a request for a
-# few seconds more. The read timeout must cover queue wait + search time.
+# renders, per-origin human pacing before the fetch), and the pool may wait
+# out lane contention (bounded, with browsing preemption). The read timeout
+# must cover queue wait + search time: worst attempt is ~225s (burst pacing
+# cap + bounded lane wait + a slow engine fetch), so this is set to 2x that.
+# Retries are paced (20s/40s backoff) like a person re-querying.
 SEARXNG_CONNECT_TIMEOUT_SECONDS = float(
     os.environ.get("SEARXNG_CONNECT_TIMEOUT_SECONDS") or 10
 )
 SEARXNG_READ_TIMEOUT_SECONDS = float(
-    os.environ.get("SEARXNG_READ_TIMEOUT_SECONDS") or 90
+    os.environ.get("SEARXNG_READ_TIMEOUT_SECONDS") or 450
 )
 
 VESPA_SEARCHER_THREADS = int(os.environ.get("VESPA_SEARCHER_THREADS") or 2)

@@ -80,7 +80,11 @@ class SearXNGClient(WebSearchProvider):
         # Serves as the default for `search(language=None)` calls.
         self._language = language or None
 
-    @retry_builder(tries=3, delay=1, backoff=2)
+    # Paced retries: a challenge-hit search fails on the SearXNG side while
+    # the lane keeps solving in the background. Re-querying 20s/40s later
+    # (a person refining a search) gives that clearance time to land; a
+    # 1-2s machine burst would just re-lose. Worst total ~3x read timeout.
+    @retry_builder(tries=3, delay=20, backoff=2)
     def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
         payload = {
             "q": query,
@@ -103,6 +107,14 @@ class SearXNGClient(WebSearchProvider):
 
         results = response.json()
         result_list = results.get("results", [])
+        if not result_list and results.get("unresponsive_engines"):
+            # a challenge-hit search comes back HTTP 200 with zero results:
+            # surface it so the paced retry can pick up the lane's banked
+            # clearance a couple of human re-query gaps later
+            raise requests.RequestException(
+                "SearXNG returned no results; unresponsive engines: "
+                f"{results.get('unresponsive_engines')}"
+            )
         # SearXNG doesn't support limiting results via API parameters,
         # so we limit client-side after receiving the response
         limited_results = result_list[: self._num_results]

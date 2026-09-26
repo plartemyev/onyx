@@ -55,6 +55,9 @@ services:
       - SEARXNG_BASE_URL=http://searxng:8080/
       # instance secret, from the gitignored .env (see settings.yml)
       - SEARXNG_SECRET=${SEARXNG_SECRET}
+      # Operational INFO lines (pool up, human search flow, crawl routing)
+      # stay visible in production mode; DEBUG wire noise stays off.
+      - SEARXNG_LOG_LEVEL=INFO
     volumes:
       - ./searxng:/etc/searxng:ro
       # Named volume so the geo-locale cache (/var/cache/searxng/
@@ -148,6 +151,12 @@ services:
       # The egress IP is Thai: the local browser's clock must agree with it
       # (matters for the web connector, which still drives a local browser).
       - SEARXNG_CRAWL_ENDPOINT=http://searxng:8080/crawl
+      # 2x the SearXNG-side worst case per call (timeout_s + 150s) so a
+      # slow crawl is never cut off mid-flight by this client.
+      - SEARXNG_CRAWL_TIMEOUT_SECONDS=540
+      # Search chain budget: engine timeout + pacing gap + bounded lane
+      # wait, 2x worst attempt; retries are paced 20s/40s.
+      - SEARXNG_READ_TIMEOUT_SECONDS=450
       # Match the download cap below so large files are cut by the tool's
       # cap, not the proxy's.
       - SEARXNG_CRAWL_MAX_BYTES=524288000
@@ -186,6 +195,10 @@ services:
       # above): the web connector's page fetches and any tool crawls here
       # ride the same masqueraded browser fleet as the searches.
       - SEARXNG_CRAWL_ENDPOINT=http://searxng:8080/crawl
+      # 2x the SearXNG-side worst case per call (see api_server above).
+      - SEARXNG_CRAWL_TIMEOUT_SECONDS=540
+      # Search chain budget (see api_server above).
+      - SEARXNG_READ_TIMEOUT_SECONDS=450
       - SEARXNG_CRAWL_MAX_BYTES=524288000
       - WEB_BROWSER_TIMEZONE=Asia/Bangkok
 

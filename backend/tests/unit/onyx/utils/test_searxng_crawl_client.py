@@ -71,15 +71,58 @@ def test_render_endpoint_failure_returns_none(
         "SEARXNG_CRAWL_ENDPOINT",
         "http://searxng:8080/crawl",
     )
+    # the paced retry waits a human-sized gap; skip it in the test
+    monkeypatch.setattr(playwright_fetch, "_crawl_retry_wait", lambda: 0.0)
     with patch.object(
-        requests_lib, "get", return_value=_FakeResponse(502, {"error": "crawl failed"})
-    ):
+        requests_lib,
+        "get",
+        return_value=_FakeResponse(502, {"error": "crawl failed"}),
+    ) as mock_get:
         assert (
             _crawl_via_searxng_render(
                 "https://example.org", navigation_timeout_ms=30000
             )
             is None
         )
+    # one paced retry: a person tries a failing link again shortly
+    assert mock_get.call_count == 2
+
+
+def test_render_endpoint_retries_a_wall_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        playwright_fetch,
+        "SEARXNG_CRAWL_ENDPOINT",
+        "http://searxng:8080/crawl",
+    )
+    monkeypatch.setattr(playwright_fetch, "_crawl_retry_wait", lambda: 0.0)
+    wall = _FakeResponse(
+        200,
+        {
+            "final_url": "https://example.org",
+            "status": 403,
+            "challenge": True,
+            "html": "<html>checking your browser</html>",
+        },
+    )
+    good = _FakeResponse(
+        200,
+        {
+            "final_url": "https://example.org/page",
+            "status": 200,
+            "challenge": False,
+            "html": "<html><body>hello</body></html>",
+        },
+    )
+    with patch.object(requests_lib, "get", side_effect=[wall, good]) as mock_get:
+        rendered = _crawl_via_searxng_render(
+            "https://example.org/page", navigation_timeout_ms=30000
+        )
+    assert mock_get.call_count == 2
+    assert rendered is not None
+    assert rendered.status == 200
+    assert "hello" in rendered.html
 
 
 def test_render_endpoint_unreachable_returns_none(
@@ -90,17 +133,19 @@ def test_render_endpoint_unreachable_returns_none(
         "SEARXNG_CRAWL_ENDPOINT",
         "http://searxng:8080/crawl",
     )
+    monkeypatch.setattr(playwright_fetch, "_crawl_retry_wait", lambda: 0.0)
     with patch.object(
         requests_lib,
         "get",
         side_effect=requests_lib.ConnectionError("no route"),
-    ):
+    ) as mock_get:
         assert (
             _crawl_via_searxng_render(
                 "https://example.org", navigation_timeout_ms=30000
             )
             is None
         )
+    assert mock_get.call_count == 2
 
 
 def test_bytes_endpoint_maps_headers(
@@ -137,3 +182,35 @@ def test_bytes_endpoint_maps_headers(
 def test_endpoint_disabled_leaves_pool_path_in_place() -> None:
     # default config: no endpoint -> the module keeps its local-pool behavior
     assert playwright_fetch.SEARXNG_CRAWL_ENDPOINT == ""
+
+
+def test_bytes_endpoint_retries_a_challenge_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        playwright_fetch,
+        "SEARXNG_CRAWL_ENDPOINT",
+        "http://searxng:8080/crawl",
+    )
+    monkeypatch.setattr(playwright_fetch, "_crawl_retry_wait", lambda: 0.0)
+    wall = _FakeResponse(
+        200,
+        content=b"<html>verifying you are human</html>",
+        headers={"X-Crawl-Challenge": "1", "X-Crawl-Status": "403"},
+    )
+    good = _FakeResponse(
+        200,
+        content=b"%PDF-1.4 fake",
+        headers={
+            "X-Final-URL": "https://example.org/doc.pdf",
+            "X-Crawl-Status": "200",
+            "content-type": "application/pdf",
+        },
+    )
+    with patch.object(requests_lib, "get", side_effect=[wall, good]) as mock_get:
+        downloaded = _crawl_via_searxng_bytes(
+            "https://example.org/doc.pdf", navigation_timeout_ms=120000
+        )
+    assert mock_get.call_count == 2
+    assert downloaded is not None
+    assert downloaded.content == b"%PDF-1.4 fake"
