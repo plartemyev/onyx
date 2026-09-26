@@ -1270,13 +1270,14 @@ if OPEN_URL_FETCH_MODE not in ("auto", "playwright"):
 # `<BROWSER_PROFILE_DIR>/lane-<BROWSER_PROFILE_FIRST_INDEX + N>`
 # (N < BROWSER_PROFILE_LANES) instead of ephemeral in-memory contexts:
 # cookies and earned challenge clearances survive lane rebuilds. Each
-# profile is guarded by an flock (`lane-<N>.lock`), so the same directory
-# can host the lanes of another browser operator (e.g. the SearXNG browser
-# lanes on a common docker volume) — give each operator a disjoint index
-# range unless both run as the same UID, because a Chromium profile filled
-# by one UID cannot be rewritten by another. When every lane of the range
-# is in use, a fetch runs with an ephemeral context rather than failing.
-# Empty dir (default) keeps the old all-ephemeral behavior.
+# profile is guarded by an flock (`lane-<N>.lock`), so the same volume can
+# host the lanes of another browser operator (e.g. the SearXNG browser
+# lanes) — give each operator a DISJOINT index range: Chromium profiles
+# hold cookie secrets, and Chromium itself enforces 0700 on the profile
+# dir and refuses profiles locked by another UID, so one profile dir must
+# never be used by containers running as different UIDs. When every lane
+# of the range is in use, a fetch runs with an ephemeral context rather
+# than failing. Empty dir (default) keeps the old all-ephemeral behavior.
 BROWSER_PROFILE_DIR = os.environ.get("BROWSER_PROFILE_DIR", "")
 BROWSER_PROFILE_FIRST_INDEX = int(
     os.environ.get("BROWSER_PROFILE_FIRST_INDEX", "0") or "0"

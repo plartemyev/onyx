@@ -128,9 +128,7 @@ def _acquire_profile_lease(provider: str | None) -> _ProfileLease:
         lane_path = os.path.join(BROWSER_PROFILE_DIR, f"lane-{index}")
         try:
             handle = open(lock_path, "a", encoding="utf-8")  # noqa: SIM115
-            # the volume may be shared with another container running as a
-            # different UID; a lock file it created must stay lockable here
-            os.chmod(lock_path, 0o666)  # noqa: S103 — shared-volume lock, by design
+            os.chmod(lock_path, 0o600)
         except OSError:
             continue
         try:
@@ -140,7 +138,10 @@ def _acquire_profile_lease(provider: str | None) -> _ProfileLease:
             continue
         try:
             os.makedirs(lane_path, exist_ok=True)
-            os.chmod(lane_path, 0o777)  # noqa: S103 — shared-volume profile dir, by design
+            # 0700 on purpose: Chromium profiles hold cookie secrets, and
+            # Chromium clamps the dir to this mode and refuses profiles
+            # locked by another UID
+            os.chmod(lane_path, 0o700)
         except OSError:
             fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()
