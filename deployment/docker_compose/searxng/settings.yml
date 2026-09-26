@@ -83,7 +83,7 @@ outgoing:
   # only; optional shared-secret header via browser_crawl_secret.
   browser_crawl_endpoint: true
   # Body cap for binary crawls; matches Onyx's BINARY_DOWNLOAD_MAX_SIZE_BYTES
-  # (the body is buffered in this container's RAM: 3g limit, 6 lanes).
+  # (the body is buffered in this container's RAM: 6g limit, 6 lanes).
   browser_crawl_max_bytes: 524288000
   # Vision-assisted image-grid CAPTCHA solving (searx/network/captcha_vision.py,
   # a self-contained capability of the searxng fork -- nothing in Onyx knows

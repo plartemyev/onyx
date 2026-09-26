@@ -37,9 +37,15 @@ services:
     # 65 here arrives as exactly 64, the TTL of any Linux client on this LAN.
     sysctls:
       - net.ipv4.ip_default_ttl=65
-    # Cap blast radius: a browser-pool leak must not starve the host again
-    # (3 GB fits the pool of 6 headed Chromium lanes plus the worker).
-    mem_limit: 3g
+    # Cap blast radius: a browser-pool leak must not starve the host.
+    # Measured legitimate peak of the fleet under a research session
+    # (6 lanes + reader tabs + crawls + solver): memory.peak 3.8G plus
+    # 3.0G swap — the old 3g cap sat below real demand and caused
+    # swap thrash, then kernel oom_kills of the lane browsers
+    # (2026-09-26 14:48-16:09 outage). 6g fits demand with headroom;
+    # memswap_limit bounds total pressure before the kill.
+    mem_limit: 6g
+    memswap_limit: 8g
     healthcheck:
       # No wget/curl in this image; python3 ships with searxng.
       test:
