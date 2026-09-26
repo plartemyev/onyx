@@ -24,13 +24,17 @@ reason.
 from __future__ import annotations
 
 import atexit
+import fcntl
+import os
 import queue
 import threading
 import time
+import zlib
 from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, Protocol, TypeVar
 
+from onyx.configs.app_configs import BROWSER_PROFILE_DIR, BROWSER_PROFILE_LANES
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -55,17 +59,106 @@ class _Shutdown:
 _SHUTDOWN = _Shutdown()
 
 
+class _ProfileLease:
+    """Exclusive use of one shared persistent-profile lane.
+
+    The profile dir may be shared with another browser operator (e.g. the
+    SearXNG browser lanes on a common docker volume). Chromium keeps a
+    SingletonLock per profile, so two browsers on one dir would corrupt it;
+    an flock on a sibling `lane-<N>.lock` file makes the allocation
+    exclusive across processes instead. A lease whose `user_data_dir` is
+    None means "no lane was free" — the session then runs an ephemeral
+    context, same as the disabled default.
+    """
+
+    __slots__ = ("user_data_dir", "_handle")
+
+    def __init__(self, user_data_dir: str | None, handle: Any = None) -> None:
+        self.user_data_dir = user_data_dir
+        self._handle = handle
+
+    def release(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is None:
+            return
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        except OSError:
+            logger.debug("Failed to unlock profile lane", exc_info=True)
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
+def _stable_lane_index(provider: str, lanes: int) -> int:
+    """Crash-stable preferred lane for a provider, so one provider's cookies
+    concentrate in one shared profile across restarts."""
+    return zlib.crc32(provider.encode("utf-8")) % lanes
+
+
+def _acquire_profile_lease(provider: str | None) -> _ProfileLease:
+    """Take the provider's preferred shared profile lane, or any free one.
+
+    Returns an ephemeral lease (no dir) when profiles are disabled or every
+    lane is held by another process — fetches must never fail for lack of a
+    profile.
+    """
+    if not BROWSER_PROFILE_DIR or BROWSER_PROFILE_LANES <= 0:
+        return _ProfileLease(None)
+
+    order = list(range(BROWSER_PROFILE_LANES))
+    if provider:
+        preferred = _stable_lane_index(provider, BROWSER_PROFILE_LANES)
+        order.remove(preferred)
+        order.insert(0, preferred)
+
+    for index in order:
+        lock_path = os.path.join(BROWSER_PROFILE_DIR, f"lane-{index}.lock")
+        lane_path = os.path.join(BROWSER_PROFILE_DIR, f"lane-{index}")
+        try:
+            handle = open(lock_path, "a", encoding="utf-8")  # noqa: SIM115
+        except OSError:
+            continue
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            continue
+        try:
+            os.makedirs(lane_path, exist_ok=True)
+        except OSError:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
+            continue
+        return _ProfileLease(lane_path, handle)
+
+    logger.debug(
+        "All %d shared browser profile lanes are busy; running ephemeral",
+        BROWSER_PROFILE_LANES,
+    )
+    return _ProfileLease(None)
+
+
 class PooledBrowserSession:
     """One Playwright instance + BrowserContext owned by a lane."""
 
     def __init__(self, context_factory: Callable[[], tuple[Any, Any]]) -> None:
         self.playwright, self.context = context_factory()
+        self._lease: _ProfileLease | None = None
 
     @classmethod
-    def from_start_playwright(cls) -> PooledBrowserSession:
+    def from_start_playwright(
+        cls, user_data_dir: str | None = None
+    ) -> PooledBrowserSession:
         from onyx.utils.playwright_fetch import start_playwright
 
-        return cls(start_playwright)
+        return cls(lambda: start_playwright(user_data_dir))
+
+    def adopt_lease(self, lease: "_ProfileLease | None") -> None:
+        """Attach the profile lease held while this browser is up."""
+        self._lease = lease
 
     def is_alive(self) -> bool:
         """False once the underlying browser process has gone away.
@@ -85,6 +178,10 @@ class PooledBrowserSession:
             self.playwright.stop()
         except Exception:
             logger.debug("Failed to stop pooled Playwright", exc_info=True)
+        finally:
+            if self._lease is not None:
+                self._lease.release()
+                self._lease = None
 
 
 # How long an idle lane stays alive before its browser is torn down.
@@ -168,7 +265,7 @@ class _BrowserLane:
             deadline = time.monotonic() + LANE_IDLE_TTL_SECONDS
             try:
                 if self._session is None:
-                    self._session = self._factory()
+                    self._session = self._factory(self.provider)
                 elif not self._session.is_alive():
                     # The browser process died between jobs (OOM kill,
                     # driver crash). Rebuild before serving so the caller
@@ -178,7 +275,7 @@ class _BrowserLane:
                         self.provider,
                     )
                     self._teardown()
-                    self._session = self._factory()
+                    self._session = self._factory(self.provider)
                 future.set_result(job(self._session.context))
             except BaseException as exc:  # noqa: BLE001 — surfaced to the caller
                 future.set_exception(exc)
@@ -213,7 +310,7 @@ class BrowserPool:
 
     def __init__(
         self,
-        session_factory: Callable[[], BrowserSession],
+        session_factory: Callable[[str], BrowserSession],
         *,
         max_lanes: int = MAX_LANES,
     ) -> None:
@@ -265,10 +362,34 @@ def get_browser_pool() -> BrowserPool:
     global _pool
     with _pool_lock:
         if _pool is None:
-            pool = BrowserPool(PooledBrowserSession.from_start_playwright)
+            pool = BrowserPool(_leased_session_factory)
             atexit.register(_shutdown_pool)
             _pool = pool
         return _pool
+
+
+def _leased_session_factory(provider: str) -> BrowserSession:
+    """Build a lane session on a shared persistent profile when configured.
+
+    The profile lease (flock on lane-<N>.lock) is held for the browser's
+    lifetime and released on teardown. The provider's stable preferred lane
+    is tried first so its cookies concentrate in one profile; a busy lane
+    falls back to any free one, and a fully busy pool runs ephemeral.
+    """
+    lease = _acquire_profile_lease(provider)
+    try:
+        session = PooledBrowserSession.from_start_playwright(lease.user_data_dir)
+    except Exception:
+        lease.release()
+        raise
+    session.adopt_lease(lease)
+    if lease.user_data_dir:
+        logger.info(
+            "Browser lane %s launched on shared profile %s",
+            provider,
+            lease.user_data_dir,
+        )
+    return session
 
 
 def _shutdown_pool() -> None:

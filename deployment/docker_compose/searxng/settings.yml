@@ -36,9 +36,10 @@ search:
     - html
     # Required by Onyx; requests use format=json.
     - json
-# TEMPORARY (2026-09-25): diagnose the google challenge flow; remove when done
+# General debug logging (httpx wire lines, huge engine URLs). Off for duty;
+# the per-component trace switch below is the fine-grained knob.
 general:
-  debug: true
+  debug: false
 # Browser fetch pool: engine requests go through a masqueraded Chromium
 # (see searx/network/browser.py in the fork). Needs engine timeouts high
 # enough for browser-speed fetches, including challenge warm-up renders,
@@ -49,6 +50,11 @@ outgoing:
   # per lane), so parallel human sessions cannot steal each other's
   # clicks. 6 lanes = 6 browser processes: keep an eye on container RAM.
   browser_pool_size: 6
+  # One persistent Chromium profile per lane, on the searxng-browser-lanes
+  # docker volume: cookies, storage and earned captcha clearances survive
+  # container recreations, and lanes stay fully isolated from each other.
+  # Wipe the volume to reset every lane's identity.
+  browser_profile_dir: /var/lib/searxng/lanes
   # On a persistent bot challenge, drive the provider's search UI with real
   # X input (Bezier mouse with jitter, typing, a natural search-button
   # click) instead of giving up (searx/network/human_input.py).
@@ -58,6 +64,38 @@ outgoing:
   # Much slower per search (interactive typing/clicking), but the provider
   # only ever sees visits from the cookie-trained desktop browser.
   browser_max_stealth: true
+  # Post-search reputation browsing: after a browser-served search returns,
+  # a background task keeps that lane behaving like a reader -- it clicks
+  # 1-4 random organic results (real X input), scrolls and drifts the
+  # pointer over each for 10-30s, and returns to the results page. Engines
+  # score each lane's persistent cookie jar by this follow-through
+  # behavior; a jar that only ever searches looks like a bot. Skipped
+  # automatically when no other lane is idle, so searches never starve.
+  browser_post_search_browsing: true
+  # Diagnostic tracing (DOM captures, typed-value logs, solver dumps to
+  # /tmp/captcha_debug). Off for duty; flip on (and create the dump dir)
+  # while debugging the browser flow.
+  browser_debug_trace: false
+  # Vision-assisted image-grid CAPTCHA solving (searx/network/captcha_vision.py,
+  # a self-contained capability of the searxng fork -- nothing in Onyx knows
+  # about it). When a challenge escalates to an image grid, the screenshot and
+  # its instruction go to any vision-capable model behind a standard
+  # OpenAI-compatible endpoint; the answer is clicked by the human input
+  # layer. The vision call is observation only; clicks stay real X input.
+  captcha_vision:
+    enabled: true
+    endpoint: 'http://172.17.172.35:11434'
+    api_key: ''
+    model: 'ornith-1.5:9b'
+    context_size: 58192
+    timeout: 360
+    max_rounds: 12
+    # 5 samples per round at rising temperature, per-tile strict-majority
+    # quorum: the model localizes the right region reliably but flickers on
+    # a tile or two between samples. ~35s per sample, so a round costs
+    # ~3min -- the search request may time out while the lane keeps
+    # solving, but the lane keeps the clearance cookies once it succeeds.
+    votes: 6
   # Global per-provider send pacing (searx/network/pacing.py): requests to
   # the same upstream host are spaced a random 1-5s apart, whatever engine
   # or search sent them; different providers never block each other. max_wait
@@ -75,18 +113,26 @@ outgoing:
 # around. Onyx's client read timeout (SEARXNG_READ_TIMEOUT_SECONDS, 90s) must
 # stay above this budget.
 engines:
-  # TEMPORARY (2026-09-25): google disabled while the IP cooldown runs.
-  # google still routes this datacenter IP to /sorry on fresh searches and
-  # escalates the reCAPTCHA checkbox click to a dynamic image-grid challenge
-  # (needs vision to solve; the click itself lands since the strict-mode
-  # frame fix). Re-enable (disabled: false) and test with:
-  #   docker exec onyx-searxng-1 python -c "import
-  #   urllib.request,urllib.parse,json;d=json.loads(urllib.request.urlopen(
-  #   'http://localhost:8080/search?q=test&format=json&engines=google',
-  #   timeout=120).read());print(len(d.get('results',[])))"
+  # 2026-09-26 (evening): live-tested again on this residential IP. The
+  # lane identity is now fully self-consistent (real distro Chromium, no
+  # UA persona lies, TTL 64 at the VM egress, IP-derived Thai locale,
+  # webdriver suppressed) and the solver handles dynamic grids (growth
+  # detection, inverted quorum votes, 12 slides). Google still rejects
+  # defensible answers and collapses the challenge; the remaining deltas
+  # vs a normal desktop are the Chromium-vs-Chrome binary brand, the
+  # young cookie jars, and this IP's google-side history from our own
+  # earlier automated attempts. Left ENABLED per owner decision: a google
+  # search costs up to 85s (client budget) while the lane keeps solving
+  # in the background (12 slides x 6 votes, minutes per challenge).
+  # Disable here if that latency is not acceptable; the solver itself is
+  # harmless for engines that never challenge.
   - name: google
-    disabled: true
-    timeout: 60.0
+    disabled: false
+    # Normal search returns in ~20-40s on a warm lane. If google challenges
+    # the lane, the request fails at this budget while the lane keeps
+    # solving in the background and earns clearance for later requests
+    # (Onyx's client read timeout is 90s; the budget must stay below it).
+    timeout: 85.0
   - name: bing
     disabled: false
     timeout: 60.0

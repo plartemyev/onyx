@@ -41,7 +41,7 @@ from onyx.utils.playwright_fetch import (
     looks_like_cloudflare_challenge,
 )
 from onyx.utils.request_pacer import Pacer, get_default_pacer, provider_key
-from onyx.utils.url import SSRFException, ssrf_safe_get
+from onyx.utils.url import SSRFException, ssrf_safe_get, unwrap_google_translate_url
 from onyx.utils.web_content import (
     decode_html_bytes,
     extract_pdf_text,
@@ -258,6 +258,9 @@ class FetchedFile:
     content_type: str | None
     content_file: IO[bytes] | None = None
     size_bytes: int = 0
+    # Final URL after redirect following (e.g. google's encrypted /goto
+    # wrapper resolved to its target); None keeps the requested URL.
+    final_url: str | None = None
 
     def sniffed_mime_type(self) -> str | None:
         """Magic-byte MIME detection over the head of the payload."""
@@ -524,6 +527,9 @@ class OnyxWebCrawler(WebContentProvider):
             return _failed_result(url, FailureReason.NETWORK_ERROR)
 
     def _fetch_url(self, url: str) -> WebContent:
+        # A Google Translate wrapper URL is rewritten to the original page
+        # locally: the translation service is never contacted by this fetch.
+        url = unwrap_google_translate_url(url)
         self._pacer.pace(url)
         if self._fetch_mode == FETCH_MODE_PLAYWRIGHT:
             return self._fetch_url_via_browser(url)
@@ -562,7 +568,9 @@ class OnyxWebCrawler(WebContentProvider):
             )
             return _failed_result(url, FailureReason.CLOUDFLARE_CHALLENGE)
 
-        result = _parse_html_to_web_content(url, rendered.html)
+        result = _parse_html_to_web_content(
+            unwrap_google_translate_url(rendered.final_url) or url, rendered.html
+        )
         if result.scrape_successful:
             return result
 
@@ -661,12 +669,36 @@ class OnyxWebCrawler(WebContentProvider):
                 else failure_reason_for_status(response.status_code),
             )
 
+        # A redirect chain must not end on a Google Translate copy: resolve
+        # the original target locally and fetch that page instead, so both
+        # the content and the citation come from the real site.
+        landed = unwrap_google_translate_url(response.url)
+        if landed != response.url:
+            logger.info(
+                "Fetch of %s was redirected onto a Google Translate copy; "
+                "fetching the original %s",
+                url,
+                landed,
+            )
+            try:
+                response = self._ssrf_safe_get_with_retry(landed)
+            except Exception as exc:
+                logger.warning(
+                    "Original fetch after translate redirect failed for %s (%s)",
+                    landed,
+                    exc.__class__.__name__,
+                )
+                return _failed_result(url, FailureReason.NETWORK_ERROR)
+
+        # Citations carry the final URL of the redirect chain (e.g. google's
+        # encrypted /goto wrapper resolved to its target).
+        final_url = unwrap_google_translate_url(response.url) or url
         content_type = response.headers.get("Content-Type", "")
         content = response.content
 
         content_sniff = content[:1024] if content else None
-        if is_pdf_resource(url, content_type, content_sniff):
-            return self._handle_pdf_response(url, content)
+        if is_pdf_resource(final_url, content_type, content_sniff):
+            return self._handle_pdf_response(final_url, content)
 
         if (
             self._max_html_size_bytes is not None
@@ -692,7 +724,7 @@ class OnyxWebCrawler(WebContentProvider):
             )
             return _failed_result(url, FailureReason.DECODE_ERROR)
 
-        result = _parse_html_to_web_content(url, decoded_html)
+        result = _parse_html_to_web_content(final_url, decoded_html)
         if result.scrape_successful or not self._playwright_fallback_enabled:
             return result
         # Some bot-walls (e.g. Reddit) answer non-browser TLS with HTTP 200
@@ -760,6 +792,7 @@ class OnyxWebCrawler(WebContentProvider):
         # for direct image URLs to their HTML viewer pages, which this method
         # rejects as HTML_NOT_FILE. Fetch image-like URLs the way a browser
         # <img> load does; those CDNs serve the bytes for that.
+        url = unwrap_google_translate_url(url)
         self._pacer.pace(url)
         if self._fetch_mode == FETCH_MODE_PLAYWRIGHT:
             result = self._download_via_playwright(
@@ -857,6 +890,8 @@ class OnyxWebCrawler(WebContentProvider):
             content_file=content_file,
             content_type=content_type,
             size_bytes=size_bytes,
+            # true final URL for citations (redirect chain resolved)
+            final_url=unwrap_google_translate_url(response.url),
         )
 
         if content_type and (
@@ -956,6 +991,7 @@ class OnyxWebCrawler(WebContentProvider):
             content=rendered_content.content,
             content_type=content_type,
             size_bytes=len(rendered_content.content),
+            final_url=rendered_content.final_url,
         )
 
     def _fetch_via_playwright(self, url: str) -> WebContent | None:
@@ -1006,7 +1042,9 @@ class OnyxWebCrawler(WebContentProvider):
             _remember_challenger(url)
             return _failed_result(url, FailureReason.CLOUDFLARE_CHALLENGE)
 
-        result = _parse_html_to_web_content(url, rendered.html)
+        result = _parse_html_to_web_content(
+            unwrap_google_translate_url(rendered.final_url) or url, rendered.html
+        )
         if not result.scrape_successful:
             return None
         logger.info("Playwright fallback succeeded for %s", url)

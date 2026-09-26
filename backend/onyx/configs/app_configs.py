@@ -1265,6 +1265,26 @@ if OPEN_URL_FETCH_MODE not in ("auto", "playwright"):
         f"'{OPEN_URL_FETCH_MODE}'"
     )
 
+# Persistent Chromium profile pools shared across processes. When set, the
+# browser-pool lanes launch with on-disk profiles under
+# `<BROWSER_PROFILE_DIR>/lane-<N>` (N < BROWSER_PROFILE_LANES) instead of
+# ephemeral in-memory contexts: cookies and earned challenge clearances
+# survive lane rebuilds. Each profile is guarded by an flock
+# (`lane-<N>.lock`), so the same directory can be shared with another
+# browser operator (e.g. the SearXNG browser lanes on a common docker
+# volume) as long as both sides configure the same lane count. When every
+# lane is held by another process, a fetch runs with an ephemeral context
+# rather than failing. Empty dir (default) keeps the old all-ephemeral
+# behavior.
+BROWSER_PROFILE_DIR = os.environ.get("BROWSER_PROFILE_DIR", "")
+BROWSER_PROFILE_LANES = int(os.environ.get("BROWSER_PROFILE_LANES", "0") or "0")
+
+# Locale and timezone claimed by the fetch browser. Defaults preserved from
+# the previous hardcoded values; point them at the deployment's egress
+# locale so the browser's language and clock agree with its IP.
+WEB_BROWSER_LOCALE = os.environ.get("WEB_BROWSER_LOCALE", "en-US")
+WEB_BROWSER_TIMEZONE = os.environ.get("WEB_BROWSER_TIMEZONE", "America/Los_Angeles")
+
 # Outbound fetch pacing for OnyxWebCrawler (open_url + download_file +
 # analyze_image): requests sharing a provider (imgur, reddit, ...) are
 # serialized and spaced a random gap apart, so image CDNs and search engines

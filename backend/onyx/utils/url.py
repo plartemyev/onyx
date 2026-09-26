@@ -2,7 +2,7 @@ import ipaddress
 import socket
 import unicodedata
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -552,6 +552,206 @@ def ssrf_safe_get(
         raise SSRFException(f"Too many redirects (max {MAX_REDIRECTS})")
 
     return response
+
+
+_GOOGLE_TRANSLATE_HOST_SUFFIX = ".translate.goog"
+
+# Public-suffix knowledge for reversing translate.goog subdomains: the
+# original host is encoded with dots turned into dashes, so the split point
+# between the registrable domain and the suffix has to be recovered. Two-label
+# suffixes must be matched before single-label ones.
+_PUBLIC_SUFFIXES = {
+    # two-label suffixes first in the matcher
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "me.uk",
+    "co.th",
+    "or.th",
+    "ac.th",
+    "in.th",
+    "com.au",
+    "net.au",
+    "org.au",
+    "co.nz",
+    "net.nz",
+    "org.nz",
+    "co.jp",
+    "ne.jp",
+    "or.jp",
+    "co.kr",
+    "or.kr",
+    "co.in",
+    "net.in",
+    "org.in",
+    "com.br",
+    "com.mx",
+    "com.ar",
+    "com.tr",
+    "com.sg",
+    "com.cn",
+    "com.ua",
+    "com.my",
+    "com.ph",
+    "com.vn",
+    "com.co",
+    "com.za",
+    "co.za",
+    "co.id",
+    "co.il",
+}
+
+_SINGLE_LABEL_SUFFIXES = {
+    "com",
+    "org",
+    "net",
+    "edu",
+    "gov",
+    "int",
+    "mil",
+    "info",
+    "biz",
+    "io",
+    "ai",
+    "app",
+    "dev",
+    "me",
+    "tv",
+    "cc",
+    "co",
+    "uk",
+    "de",
+    "fr",
+    "es",
+    "it",
+    "nl",
+    "se",
+    "no",
+    "fi",
+    "dk",
+    "pl",
+    "pt",
+    "ru",
+    "ua",
+    "cz",
+    "sk",
+    "at",
+    "ch",
+    "be",
+    "ie",
+    "gr",
+    "hu",
+    "ro",
+    "bg",
+    "hr",
+    "rs",
+    "lt",
+    "lv",
+    "ee",
+    "is",
+    "jp",
+    "kr",
+    "in",
+    "th",
+    "vn",
+    "id",
+    "ph",
+    "my",
+    "sg",
+    "mm",
+    "kh",
+    "au",
+    "nz",
+    "br",
+    "mx",
+    "ar",
+    "cl",
+    "pe",
+    "za",
+    "ng",
+    "ke",
+    "eg",
+    "ma",
+    "cn",
+    "hk",
+    "tw",
+    "il",
+    "tr",
+    "sa",
+    "ae",
+    "us",
+    "ca",
+    "eu",
+    "cat",
+    "xyz",
+    "online",
+    "site",
+    "store",
+}
+
+
+def _host_from_dashed_segments(segments: list[str]) -> str | None:
+    """Rebuild a hostname from translate.goog's dash-encoded segments.
+
+    Ambiguous by construction (the encoding maps both dots and dashes in the
+    original host to '-'), so the public suffix is matched from the right to
+    pick the split the domain almost certainly used.
+    """
+    for size in (2, 1):
+        if len(segments) > size:
+            suffix = ".".join(segments[-size:])
+            known = (
+                _PUBLIC_SUFFIXES
+                if size == 2
+                else _PUBLIC_SUFFIXES | _SINGLE_LABEL_SUFFIXES
+            )
+            if suffix in known:
+                return ".".join(segments[:-size] + segments[-size:])
+    if len(segments) >= 2:
+        # last segment as the TLD is the only reasonable reading left
+        return ".".join(segments[:-1]) + "." + segments[-1]
+    return None
+
+
+def unwrap_google_translate_url(url: str) -> str:
+    """Map a Google Translate wrapper URL back to the original page URL.
+
+    Google serves auto-translated copies of foreign pages on
+    ``<dashed-host>[.<lang>].translate.goog<path>?_x_tr_...`` (and legacy
+    ``translate.google.com/translate?u=...``). The original host is encoded
+    locally in the subdomain, so the reverse mapping needs no request — the
+    translation service itself is never contacted for it. Non-translate URLs
+    come back unchanged.
+    """
+    try:
+        parts = urlparse(url)
+    except ValueError:
+        return url
+    host = (parts.hostname or "").lower()
+
+    if host == "translate.google.com":
+        params = parse_qs(parts.query)
+        targets = params.get("u") or params.get("url") or []
+        return targets[0] if targets else url
+
+    if not host.endswith(_GOOGLE_TRANSLATE_HOST_SUFFIX):
+        return url
+
+    sub = host[: -len(_GOOGLE_TRANSLATE_HOST_SUFFIX)]
+    params = parse_qs(parts.query)
+    source_lang = (params.get("_x_tr_sl") or [""])[0]
+    if source_lang and source_lang != "auto" and sub.startswith(source_lang + "-"):
+        sub = sub[len(source_lang) + 1 :]
+
+    original_host = _host_from_dashed_segments(sub.split("-"))
+    if not original_host:
+        return url
+
+    query = [(k, v) for k, v in parse_qsl(parts.query) if not k.startswith("_x_tr_")]
+    return urlunparse(
+        ("https", original_host, parts.path, parts.params, urlencode(query), "")
+    )
 
 
 def normalize_url(url: str) -> str:

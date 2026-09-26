@@ -31,6 +31,12 @@ services:
       - "28"
       - searx.webapp:app
     restart: unless-stopped
+    # The persona is a Linux desktop Chromium, but the docker NAT forwards
+    # packets one hop below this container: the kernel default TTL 64 leaves
+    # the VM as 63, telling google "automated guest behind another machine".
+    # 65 here arrives as exactly 64, the TTL of any Linux client on this LAN.
+    sysctls:
+      - net.ipv4.ip_default_ttl=65
     # Cap blast radius: a browser-pool leak must not starve the host again
     # (3 GB fits the pool of 6 headed Chromium lanes plus the worker).
     mem_limit: 3g
@@ -49,17 +55,16 @@ services:
       - SEARXNG_BASE_URL=http://searxng:8080/
       # instance secret, from the gitignored .env (see settings.yml)
       - SEARXNG_SECRET=${SEARXNG_SECRET}
-      # TEMPORARY (2026-09-25): human-flow INFO lines stay visible while the
-      # google IP cooldown is watched (google currently serves unsolvable
-      # challenges to this IP; see the runbook note from 2026-09-25).
-      # Remove this env and general.debug in settings.yml once google clears.
-      - SEARXNG_DEBUG_LOG_LEVEL=INFO
     volumes:
       - ./searxng:/etc/searxng:ro
       # Named volume so the geo-locale cache (/var/cache/searxng/
       # ip_locale.json) survives container recreations: restarts then reuse
       # the resolved identity instead of re-querying the geoip services.
       - searxng-cache:/var/cache/searxng
+      # Persistent per-lane Chromium cookie jars (outgoing.browser_profile_dir
+      # in searxng/settings.yml): one profile per lane, fully isolated, so
+      # earned clearances and engine cookies survive container recreations.
+      - searxng-browser-lanes:/var/lib/searxng/lanes
 
   # Deep Research / long-run chat tuning for slow local inference (48h budget).
   # Merged into the api_server service from docker-compose.yml by compose.
@@ -135,6 +140,21 @@ services:
       # guidance then tells the model to validate and render .puml diagrams
       # locally instead of trying to install something.
       - PYTHON_SANDBOX_PLANTUML=true
+      # Shared persistent Chromium profiles for the browser-pool lanes
+      # (open_url / download_file / web connector fetches): the SAME
+      # lane-N dirs the SearXNG browser lanes use, so search + crawl traffic
+      # comes from one coherent per-lane identity instead of two. The lane
+      # count must match SearXNG's browser_pool_size (6); an flock per lane
+      # dir makes concurrent use exclusive, and a lane held by SearXNG
+      # degrades this side to an ephemeral context instead of failing.
+      # The egress IP is Thai: the browser clock must agree with it.
+      - BROWSER_PROFILE_DIR=/var/lib/searxng/lanes
+      - BROWSER_PROFILE_LANES=6
+      - WEB_BROWSER_TIMEZONE=Asia/Bangkok
+    volumes:
+      # Same volume the searxng service mounts: the six per-lane Chromium
+      # profile dirs are shared between the two operators.
+      - searxng-browser-lanes:/var/lib/searxng/lanes
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
   # processing). Match api_server's slow-inference tolerance plus the
@@ -165,6 +185,14 @@ services:
       # The Arch research executor bundles PlantUML; mention it in run_python
       # guidance (api_server below and here for scheduled chat runs).
       - PYTHON_SANDBOX_PLANTUML=true
+      # Shared persistent Chromium profiles (see api_server above): the web
+      # connector's crawls run here, on the same lane identities the search
+      # side uses. Lane count must match SearXNG's browser_pool_size.
+      - BROWSER_PROFILE_DIR=/var/lib/searxng/lanes
+      - BROWSER_PROFILE_LANES=6
+      - WEB_BROWSER_TIMEZONE=Asia/Bangkok
+    volumes:
+      - searxng-browser-lanes:/var/lib/searxng/lanes
 
   # Persistent-session code interpreter: forked service (0.5.0) built from this
   # repo plus an Arch-based research executor image (pip/uv/poetry, ffmpeg,
@@ -200,3 +228,6 @@ services:
 volumes:
   # Holds /var/cache/searxng for the searxng service (geo-locale cache).
   searxng-cache:
+  # Holds /var/lib/searxng/lanes for the searxng service: one persistent
+  # Chromium profile per browser lane (cookies, storage, clearances).
+  searxng-browser-lanes:

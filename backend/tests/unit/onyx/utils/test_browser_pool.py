@@ -38,7 +38,7 @@ def sessions() -> list[FakeSession]:
 
 @pytest.fixture
 def pool(sessions: list[FakeSession]) -> BrowserPool:
-    def factory() -> FakeSession:
+    def factory(_provider: str) -> FakeSession:
         session = FakeSession()
         sessions.append(session)
         return session
@@ -99,7 +99,7 @@ def test_dead_browser_is_rebuilt_before_serving(
 def test_dead_browser_rebuild_failure_surfaces() -> None:
     built: list[FakeSession] = []
 
-    def factory() -> FakeSession:
+    def factory(_provider: str) -> FakeSession:
         # First build succeeds; every later build fails (e.g. no Chromium).
         if built:
             raise RuntimeError("no chromium")

@@ -261,7 +261,7 @@ class DownloadFileTool(Tool[None]):
                 or fetched.sniffed_mime_type()
                 or "application/octet-stream"
             )
-            filename = filename_from_url(url, mime_type, index)
+            filename = filename_from_url(fetched.final_url or url, mime_type, index)
             try:
                 file_id = file_store.save_file(
                     content=(
@@ -282,7 +282,9 @@ class DownloadFileTool(Tool[None]):
                 )
                 continue
             downloaded_file = DownloadedFile(
-                url=url,
+                # citation URL: the final URL after redirect following (e.g.
+                # google's encrypted /goto wrapper resolved to its target)
+                url=fetched.final_url or url,
                 file_id=file_id,
                 file_url=build_full_frontend_file_url(file_id),
                 filename=filename,

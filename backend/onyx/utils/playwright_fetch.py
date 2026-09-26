@@ -26,6 +26,7 @@ Fingerprint posture (what actually moves the needle with antibot services):
 """
 
 import atexit
+import json
 import os
 import re
 import shutil
@@ -43,6 +44,8 @@ from pydantic import BaseModel
 from onyx.configs.app_configs import (
     CHROMIUM_EXECUTABLE_PATH,
     WEB_BROWSER_CHROME_MAJOR_VERSION,
+    WEB_BROWSER_LOCALE,
+    WEB_BROWSER_TIMEZONE,
     WEB_CONNECTOR_OAUTH_CLIENT_ID,
     WEB_CONNECTOR_OAUTH_CLIENT_SECRET,
     WEB_CONNECTOR_OAUTH_TOKEN_URL,
@@ -50,6 +53,7 @@ from onyx.configs.app_configs import (
     WEB_FETCH_HEADED,
 )
 from onyx.utils.logger import setup_logger
+from onyx.utils.url import unwrap_google_translate_url
 
 logger = setup_logger()
 
@@ -301,86 +305,53 @@ _LAUNCH_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
+    # Keep the physical window equal to the visible viewport (no viewport
+    # emulation): screen size, outerHeight and innerHeight then agree, the
+    # way they do on a real desktop. An emulated viewport inside a larger
+    # window is a geometry fingerprint mismatch.
+    "--window-size=1440,900",
 ]
 
 
-def _stealth_init_script(chrome_major: str, chrome_full: str) -> str:
-    """Init script aligning every JS-visible surface with a Windows Chrome
-    `{chrome_major}` identity. Claims must match the UA/Client Hints set on
-    the context."""
+def _stealth_init_script(language_tags: list[str]) -> str:
+    """Init script with anti-automation patches only.
+
+    The browser presents its real identity (distro Chromium, Linux, the
+    configured locale): kernel, TLS stack and Client-Hint headers already
+    say Linux Chrome, so anything claimed in JS must agree — a Windows
+    persona here would be contradicted on the wire by every other layer.
+    The one fabrication kept is the WebGL vendor/renderer: the VM has no
+    GPU and would otherwise report llvmpipe/SwiftShader, a classic bot
+    signal.
+    """
     return """
     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-    window.chrome = { runtime: {}, loadTimes: function () {}, csi: function () {} };
-    const fakePlugin = (name) => {
-        const p = { name, description: name,
-                    filename: name.toLowerCase().replaceAll(' ', '_'), length: 1 };
-        p[0] = { type: 'application/pdf', suffixes: 'pdf', description: name };
-        return p;
-    };
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => {
-            const arr = [fakePlugin('PDF Viewer'), fakePlugin('Chrome PDF Viewer'),
-                         fakePlugin('Chromium PDF Viewer'),
-                         fakePlugin('Microsoft Edge PDF Viewer'),
-                         fakePlugin('WebKit built-in PDF')];
-            arr.namedItem = (n) => arr.find(p => p.name === n) || null;
-            arr.item = (i) => arr[i] || null;
-            arr.refresh = () => {};
-            return arr;
-        }
-    });
-    Object.defineProperty(navigator, 'mimeTypes', {
-        get: () => {
-            const arr = [{ type: 'application/pdf', suffixes: 'pdf', description: '' }];
-            arr.namedItem = (n) => arr.find(m => m.type === n) || null;
-            arr.item = (i) => arr[i] || null;
-            return arr;
-        }
-    });
-    if (window.Notification) {
-        Object.defineProperty(Notification, 'permission', { get: () => 'default' });
-    }
+    Object.defineProperty(navigator, 'languages',
+                          {get: () => __LANGUAGES__});
     const patchGL = (proto) => {
         const orig = proto.getParameter;
         proto.getParameter = function (param) {
-            // UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL: headless and VM
-            // builds report SwiftShader/llvmpipe, a top bot signal.
+            // UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL: the VM has
+            // no GPU and would report llvmpipe, a classic bot signal.
             if (param === 37445) return 'Google Inc. (NVIDIA)';
             if (param === 37446) {
-                return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650/PCIe/SSE2,'
+                       + ' OpenGL 4.5.0 NVIDIA 550.107.02)';
             }
             return orig.call(this, param);
         };
     };
     if (window.WebGLRenderingContext) patchGL(WebGLRenderingContext.prototype);
     if (window.WebGL2RenderingContext) patchGL(WebGL2RenderingContext.prototype);
-    const brands = [
-        { brand: 'Chromium', version: '__MAJOR__' },
-        { brand: 'Google Chrome', version: '__MAJOR__' },
-        { brand: 'Not:A-Brand', version: '24' },
-    ];
-    Object.defineProperty(navigator, 'userAgentData', {
-        get: () => ({
-            brands,
-            mobile: false,
-            platform: 'Windows',
-            getHighEntropyValues: (hints) => Promise.resolve({
-                architecture: 'x86',
-                bitness: '64',
-                model: '',
-                mobile: false,
-                platform: 'Windows',
-                platformVersion: '15.0.0',
-                uaFullVersion: '__FULL__',
-                fullVersionList: brands,
-                wow64: false,
-            }),
-            toJSON: () => ({ brands, mobile: false, platform: 'Windows' }),
-        }),
-    });
-    """.replace("__MAJOR__", chrome_major).replace("__FULL__", chrome_full)
+    """.replace("__LANGUAGES__", json.dumps(language_tags))
+
+
+def _language_tags(locale: str) -> list[str]:
+    """Language tags in priority order for ``navigator.languages``, so the
+    JS claims agree with the context locale."""
+    base = locale.split("-", 1)[0]
+    tags = [locale] if not base or base == locale else [locale, base]
+    return [tag for tag in tags if tag] or ["en-US"]
 
 
 class RenderedPage(BaseModel):
@@ -401,14 +372,22 @@ class DownloadedContent(BaseModel):
     status: int | None = None
 
 
-def start_playwright() -> tuple[Playwright, BrowserContext]:
+def start_playwright(
+    user_data_dir: str | None = None,
+) -> tuple[Playwright, BrowserContext]:
     """Launch a Playwright-driven Chromium that looks like a real browser.
 
     Prefers a distro-packaged Chromium over Playwright's bundled fork, strips
     Playwright's automation default args, and runs headed under Xvfb when a
-    display is available (headless otherwise). The context's User-Agent and
-    Client Hints derive from the launched binary's real version, so claims
-    always match the actual engine.
+    display is available (headless otherwise). The browser presents its real
+    binary identity (distro Chromium on Linux): the UA, Client Hints and
+    JS-visible surfaces all come from the binary and agree with what the
+    network layer tells, instead of a fabricated persona contradicted by
+    every other layer.
+
+    With ``user_data_dir`` the context is a persistent profile (cookies and
+    earned challenge clearances survive restarts); otherwise it is an
+    ephemeral in-memory context.
 
     Used by both the long-lived web-connector crawl and (via the browser
     pool) the tool fetchers. Caller owns lifecycle and must call
@@ -419,6 +398,7 @@ def start_playwright() -> tuple[Playwright, BrowserContext]:
     playwright = sync_playwright().start()
 
     browser: Browser | None = None
+    context: BrowserContext | None = None
     try:
         executable_path = _discover_chromium()
         if executable_path is None:
@@ -435,52 +415,39 @@ def start_playwright() -> tuple[Playwright, BrowserContext]:
         if display:
             env["DISPLAY"] = display
 
-        browser = playwright.chromium.launch(
-            headless=not headed,
-            executable_path=executable_path,
-            ignore_default_args=_OMIT_DEFAULT_ARGS,
-            args=_LAUNCH_ARGS,
-            env=env,
-        )
+        launch_kwargs: dict[str, Any] = {
+            "headless": not headed,
+            "executable_path": executable_path,
+            "ignore_default_args": _OMIT_DEFAULT_ARGS,
+            "args": _LAUNCH_ARGS,
+            "env": env,
+        }
+        # No User-Agent / Sec-CH-UA overrides and no viewport emulation: the
+        # binary's own identity rides on everything, and with the
+        # --window-size pin the visible viewport is the physical window, so
+        # screen/outer/inner geometry agrees like on a real desktop.
+        context_kwargs: dict[str, Any] = {
+            "locale": WEB_BROWSER_LOCALE,
+            "timezone_id": WEB_BROWSER_TIMEZONE,
+            "viewport": None,
+            "has_touch": False,
+            "java_script_enabled": True,
+            "color_scheme": "light",
+            "ignore_https_errors": True,
+        }
 
-        # Build the claimed identity from the real binary version.
-        chrome_full = browser.version  # e.g. "153.0.8010.52"
-        chrome_major = chrome_full.split(".", 1)[0]
-        user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            f"(KHTML, like Gecko) Chrome/{chrome_major}.0.0.0 Safari/537.36"
-        )
-        sec_ch_ua = (
-            f'"Chromium";v="{chrome_major}", "Google Chrome";v="{chrome_major}", '
-            '"Not:A-Brand";v="24"'
-        )
+        if user_data_dir:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir, **launch_kwargs, **context_kwargs
+            )
+            browser = context.browser
+        else:
+            browser = playwright.chromium.launch(**launch_kwargs)
+            context = browser.new_context(**context_kwargs)
 
-        context = browser.new_context(
-            user_agent=user_agent,
-            viewport={"width": 1440, "height": 900},
-            locale="en-US",
-            timezone_id="America/Los_Angeles",
-            has_touch=False,
-            java_script_enabled=True,
-            color_scheme="light",
-            ignore_https_errors=True,
+        context.add_init_script(
+            _stealth_init_script(_language_tags(WEB_BROWSER_LOCALE))
         )
-
-        context.set_extra_http_headers(
-            {
-                "Accept": DEFAULT_HEADERS["Accept"],
-                "Accept-Language": DEFAULT_HEADERS["Accept-Language"],
-                "Sec-Fetch-Dest": DEFAULT_HEADERS["Sec-Fetch-Dest"],
-                "Sec-Fetch-Mode": DEFAULT_HEADERS["Sec-Fetch-Mode"],
-                "Sec-Fetch-Site": DEFAULT_HEADERS["Sec-Fetch-Site"],
-                "Sec-Fetch-User": DEFAULT_HEADERS["Sec-Fetch-User"],
-                "Sec-CH-UA": sec_ch_ua,
-                "Sec-CH-UA-Mobile": DEFAULT_HEADERS["Sec-CH-UA-Mobile"],
-                "Sec-CH-UA-Platform": DEFAULT_HEADERS["Sec-CH-UA-Platform"],
-            }
-        )
-
-        context.add_init_script(_stealth_init_script(chrome_major, chrome_full))
 
         if (
             WEB_CONNECTOR_OAUTH_CLIENT_ID
@@ -506,6 +473,13 @@ def start_playwright() -> tuple[Playwright, BrowserContext]:
     except BaseException:
         # Stop Playwright before propagating: its node driver process keeps
         # running otherwise, leaking about 130 MiB per failed start.
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close context after a failed launch", exc_info=True
+                )
         if browser is not None:
             try:
                 browser.close()
@@ -726,7 +700,10 @@ def _fetch_bytes_job(
 
     return DownloadedContent(
         content=body,
-        final_url=url,
+        # The URL after redirects: a redirector (e.g. google's encrypted
+        # /goto wrapper) must surface its final target, never a Google
+        # Translate copy.
+        final_url=unwrap_google_translate_url(response.url),
         content_type=content_type,
         status=status,
     )
@@ -755,6 +732,10 @@ def fetch_content_bytes(
     """
     from onyx.utils.request_pacer import provider_key
     from onyx.utils.url import SSRFException, validate_outbound_http_url
+
+    # Never contact the Google Translate service: a wrapper URL is rewritten
+    # to the original page locally before anything is fetched.
+    url = unwrap_google_translate_url(url)
 
     # Playwright bypasses our `requests`-level SSRF protection, so revalidate
     # the URL here before letting the browser touch it.
@@ -831,7 +812,7 @@ def _render_job(
             pass
 
         html = page.content()
-        final_url = page.url
+        final_url = unwrap_google_translate_url(page.url)
         last_modified = response.header_value("Last-Modified") if response else None
         return RenderedPage(
             html=html,
@@ -869,6 +850,10 @@ def fetch_rendered_html(
     """
     from onyx.utils.request_pacer import provider_key
     from onyx.utils.url import SSRFException, validate_outbound_http_url
+
+    # Never contact the Google Translate service: a wrapper URL is rewritten
+    # to the original page locally before anything is fetched.
+    url = unwrap_google_translate_url(url)
 
     try:
         validate_outbound_http_url(
