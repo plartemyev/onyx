@@ -752,6 +752,21 @@ def fetch_existing_llm_providers(
     return providers
 
 
+def fetch_ollama_llm_provider_api_base(db_session: Session) -> str | None:
+    """API base of the first configured Ollama LLM provider.
+
+    Used by engine-capability probes so checks that lack an LLM object (and
+    therefore no explicit api_base) can still reach the engine. None when no
+    Ollama provider is configured.
+    """
+    provider = db_session.scalars(
+        select(LLMProviderModel)
+        .where(LLMProviderModel.provider == "ollama_chat")
+        .order_by(LLMProviderModel.id.asc())
+    ).first()
+    return provider.api_base if provider else None
+
+
 def fetch_first_accessible_llm_provider_by_type(
     provider_type: str,
     user: User,

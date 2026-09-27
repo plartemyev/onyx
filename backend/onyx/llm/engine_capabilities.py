@@ -10,6 +10,7 @@ Fail-safe by design: when the engine cannot answer, callers fall back to
 their static/heuristic logic.
 """
 
+import os
 import threading
 import time
 
@@ -79,3 +80,47 @@ def _fetch_ollama_capabilities(
     # Missing/invalid field: model not present, or an engine whose /api/show
     # does not report capabilities.
     return None
+
+
+_DB_BASE_TTL_S = 300.0
+_DB_BASE_LOCK = threading.Lock()
+_DB_BASE_CACHE: tuple[float, str | None] | None = None
+
+
+def resolve_ollama_api_base(explicit: str | None = None) -> str | None:
+    """Best-effort Ollama base URL for capability probes.
+
+    Order: an explicitly provided base (from the LLM config at hand) wins,
+    then the OLLAMA_API_BASE environment variable, then the first configured
+    Ollama LLM provider in the DB (cached briefly — this path serves call
+    sites that only know provider/model names).
+    """
+    if explicit:
+        return explicit
+
+    env_base = os.environ.get("OLLAMA_API_BASE")
+    if env_base:
+        return env_base
+
+    global _DB_BASE_CACHE
+    now = time.monotonic()
+    with _DB_BASE_LOCK:
+        if _DB_BASE_CACHE is not None and now - _DB_BASE_CACHE[0] < _DB_BASE_TTL_S:
+            return _DB_BASE_CACHE[1]
+
+    api_base: str | None = None
+    try:
+        # Lazy imports: this module is imported from config/capability paths
+        # that must not pull the DB stack (and db/llm imports this package).
+        from onyx.db.engine.sql_engine import get_session_with_current_tenant
+        from onyx.db.llm import fetch_ollama_llm_provider_api_base
+
+        with get_session_with_current_tenant() as db_session:
+            api_base = fetch_ollama_llm_provider_api_base(db_session)
+    except Exception:
+        logger.exception("Failed to resolve the Ollama api_base for capability probes")
+        api_base = None
+
+    with _DB_BASE_LOCK:
+        _DB_BASE_CACHE = (now, api_base)
+    return api_base

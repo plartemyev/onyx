@@ -275,7 +275,9 @@ def run_coding_agent_call(
     turn_index = coding_agent_call.placement.turn_index
     tab_index = coding_agent_call.placement.tab_index
     is_reasoning_model = model_is_reasoning_model(
-        llm.config.model_name, llm.config.model_provider
+        llm.config.model_name,
+        llm.config.model_provider,
+        api_base=llm.config.api_base,
     )
 
     with function_span("coding_agent") as span:

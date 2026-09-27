@@ -379,7 +379,32 @@ def _litellm_supports_reasoning(full_model_name: str) -> bool:
         return result
 
 
-def model_is_reasoning_model(model_name: str, model_provider: str) -> bool:
+# Engines whose API exposes per-model capabilities, so capability checks can
+# query the engine itself instead of trusting static registries (which cannot
+# know custom pulled local models). Extend alongside engine_capabilities.
+_CAPABILITY_AWARE_ENGINES = ("ollama", "ollama_chat")
+
+
+def model_is_reasoning_model(
+    model_name: str, model_provider: str, api_base: str | None = None
+) -> bool:
+    # Capability-aware engines are the freshest source and the only one that
+    # knows custom pulled local models; fail-safe to the static registries
+    # below when the engine cannot answer.
+    if model_provider in _CAPABILITY_AWARE_ENGINES:
+        # Lazy import: config/capability modules must stay import-light and
+        # cycle-free (onyx.db.llm imports this module).
+        from onyx.llm.engine_capabilities import (
+            ollama_model_capabilities,
+            resolve_ollama_api_base,
+        )
+
+        engine_base = api_base or resolve_ollama_api_base()
+        if engine_base:
+            capabilities = ollama_model_capabilities(engine_base, model_name)
+            if capabilities is not None:
+                return "thinking" in capabilities
+
     model_map = get_model_map()
     try:
         model_obj = find_model_obj(

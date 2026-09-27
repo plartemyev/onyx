@@ -691,7 +691,9 @@ class LitellmLLM(LLM):
             uses_adaptive_thinking
             or model_supports_anthropic_thinking
             or any(
-                model_is_reasoning_model(name, self.config.model_provider)
+                model_is_reasoning_model(
+                    name, self.config.model_provider, api_base=self.config.api_base
+                )
                 for name in model_identity_names
             )
         )

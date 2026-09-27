@@ -503,7 +503,9 @@ def run_deep_research_llm_loop(
         #########################################################
         with function_span("research_execution_step") as span:
             is_reasoning_model = model_is_reasoning_model(
-                llm.config.model_name, llm.config.model_provider
+                llm.config.model_name,
+                llm.config.model_provider,
+                api_base=llm.config.api_base,
             )
 
             max_orchestrator_cycles = (
@@ -635,12 +637,7 @@ def run_deep_research_llm_loop(
                     ]
                     | None = custom_processor,
                     _max_tokens: int = dr_tool_call_max_tokens(
-                        dr_is_thinking_model(
-                            llm.config.model_name,
-                            is_reasoning_model,
-                            api_base=llm.config.api_base,
-                            model_provider=llm.config.model_provider,
-                        )
+                        dr_is_thinking_model(llm.config.model_name, is_reasoning_model)
                     ),
                 ) -> tuple[LlmStepResult, bool, list[ToolCallKickoff]]:
                     llm_step_result, has_reasoned = run_llm_step(

@@ -445,12 +445,7 @@ def run_research_agent_call(
                     # separate reserve so reasoning cannot starve the
                     # call itself (same scheme as dr_loop.py).
                     max_tokens=dr_tool_call_max_tokens(
-                        dr_is_thinking_model(
-                            llm.config.model_name,
-                            is_reasoning_model,
-                            api_base=llm.config.api_base,
-                            model_provider=llm.config.model_provider,
-                        )
+                        dr_is_thinking_model(llm.config.model_name, is_reasoning_model)
                     ),
                     # Search steps: moderate diversity helps query and source
                     # coverage; the call format stays constrained by the
@@ -884,7 +879,9 @@ if __name__ == "__main__":
         llm = get_default_llm()
         token_counter = get_llm_token_counter(llm)
         is_reasoning = model_is_reasoning_model(
-            llm.config.model_name, llm.config.model_provider
+            llm.config.model_name,
+            llm.config.model_provider,
+            api_base=llm.config.api_base,
         )
 
         persona = get_default_behavior_persona(db_session, eager_load_for_tools=True)

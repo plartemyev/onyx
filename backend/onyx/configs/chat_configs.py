@@ -165,37 +165,16 @@ DR_THINKING_MODEL_OVERRIDES = tuple(
 )
 
 
-def dr_is_thinking_model(
-    model_name: str,
-    is_reasoning_model: bool,
-    api_base: str | None = None,
-    model_provider: str | None = None,
-) -> bool:
+def dr_is_thinking_model(model_name: str, is_reasoning_model: bool) -> bool:
     """Whether a DR tool-calling step on this model needs the thinking reserve.
 
-    Resolution order:
-    1. The static registry flag (model_is_reasoning_model).
-    2. The engine itself — Ollama-style /api/show capabilities, authoritative
-       for custom pulled local models no registry knows.
-    3. Name heuristics and DR_THINKING_MODEL_OVERRIDES, for engines that
-       expose no capability API or are unreachable.
-
-    Scoped to DR on purpose: the global reasoning flag also flips prompt
-    selection and provider-side temperature handling, which we do not want to
-    change for a local model that merely thinks natively.
+    Engine awareness lives in model_is_reasoning_model, which consults
+    capability-aware engines (Ollama /api/show) before the static registries.
+    The name heuristics and DR_THINKING_MODEL_OVERRIDES here are the extra
+    fallback for engines that expose no capability API.
     """
     if is_reasoning_model:
         return True
-
-    if api_base and model_provider in ("ollama", "ollama_chat"):
-        # Lazy import: chat_configs sits at the base of the config graph and
-        # must stay import-light.
-        from onyx.llm.engine_capabilities import ollama_model_capabilities
-
-        capabilities = ollama_model_capabilities(api_base, model_name)
-        if capabilities is not None:
-            return "thinking" in capabilities
-
     name = model_name.lower()
     if "thinking" in name or "reason" in name:
         return True
