@@ -18,6 +18,7 @@ from onyx.chat.models import (
     ToolCallSimple,
 )
 from onyx.chat.prompt_utils import build_language_section, with_language_section
+from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.configs.chat_configs import (
     DR_FORCE_REPORT_S,
     DR_MAX_ORCHESTRATOR_CYCLES,
@@ -27,6 +28,7 @@ from onyx.configs.chat_configs import (
     DR_TEMPERATURE_PLAN,
     DR_TEMPERATURE_REPORT,
     SKIP_DEEP_RESEARCH_CLARIFICATION,
+    dr_tool_call_max_tokens,
 )
 from onyx.configs.constants import MessageType
 from onyx.configs.model_configs import GEN_AI_INPUT_TOKEN_SAFETY_MARGIN
@@ -78,7 +80,6 @@ from onyx.tools.fake_tools.research_agent import run_research_agent_calls
 from onyx.tools.interface import Tool
 from onyx.tools.models import ToolCallInfo, ToolCallKickoff
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
-from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.tracing.framework.create import ChatTraceMetadata, function_span, trace
 from onyx.utils.logger import setup_logger
 from onyx.utils.timing import log_function_time
@@ -642,14 +643,17 @@ def run_deep_research_llm_loop(
                     user_identity=user_identity,
                     custom_token_processor=custom_processor,
                     is_deep_research=True,
-                    # Even for the reasoning tool, this should be plenty
-                    # The generation here should never be very long as it's just the tool calls.
-                    # This prevents timeouts where the model gets into an endless loop of null or bad tokens.
-                    max_tokens=1024,
+                    # The generation here is just tool calls (plus native
+                    # thinking on reasoning models). The cap targets the
+                    # tool-call answer; thinking models get a separate
+                    # reserve so reasoning cannot starve the call itself.
+                    # It still bounds runaway null/looped token streams.
+                    max_tokens=dr_tool_call_max_tokens(is_reasoning_model),
                     # Tool-calling step: reliability of the call format
                     # matters more than diversity.
                     temperature=DR_TEMPERATURE_ORCHESTRATOR,
                     should_abort=should_abort_from_connected(check_is_connected),
+                    retry_on_truncated_tool_call=True,
                 )
                 if has_reasoned:
                     reasoning_cycles += 1
@@ -801,7 +805,9 @@ def run_deep_research_llm_loop(
                             pre_answer_processing_time=time.monotonic()
                             - processing_start_time,
                             all_injected_file_metadata=all_injected_file_metadata,
-                            should_abort=should_abort_from_connected(check_is_connected),
+                            should_abort=should_abort_from_connected(
+                                check_is_connected
+                            ),
                         )
                         final_turn_index = report_turn_index + (
                             1 if report_reasoned else 0

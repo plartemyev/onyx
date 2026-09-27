@@ -74,6 +74,23 @@ def is_context_overflow_exception(e: Exception) -> bool:
     return _has_context_overflow_marker(str(core_exception))
 
 
+# Ollama's serving layer (llama-server) parses tool calls out of the model's
+# generated text. When generation stops before the tool call's JSON arguments
+# are complete — typically because the output budget was consumed by reasoning
+# — it returns this error, which LiteLLM wraps in APIConnectionError even
+# though nothing is wrong with the connection.
+_TRUNCATED_TOOL_CALL_MARKER = "invalid tool call arguments"
+
+
+def is_truncated_tool_call_exception(e: Exception) -> bool:
+    """Whether the exception is a provider rejecting a tool call whose
+    arguments were cut off mid-generation (seen on Ollama/llama-server)."""
+    core_exception = _unwrap_nested_exception(e)
+    if isinstance(core_exception, ClassifiedLLMError):
+        return core_exception.error_code == "MODEL_TOOL_CALL_MALFORMED"
+    return _TRUNCATED_TOOL_CALL_MARKER in str(core_exception)
+
+
 def _has_context_overflow_marker(error_text: str) -> bool:
     lowered = error_text.lower()
     return any(marker in lowered for marker in _CONTEXT_OVERFLOW_MARKERS)
@@ -335,9 +352,20 @@ def litellm_exception_to_error_msg(
         error_code = "SERVICE_UNAVAILABLE"
         is_retryable = True
     elif isinstance(core_exception, APIConnectionError):
-        error_msg = "API connection error: Failed to connect to the API. Please check your internet connection."
-        error_code = "CONNECTION_ERROR"
-        is_retryable = True
+        if is_truncated_tool_call_exception(core_exception):
+            error_msg = (
+                "The model produced a truncated tool call: its output was cut "
+                "off before the tool call was complete, so the provider "
+                "rejected it. This is a model-output issue (common on local "
+                "models after long reasoning), not a connection problem. The "
+                "step can be retried."
+            )
+            error_code = "MODEL_TOOL_CALL_MALFORMED"
+            is_retryable = True
+        else:
+            error_msg = "API connection error: Failed to connect to the API. Please check your internet connection."
+            error_code = "CONNECTION_ERROR"
+            is_retryable = True
     elif isinstance(core_exception, BudgetExceededError):
         error_msg = (
             "Budget exceeded: You've exceeded your allocated budget for API usage."

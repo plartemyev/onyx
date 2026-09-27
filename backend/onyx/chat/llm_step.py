@@ -44,7 +44,11 @@ from onyx.llm.models import (
 )
 from onyx.llm.prompt_cache.processor import process_with_prompt_cache
 from onyx.llm.request_context import get_llm_request_params
-from onyx.llm.utils import model_needs_formatting_reenabled, model_supports_image_input
+from onyx.llm.utils import (
+    is_truncated_tool_call_exception,
+    model_needs_formatting_reenabled,
+    model_supports_image_input,
+)
 from onyx.prompts.chat_prompts import (
     CODE_BLOCK_MARKDOWN,
     IMAGE_DROP_REMINDER,
@@ -1938,7 +1942,9 @@ def run_llm_step_pkt_generator(
             # raises GeneratorExit inside llm.stream, whose own finally closes
             # the isolated HTTP client — for providers like Ollama the
             # connection drop is what stops server-side generation.
-            stream_iter.close()
+            # The LLM interface types stream() as Iterator, but every
+            # implementation returns a generator, so close() exists at runtime.
+            stream_iter.close()  # ty: ignore[unresolved-attribute]
 
         # Flush any tail text buffered by the filters while checking for split
         # markers or line boundaries.
@@ -2146,32 +2152,39 @@ def run_llm_step(
     timeout_override: int | None = None,
     temperature: float | None = None,
     should_abort: Callable[[], bool] | None = None,
+    retry_on_truncated_tool_call: bool = False,
 ) -> tuple[LlmStepResult, bool]:
     """Wrapper around run_llm_step_pkt_generator that consumes packets and emits them.
 
     Returns:
         tuple[LlmStepResult, bool]: The LLM step result and whether reasoning occurred.
     """
-    step_generator = run_llm_step_pkt_generator(
-        history=history,
-        tool_definitions=tool_definitions,
-        tool_choice=tool_choice,
-        llm=llm,
-        placement=placement,
-        state_container=state_container,
-        citation_processor=citation_processor,
-        reasoning_effort=reasoning_effort,
-        final_documents=final_documents,
-        user_identity=user_identity,
-        custom_token_processor=custom_token_processor,
-        max_tokens=max_tokens,
-        use_existing_tab_index=use_existing_tab_index,
-        is_deep_research=is_deep_research,
-        pre_answer_processing_time=pre_answer_processing_time,
-        timeout_override=timeout_override,
-        temperature=temperature,
-        should_abort=should_abort,
-    )
+
+    def _start_generator() -> Generator[
+        Packet, None, tuple[LlmStepResult, bool] | None
+    ]:
+        return run_llm_step_pkt_generator(
+            history=history,
+            tool_definitions=tool_definitions,
+            tool_choice=tool_choice,
+            llm=llm,
+            placement=placement,
+            state_container=state_container,
+            citation_processor=citation_processor,
+            reasoning_effort=reasoning_effort,
+            final_documents=final_documents,
+            user_identity=user_identity,
+            custom_token_processor=custom_token_processor,
+            max_tokens=max_tokens,
+            use_existing_tab_index=use_existing_tab_index,
+            is_deep_research=is_deep_research,
+            pre_answer_processing_time=pre_answer_processing_time,
+            timeout_override=timeout_override,
+            temperature=temperature,
+            should_abort=should_abort,
+        )
+
+    step_generator = _start_generator()
 
     while True:
         try:
@@ -2180,3 +2193,17 @@ def run_llm_step(
         except StopIteration as e:
             llm_step_result, has_reasoned = e.value
             return llm_step_result, has_reasoned
+        except Exception as e:
+            # A tool call cut off mid-JSON (reasoning consumed the output
+            # budget; Ollama/llama-server rejects the partial call) is a
+            # transient sampling failure, not a connection error — one clean
+            # re-run of the step usually succeeds, while surfacing it would
+            # kill a long research run.
+            if retry_on_truncated_tool_call and is_truncated_tool_call_exception(e):
+                logger.warning(
+                    "Model emitted a truncated tool call; retrying LLM step: %s",
+                    e,
+                )
+                step_generator = _start_generator()
+                continue
+            raise

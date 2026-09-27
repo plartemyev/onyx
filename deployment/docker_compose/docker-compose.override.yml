@@ -79,14 +79,13 @@ services:
   # Merged into the api_server service from docker-compose.yml by compose.
   api_server:
     environment:
-      # Overall Deep Research time budget before the final report is forced (48h)
-      - DR_FORCE_REPORT_S=172800
       # Orchestrator cycles: high enough that time is the only binding limit
       - DR_MAX_ORCHESTRATOR_CYCLES=1000
       - DR_MAX_ORCHESTRATOR_CYCLES_REASONING=500
-      # Sub-agent limits: let each research agent use the full budget (48h)
-      - DR_RESEARCH_AGENT_TIMEOUT_S=172800
-      - DR_RESEARCH_AGENT_FORCE_REPORT_S=172800
+      # The orchestrator fans out one research_agent call per entity in a
+      # single turn; the harness queues them and runs at most one at a time
+      # (serial same-origin traffic, small local model, one GPU server).
+      - DR_MAX_PARALLEL_SUBAGENTS=1
       # Keep the stream buffer replayable across disconnects for the whole run (48h)
       - CHAT_STREAM_BUFFER_TTL_S=172800
       # Slow inference: allow long gaps between streamed chunks
@@ -116,10 +115,12 @@ services:
       # results accumulate cycle over cycle). Keeps each sub-agent cycle a
       # bounded prefill instead of creeping toward the full context window.
       - DR_SUBAGENT_CONTEXT_TOKENS=24000
-      # Sub-agent reports feed the orchestrator, not people. 2500 tokens is
-      # ~4 minutes of generation on this GPU instead of ~17 at the default
-      # 10000, and the final report gets a tighter, denser input.
-      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=2500
+      # Sub-agent reports feed the orchestrator, not people. With the
+      # task-proportional concision directive in the sub-agent report prompt,
+      # narrow per-entity tasks produce short dense reports; 800 tokens is a
+      # hard ceiling (~1.5 minutes of generation on this GPU) and keeps a
+      # 20-entity fan-out far inside the orchestrator's context.
+      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=800
       # 25 -> 50 retrieved chunks fed to the LLM per search
       - MAX_CHUNKS_FED_TO_CHAT=50
       # Tool-calling reimplementation evaluation: dump full request history,

@@ -22,14 +22,17 @@ from onyx.chat.llm_loop import construct_message_history
 from onyx.chat.llm_step import run_llm_step, run_llm_step_pkt_generator
 from onyx.chat.models import ChatMessageSimple, LlmStepResult, ToolCallSimple
 from onyx.chat.prompt_utils import build_language_section, with_language_section
+from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.configs.chat_configs import (
     DR_MAX_INTERMEDIATE_REPORT_TOKENS,
+    DR_MAX_PARALLEL_SUBAGENTS,
     DR_REPORT_LLM_TIMEOUT_S,
     DR_RESEARCH_AGENT_FORCE_REPORT_S,
     DR_RESEARCH_AGENT_TIMEOUT_S,
     DR_SUBAGENT_CONTEXT_TOKENS,
     DR_TEMPERATURE_REPORT,
     DR_TEMPERATURE_RESEARCH_AGENT,
+    dr_tool_call_max_tokens,
 )
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDocsResponse
@@ -92,9 +95,8 @@ from onyx.tools.utils import (
     tool_response_generated_files,
 )
 from onyx.tracing.framework.create import function_span
-from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.utils.logger import setup_logger
-from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
+from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel_bounded
 
 logger = setup_logger()
 
@@ -281,6 +283,12 @@ def run_research_agent_call(
 ) -> ResearchAgentCallResult | None:
     turn_index = research_agent_call.placement.turn_index
     tab_index = research_agent_call.placement.tab_index
+    # Extracted before the try: the exception handlers below log this task, so
+    # an assignment inside try would leave it unbound for early failures (and
+    # a missing task key must not raise past the handlers).
+    research_topic: str = research_agent_call.tool_args.get(
+        RESEARCH_AGENT_TASK_KEY, "unknown"
+    )
     with function_span("research_agent") as span:
         span.span_data.input = str(research_agent_call.tool_args)
         try:
@@ -300,9 +308,6 @@ def run_research_agent_call(
             current_tools = tools
             reasoning_cycles = 0
             just_ran_web_search = False
-
-            # If this fails to parse, we can't run the loop anyway, let this one fail in that case
-            research_topic = research_agent_call.tool_args[RESEARCH_AGENT_TASK_KEY]
 
             emitter.emit(
                 Packet(
@@ -434,11 +439,11 @@ def run_research_agent_call(
                     custom_token_processor=custom_processor,
                     use_existing_tab_index=True,
                     is_deep_research=True,
-                    # In case the model is tripped up by the long context and gets into an endless loop of
-                    # things like null tokens, we set a max token limit here. The call will likely not be valid
-                    # in these situations but it at least allows a chance of recovery. None of the tool calls should
-                    # be this long.
-                    max_tokens=1000,
+                    # Bounds runaway null/looped token streams. The cap
+                    # targets the tool-call answer; thinking models get a
+                    # separate reserve so reasoning cannot starve the
+                    # call itself (same scheme as dr_loop.py).
+                    max_tokens=dr_tool_call_max_tokens(is_reasoning_model),
                     # Search steps: moderate diversity helps query and source
                     # coverage; the call format stays constrained by the
                     # low-ish value.
@@ -446,6 +451,7 @@ def run_research_agent_call(
                     # Abort the provider stream when the user presses stop;
                     # LLMStreamCancelled is handled by the except below.
                     should_abort=should_abort_from_connected(check_is_connected),
+                    retry_on_truncated_tool_call=True,
                 )
                 if has_reasoned:
                     reasoning_cycles += 1
@@ -742,32 +748,76 @@ def run_research_agent_calls(
     reasoning_effort: ReasoningEffort = ReasoningEffort.LOW,
     check_is_connected: Callable[[], bool] | None = None,
 ) -> CombinedResearchAgentCallResult:
-    # Run all research agent calls in parallel with timeout
+    # Run all research agent calls (bounded by DR_MAX_PARALLEL_SUBAGENTS when
+    # set) with a per-call timeout. Every call's start, finish, and outcome is
+    # logged: a call that ends without raising but without a report (the
+    # silent-report-loss signature) must be visible in the logs.
+
+    def _instrumented_call(
+        call_index: int,
+        research_agent_call: ToolCallKickoff,
+        parent_tool_call_id: str,
+    ) -> ResearchAgentCallResult | None:
+        task = str(
+            research_agent_call.tool_args.get(RESEARCH_AGENT_TASK_KEY, "unknown")
+        )
+        short_task = task if len(task) <= 160 else task[:157] + "..."
+        logger.info(
+            "Research agent call %d/%d starting (tab %s): %s",
+            call_index + 1,
+            len(research_agent_calls),
+            research_agent_call.placement.tab_index,
+            short_task,
+        )
+        started = time.monotonic()
+        result = run_research_agent_call(
+            research_agent_call=research_agent_call,
+            parent_tool_call_id=parent_tool_call_id,
+            tools=tools,
+            emitter=emitter,
+            state_container=state_container,
+            llm=llm,
+            is_reasoning_model=is_reasoning_model,
+            token_counter=token_counter,
+            user_identity=user_identity,
+            language_section=language_section,
+            reasoning_effort=reasoning_effort,
+            check_is_connected=check_is_connected,
+        )
+        elapsed = time.monotonic() - started
+        if result is None or result.intermediate_report is None:
+            logger.error(
+                "Research agent call %d/%d returned NO report after %.1fs "
+                "(task: %s). If no exception or timeout was logged above, "
+                "this is a silent report loss and a bug.",
+                call_index + 1,
+                len(research_agent_calls),
+                elapsed,
+                short_task,
+            )
+        else:
+            logger.info(
+                "Research agent call %d/%d finished in %.1fs with a %d-char report",
+                call_index + 1,
+                len(research_agent_calls),
+                elapsed,
+                len(result.intermediate_report),
+            )
+        return result
+
     functions_with_args = [
         (
-            run_research_agent_call,
-            (
-                research_agent_call,
-                parent_tool_call_id,
-                tools,
-                emitter,
-                state_container,
-                llm,
-                is_reasoning_model,
-                token_counter,
-                user_identity,
-                language_section,
-                reasoning_effort,
-                check_is_connected,
-            ),
+            _instrumented_call,
+            (call_index, research_agent_call, parent_tool_call_id),
         )
-        for research_agent_call, parent_tool_call_id in zip(
-            research_agent_calls, parent_tool_call_ids, strict=False
+        for call_index, (research_agent_call, parent_tool_call_id) in enumerate(
+            zip(research_agent_calls, parent_tool_call_ids, strict=False)
         )
     ]
 
-    research_agent_call_results = run_functions_tuples_in_parallel(
+    research_agent_call_results = run_functions_tuples_in_parallel_bounded(
         functions_with_args,
+        max_parallel=DR_MAX_PARALLEL_SUBAGENTS,
         allow_failures=False,
         # Note: This simply allows the main thread to continue with an error message
         # It does not kill the background thread which may still write to the state objects passed to it

@@ -4,6 +4,7 @@ import concurrent.futures
 import contextvars
 import copy
 import threading
+import time
 import uuid
 from collections.abc import Callable, Coroutine, Iterator, MutableMapping, Sequence
 from concurrent.futures import (
@@ -382,6 +383,116 @@ def run_functions_tuples_in_parallel(
 
     results.sort(key=lambda x: x[0])
     return [result for index, result in results]
+
+
+def run_functions_tuples_in_parallel_bounded(
+    functions_with_args: Sequence[tuple[Callable[..., Any], tuple[Any, ...]]],
+    *,
+    max_parallel: int,
+    timeout: float | None = None,
+    timeout_callback: (
+        Callable[[int, Callable[..., Any], tuple[Any, ...]], Any] | None
+    ) = None,
+    allow_failures: bool = False,
+) -> list[Any]:
+    """Like `run_functions_tuples_in_parallel`, but with bounded concurrency
+    and a per-call timeout measured from the call's own start.
+
+    The unbounded runner's `wait(timeout=)` clock starts at submission, so with
+    more calls than workers the queued calls' timeouts are eaten by queue wait.
+    Here at most `max_parallel` calls run at once, each timed from the moment
+    it actually starts; when a call's deadline expires, the timeout callback
+    supplies its result, the expired thread keeps running in the background
+    (threads cannot be killed — same caveat as the unbounded runner), and the
+    next queued call starts.
+
+    `max_parallel <= 0` delegates to the unbounded runner, preserving the
+    historical one-thread-per-call behavior.
+    """
+    if max_parallel <= 0 or len(functions_with_args) <= max_parallel:
+        return run_functions_tuples_in_parallel(
+            functions_with_args,
+            allow_failures=allow_failures,
+            timeout=timeout,
+            timeout_callback=timeout_callback,
+        )
+
+    if len(functions_with_args) > 1:
+        logger.info(
+            "Running %d calls with max_parallel=%d (per-call timeout: %ss)",
+            len(functions_with_args),
+            max_parallel,
+            timeout,
+        )
+
+    # One thread per call (not one per slot): a timed-out call's thread keeps
+    # running in the background and would otherwise permanently occupy a
+    # shared worker, starving every queued call behind it. Concurrency is
+    # enforced by the scheduler loop below, not by the pool size.
+    executor = ThreadPoolExecutor(max_workers=len(functions_with_args))
+    results: dict[int, Any] = {}
+    # future -> (index, func, args, start_time)
+    running: dict[Future, tuple[int, Callable[..., Any], tuple[Any, ...], float]] = {}
+    pending = list(enumerate(functions_with_args))
+    try:
+        while pending or running:
+            # Fill free slots. A slot frees when a call completes or times
+            # out; the freshly submitted call starts immediately on its own
+            # dedicated thread.
+            while pending and len(running) < max_parallel:
+                index, (func, args) = pending.pop(0)
+                future = executor.submit(contextvars.copy_context().run, func, *args)
+                running[future] = (index, func, args, time.monotonic())
+
+            # Sleep until the nearest running call's deadline or any completion.
+            if running and timeout is not None:
+                now = time.monotonic()
+                nearest_deadline = min(
+                    start + timeout for _, _, _, start in running.values()
+                )
+                wait_timeout = max(0.0, nearest_deadline - now)
+            else:
+                wait_timeout = None
+            done, _ = wait(
+                list(running.keys()), timeout=wait_timeout, return_when=FIRST_COMPLETED
+            )
+
+            for future in done:
+                index, func, args, start = running.pop(future)
+                try:
+                    results[index] = future.result()
+                except Exception as e:
+                    logger.exception("Function at index %s failed due to %s", index, e)
+                    results[index] = None
+                    if not allow_failures:
+                        raise
+
+            # Expire deadlines of calls that are still running.
+            now = time.monotonic()
+            for future, (index, func, args, start) in list(running.items()):
+                if timeout is not None and now - start > timeout:
+                    running.pop(future)
+                    # Only effective if not yet started; started threads keep
+                    # running in the background.
+                    future.cancel()
+                    logger.warning(
+                        "Function at index %s timed out after %s seconds",
+                        index,
+                        timeout,
+                    )
+                    if timeout_callback:
+                        results[index] = timeout_callback(index, func, args)
+                    else:
+                        results[index] = None
+                        if not allow_failures:
+                            raise TimeoutError(
+                                f"Function at index {index} timed out after {timeout} seconds"
+                            )
+    finally:
+        # Timed-out threads keep running in the background; don't wait for them.
+        executor.shutdown(wait=False)
+
+    return [results[index] for index in range(len(functions_with_args))]
 
 
 class FunctionCall(Generic[R]):

@@ -9,6 +9,7 @@ import pytest
 from onyx.utils.threadpool_concurrency import (
     ThreadSafeDict,
     parallel_yield,
+    run_functions_tuples_in_parallel_bounded,
     run_in_background,
     run_with_timeout,
     wait_on_background,
@@ -16,6 +17,19 @@ from onyx.utils.threadpool_concurrency import (
 
 # Create a context variable for testing
 test_context_var = contextvars.ContextVar("test_var", default="default")
+
+
+def _track_concurrency(
+    counter: list[int], lock: threading.Lock, sleep_s: float, value: int
+) -> int:
+    """Run a call that records its peak observed concurrency."""
+    with lock:
+        counter[0] += 1
+        counter[1] = max(counter[1], counter[0])
+    time.sleep(sleep_s)
+    with lock:
+        counter[0] -= 1
+    return value
 
 
 def test_run_with_timeout_completes() -> None:
@@ -393,3 +407,117 @@ def test_parallel_yield_non_blocking() -> None:
     # Verify no values are missing
     assert len(results) == 300  # Should have all values from 0 to 299
     assert sorted(results) == list(range(300))
+
+
+def test_bounded_runner_preserves_order_and_results() -> None:
+    """Results must come back indexed by submission order, not completion."""
+    functions = [
+        (lambda v=v: v, ()) for v in [5, 1, 4, 2, 3]
+    ]  # later entries finish sooner
+    results = run_functions_tuples_in_parallel_bounded(
+        functions, max_parallel=1, timeout=10.0
+    )
+    assert results == [5, 1, 4, 2, 3]
+
+
+def test_bounded_runner_serializes_at_max_parallel_one() -> None:
+    """max_parallel=1 runs calls one at a time (the DR fan-out deployment)."""
+    lock = threading.Lock()
+    counter = [0, 0]  # [current, peak]
+    functions = [(_track_concurrency, (counter, lock, 0.05, i)) for i in range(5)]
+    results = run_functions_tuples_in_parallel_bounded(
+        functions, max_parallel=1, timeout=30.0
+    )
+    assert results == [0, 1, 2, 3, 4]
+    assert counter[1] == 1  # never two calls at once
+
+
+def test_bounded_runner_parallel_at_higher_max_parallel() -> None:
+    """max_parallel=2 actually runs two calls concurrently."""
+    lock = threading.Lock()
+    counter = [0, 0]
+    functions = [(_track_concurrency, (counter, lock, 0.2, i)) for i in range(4)]
+    results = run_functions_tuples_in_parallel_bounded(
+        functions, max_parallel=2, timeout=30.0
+    )
+    assert results == [0, 1, 2, 3]
+    assert counter[1] == 2
+
+
+def test_bounded_runner_timeout_measured_from_call_start() -> None:
+    """A queued call gets its full timeout budget from ITS start, not from
+    submission — this is the core difference vs the unbounded runner."""
+    calls: list[float] = []
+
+    def slow_first() -> str:
+        calls.append(time.monotonic())
+        time.sleep(0.4)
+        return "first"
+
+    def hangs() -> str:
+        calls.append(time.monotonic())
+        time.sleep(5.0)
+        return "never"
+
+    def timeout_result(index: int, _func: object, _args: tuple) -> str:
+        return f"timed-out-{index}"
+
+    start = time.monotonic()
+    results = run_functions_tuples_in_parallel_bounded(
+        [(slow_first, ()), (hangs, ())],
+        max_parallel=1,
+        timeout=0.5,
+        timeout_callback=timeout_result,
+    )
+    elapsed = time.monotonic() - start
+
+    assert results == ["first", "timed-out-1"]
+    # The second call started only after the first finished (~0.4s in) and
+    # timed out 0.5s after that — under the old submit-time clock it would
+    # have been killed instantly as "queued too long".
+    assert len(calls) == 2
+    assert calls[1] - calls[0] >= 0.35
+    assert 0.8 <= elapsed < 3.0
+
+
+def test_bounded_runner_uses_timeout_callback_result() -> None:
+    """Expired calls contribute the callback's value and don't block others."""
+
+    def hangs() -> str:
+        time.sleep(3.0)
+        return "never"
+
+    def quick() -> str:
+        return "quick"
+
+    results = run_functions_tuples_in_parallel_bounded(
+        [(hangs, ()), (quick, ())],
+        max_parallel=1,
+        timeout=0.3,
+        timeout_callback=lambda index, _func, _args: f"cb-{index}",
+    )
+    assert results == ["cb-0", "quick"]
+
+
+def test_bounded_runner_raises_without_callback_on_failure() -> None:
+    """allow_failures=False (the DR setting) re-raises call failures."""
+
+    def broken() -> None:
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        run_functions_tuples_in_parallel_bounded(
+            [(broken, ())], max_parallel=1, timeout=10.0
+        )
+
+
+def test_bounded_runner_delegates_unbounded() -> None:
+    """max_parallel=0 keeps the historical one-thread-per-call behavior."""
+    lock = threading.Lock()
+    counter = [0, 0]
+    functions = [(_track_concurrency, (counter, lock, 0.2, i)) for i in range(4)]
+    results = run_functions_tuples_in_parallel_bounded(
+        functions, max_parallel=0, timeout=30.0
+    )
+    assert results == [0, 1, 2, 3]
+    assert counter[1] == 4  # all four ran concurrently

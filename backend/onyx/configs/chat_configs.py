@@ -130,6 +130,33 @@ DR_SUBAGENT_CONTEXT_TOKENS = _optional_int_env("DR_SUBAGENT_CONTEXT_TOKENS")
 DR_MAX_INTERMEDIATE_REPORT_TOKENS = _optional_int_env(
     "DR_MAX_INTERMEDIATE_REPORT_TOKENS"
 )
+# Generation caps for DR tool-calling steps (orchestrator and research
+# sub-agent cycles). `max_tokens` is an upfront provider cap over ALL
+# generated tokens — thinking, tool-call JSON, and answer text together — and
+# no provider API caps "answer only". Thinking-capable models burn a big
+# share of a tight cap on reasoning and get cut off mid-tool-call-JSON, which
+# Ollama's server rejects as an invalid tool call. The cap therefore buys the
+# answer budget its own headroom: reasoning models get the answer budget plus
+# a separate thinking reserve; plain models keep the tight cap because their
+# entire output is answer. The stream-level reasoning/answer split in
+# llm_step is what keeps these two distinguishable in logs.
+DR_TOOL_CALL_ANSWER_TOKENS = int(os.environ.get("DR_TOOL_CALL_ANSWER_TOKENS") or "1024")
+DR_THINKING_TOKEN_RESERVE = int(os.environ.get("DR_THINKING_TOKEN_RESERVE") or "3072")
+
+
+def dr_tool_call_max_tokens(is_reasoning_model: bool) -> int:
+    """Total generation cap for a DR tool-calling step on the given model."""
+    return DR_TOOL_CALL_ANSWER_TOKENS + (
+        DR_THINKING_TOKEN_RESERVE if is_reasoning_model else 0
+    )
+
+
+# Maximum research sub-agents running at the same time. 0 = unbounded (one
+# thread per dispatched call — the historical behavior). The orchestrator
+# prompt is intentionally unaware of this limit: it fans out one call per
+# entity in a single turn, and this harness queues the rest, running at most
+# `max_parallel` at once with each call's timeout measured from its own start.
+DR_MAX_PARALLEL_SUBAGENTS = int(os.environ.get("DR_MAX_PARALLEL_SUBAGENTS") or "0")
 # Timeout for non-streaming secondary LLM flows (e.g. search section-relevance
 # classification and section-expansion selection). These are short, low-effort
 # calls; the bound exists so a stalled provider connection fails fast into the

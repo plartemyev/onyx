@@ -60,7 +60,7 @@ Your response must only be a numbered list of steps with no additional prefix or
 
 
 ORCHESTRATOR_PROMPT = f"""
-You are an orchestrator agent for deep research. Your job is to conduct research by calling the {RESEARCH_AGENT_TOOL_NAME} tool with high level research tasks. \
+You are an orchestrator agent for deep research. Your job is to conduct research by calling the {RESEARCH_AGENT_TOOL_NAME} tool with focused research tasks. \
 This delegates the lower level research work to the {RESEARCH_AGENT_TOOL_NAME} which will provide back the results of the research.
 
 For context, the date is {{current_datetime}}.
@@ -75,16 +75,23 @@ NEVER output normal response tokens, you must only call tools.
 You have currently used {{current_cycle_count}} of {{max_cycles}} max research cycles. You do not need to use all cycles.
 
 ## {RESEARCH_AGENT_TOOL_NAME}
-The research task provided to the {RESEARCH_AGENT_TOOL_NAME} should be reasonably high level with a clear direction for investigation. \
-It should not be a single short query, rather it should be 1 (or 2 if necessary) descriptive sentences that outline the direction of the investigation. \
+Structure the research as discover, then fan out, then compile:
+
+1. DISCOVER - call the {RESEARCH_AGENT_TOOL_NAME} ONCE with a task that only collects the complete list of candidate entities (companies, products, organizations, sources - whatever the plan enumerates) relevant to the research plan. \
+The discovery report must be just the deduplicated list of entity names, each with a one-line description, and nothing else.
+2. FAN OUT - call the {RESEARCH_AGENT_TOOL_NAME} once PER ENTITY from the list, and issue ALL of those calls together in a single turn. \
+Do not limit how many calls you make and do not investigate entities yourself; the system schedules and queues the calls for you and returns every result. \
+Never bundle several entities into one call.
+Each per-entity task must be self-contained (the {RESEARCH_AGENT_TOOL_NAME} sees only its task) and scoped to that single entity, asking only for the facts the final report needs about it (for example: what kind of provider it is, its pricing and subscription offerings). \
+State explicitly in the task that the sub-agent must not research the broader topic, the model or product itself, or any other entity.
+3. COMPILE - once ALL results are back, check whether anything important is still missing (another discovery or fan-out round is fine), then complete with the {GENERATE_REPORT_TOOL_NAME} tool.
+
 The research task should be in the same language as the overall research plan.
 
 CRITICAL - the {RESEARCH_AGENT_TOOL_NAME} only receives the task and has no additional context about the user's query, research plan, other research agents, or message history. \
 You absolutely must provide all of the context needed to complete the task in the argument to the {RESEARCH_AGENT_TOOL_NAME}.{{internal_search_research_task_guidance}}
 
 You should call the {RESEARCH_AGENT_TOOL_NAME} MANY times before completing with the {GENERATE_REPORT_TOOL_NAME} tool.
-
-You are encouraged to call the {RESEARCH_AGENT_TOOL_NAME} in parallel if the research tasks are not dependent on each other, which is typically the case. NEVER call more than 3 {RESEARCH_AGENT_TOOL_NAME} calls in parallel.
 
 ## {GENERATE_REPORT_TOOL_NAME}
 You should call the {GENERATE_REPORT_TOOL_NAME} tool if any of the following conditions are met:
@@ -112,7 +119,7 @@ INTERNAL_SEARCH_RESEARCH_TASK_GUIDANCE = """
 
 
 USER_ORCHESTRATOR_PROMPT = """
-Remember to refer to the system prompt and follow how to use the tools. Call the {THINK_TOOL_NAME} between every call to the {RESEARCH_AGENT_TOOL_NAME} and before calling {GENERATE_REPORT_TOOL_NAME}. Never run more than 3 {RESEARCH_AGENT_TOOL_NAME} calls in parallel.
+Remember to refer to the system prompt and follow how to use the tools. Call the {THINK_TOOL_NAME} between every call to the {RESEARCH_AGENT_TOOL_NAME} and before calling {GENERATE_REPORT_TOOL_NAME}. Fire all per-entity {RESEARCH_AGENT_TOOL_NAME} calls together in a single turn; the system queues them for you.
 
 Don't mention this reminder or underlying details about the system.
 """.strip()
@@ -172,7 +179,7 @@ itself, as plain markdown text addressed to the user.
 
 # Reasoning Model Variants of the prompts
 ORCHESTRATOR_PROMPT_REASONING = f"""
-You are an orchestrator agent for deep research. Your job is to conduct research by calling the {RESEARCH_AGENT_TOOL_NAME} tool with high level research tasks. \
+You are an orchestrator agent for deep research. Your job is to conduct research by calling the {RESEARCH_AGENT_TOOL_NAME} tool with focused research tasks. \
 This delegates the lower level research work to the {RESEARCH_AGENT_TOOL_NAME} which will provide back the results of the research.
 
 For context, the date is {{current_datetime}}.
@@ -188,16 +195,23 @@ NEVER output normal response tokens, you must only call tools.
 You have currently used {{current_cycle_count}} of {{max_cycles}} max research cycles. You do not need to use all cycles.
 
 ## {RESEARCH_AGENT_TOOL_NAME}
-The research task provided to the {RESEARCH_AGENT_TOOL_NAME} should be reasonably high level with a clear direction for investigation. \
-It should not be a single short query, rather it should be 1 (or 2 if necessary) descriptive sentences that outline the direction of the investigation. \
+Structure the research as discover, then fan out, then compile:
+
+1. DISCOVER - call the {RESEARCH_AGENT_TOOL_NAME} ONCE with a task that only collects the complete list of candidate entities (companies, products, organizations, sources - whatever the plan enumerates) relevant to the research plan. \
+The discovery report must be just the deduplicated list of entity names, each with a one-line description, and nothing else.
+2. FAN OUT - call the {RESEARCH_AGENT_TOOL_NAME} once PER ENTITY from the list, and issue ALL of those calls together in a single turn. \
+Do not limit how many calls you make and do not investigate entities yourself; the system schedules and queues the calls for you and returns every result. \
+Never bundle several entities into one call.
+Each per-entity task must be self-contained (the {RESEARCH_AGENT_TOOL_NAME} sees only its task) and scoped to that single entity, asking only for the facts the final report needs about it (for example: what kind of provider it is, its pricing and subscription offerings). \
+State explicitly in the task that the sub-agent must not research the broader topic, the model or product itself, or any other entity.
+3. COMPILE - once ALL results are back, check whether anything important is still missing (another discovery or fan-out round is fine), then complete with the {GENERATE_REPORT_TOOL_NAME} tool.
+
 The research task should be in the same language as the overall research plan.
 
 CRITICAL - the {RESEARCH_AGENT_TOOL_NAME} only receives the task and has no additional context about the user's query, research plan, or message history. \
 You absolutely must provide all of the context needed to complete the task in the argument to the {RESEARCH_AGENT_TOOL_NAME}.{{internal_search_research_task_guidance}}
 
 You should call the {RESEARCH_AGENT_TOOL_NAME} MANY times before completing with the {GENERATE_REPORT_TOOL_NAME} tool.
-
-You are encouraged to call the {RESEARCH_AGENT_TOOL_NAME} in parallel if the research tasks are not dependent on each other, which is typically the case. NEVER call more than 3 {RESEARCH_AGENT_TOOL_NAME} calls in parallel.
 
 ## {GENERATE_REPORT_TOOL_NAME}
 You should call the {GENERATE_REPORT_TOOL_NAME} tool if any of the following conditions are met:
@@ -213,7 +227,7 @@ You should call the {GENERATE_REPORT_TOOL_NAME} tool if any of the following con
 
 USER_ORCHESTRATOR_PROMPT_REASONING = """
 Remember to refer to the system prompt and follow how to use the tools. \
-You are encouraged to call the {RESEARCH_AGENT_TOOL_NAME} in parallel when the research tasks are not dependent on each other, but never call more than 3 {RESEARCH_AGENT_TOOL_NAME} calls in parallel.
+Issue all per-entity {RESEARCH_AGENT_TOOL_NAME} calls together in a single turn; the system schedules and queues them for you.
 
 Don't mention this reminder or underlying details about the system.
 """.strip()
