@@ -1,3 +1,4 @@
+import fnmatch
 import logging
 import os
 
@@ -149,6 +150,56 @@ def dr_tool_call_max_tokens(is_reasoning_model: bool) -> int:
     return DR_TOOL_CALL_ANSWER_TOKENS + (
         DR_THINKING_TOKEN_RESERVE if is_reasoning_model else 0
     )
+
+
+# Model names/patterns for thinking-capable models that Onyx's capability
+# registry cannot classify — custom Ollama pulls have no litellm entry, so
+# model_is_reasoning_model returns False and the thinking reserve would never
+# apply. Comma-separated exact names or fnmatch patterns, e.g.
+# "ornith-1.5:9b,qwen3*-thinking*". Matched case-insensitively against the
+# model name.
+DR_THINKING_MODEL_OVERRIDES = tuple(
+    s.strip().lower()
+    for s in os.environ.get("DR_THINKING_MODEL_OVERRIDES", "").split(",")
+    if s.strip()
+)
+
+
+def dr_is_thinking_model(
+    model_name: str,
+    is_reasoning_model: bool,
+    api_base: str | None = None,
+    model_provider: str | None = None,
+) -> bool:
+    """Whether a DR tool-calling step on this model needs the thinking reserve.
+
+    Resolution order:
+    1. The static registry flag (model_is_reasoning_model).
+    2. The engine itself — Ollama-style /api/show capabilities, authoritative
+       for custom pulled local models no registry knows.
+    3. Name heuristics and DR_THINKING_MODEL_OVERRIDES, for engines that
+       expose no capability API or are unreachable.
+
+    Scoped to DR on purpose: the global reasoning flag also flips prompt
+    selection and provider-side temperature handling, which we do not want to
+    change for a local model that merely thinks natively.
+    """
+    if is_reasoning_model:
+        return True
+
+    if api_base and model_provider in ("ollama", "ollama_chat"):
+        # Lazy import: chat_configs sits at the base of the config graph and
+        # must stay import-light.
+        from onyx.llm.engine_capabilities import ollama_model_capabilities
+
+        capabilities = ollama_model_capabilities(api_base, model_name)
+        if capabilities is not None:
+            return "thinking" in capabilities
+
+    name = model_name.lower()
+    if "thinking" in name or "reason" in name:
+        return True
+    return any(fnmatch.fnmatch(name, pat) for pat in DR_THINKING_MODEL_OVERRIDES)
 
 
 # Maximum research sub-agents running at the same time. 0 = unbounded (one

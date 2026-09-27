@@ -86,6 +86,10 @@ services:
       # single turn; the harness queues them and runs at most one at a time
       # (serial same-origin traffic, small local model, one GPU server).
       - DR_MAX_PARALLEL_SUBAGENTS=1
+      # Fallback for thinking-capable local models the capability registry
+      # cannot classify. Primary source is the engine itself: Ollama's
+      # /api/show reports per-model capabilities (cached in-process).
+      - DR_THINKING_MODEL_OVERRIDES=ornith-1.5:9b
       # Keep the stream buffer replayable across disconnects for the whole run (48h)
       - CHAT_STREAM_BUFFER_TTL_S=172800
       # Slow inference: allow long gaps between streamed chunks

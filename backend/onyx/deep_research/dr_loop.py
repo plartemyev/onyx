@@ -4,7 +4,7 @@
 
 import time
 from collections.abc import Callable
-from typing import cast
+from typing import Any, cast
 
 from onyx.chat.chat_state import ChatStateContainer
 from onyx.chat.citation_processor import CitationMapping, DynamicCitationProcessor
@@ -28,6 +28,7 @@ from onyx.configs.chat_configs import (
     DR_TEMPERATURE_PLAN,
     DR_TEMPERATURE_REPORT,
     SKIP_DEEP_RESEARCH_CLARIFICATION,
+    dr_is_thinking_model,
     dr_tool_call_max_tokens,
 )
 from onyx.configs.constants import MessageType
@@ -49,6 +50,7 @@ from onyx.deep_research.utils import (
 from onyx.llm.exceptions import LLMStreamCancelled
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.model_capabilities import model_is_reasoning_model
+from onyx.llm.model_response import Delta
 from onyx.llm.models import ReasoningEffort, ToolChoiceOptions
 from onyx.prompts.deep_research.orchestration_layer import (
     CLARIFICATION_PROMPT,
@@ -621,61 +623,94 @@ def run_deep_research_llm_loop(
                     else None
                 )
 
-                llm_step_result, has_reasoned = run_llm_step(
-                    emitter=emitter,
-                    history=truncated_message_history,
-                    tool_definitions=get_orchestrator_tools(
-                        include_think_tool=not is_reasoning_model
-                    ),
-                    tool_choice=ToolChoiceOptions.REQUIRED,
-                    llm=llm,
-                    reasoning_effort=reasoning_effort,
-                    placement=Placement(
-                        turn_index=orchestrator_start_turn_index
-                        + cycle
-                        + reasoning_cycles
-                    ),
-                    # No citations in this step, it should just pass through all
-                    # tokens directly so initialized as an empty citation processor
-                    citation_processor=DynamicCitationProcessor(),
-                    state_container=state_container,
-                    final_documents=None,
-                    user_identity=user_identity,
-                    custom_token_processor=custom_processor,
-                    is_deep_research=True,
-                    # The generation here is just tool calls (plus native
-                    # thinking on reasoning models). The cap targets the
-                    # tool-call answer; thinking models get a separate
-                    # reserve so reasoning cannot starve the call itself.
-                    # It still bounds runaway null/looped token streams.
-                    max_tokens=dr_tool_call_max_tokens(is_reasoning_model),
-                    # Tool-calling step: reliability of the call format
-                    # matters more than diversity.
-                    temperature=DR_TEMPERATURE_ORCHESTRATOR,
-                    should_abort=should_abort_from_connected(check_is_connected),
-                    retry_on_truncated_tool_call=True,
+                step_turn_index = (
+                    orchestrator_start_turn_index + cycle + reasoning_cycles
                 )
+
+                def _orchestrator_step(
+                    _history: list[ChatMessageSimple] = truncated_message_history,
+                    _turn_index: int = step_turn_index,
+                    _custom_processor: Callable[
+                        [Delta | None, Any], tuple[Delta | None, Any]
+                    ]
+                    | None = custom_processor,
+                    _max_tokens: int = dr_tool_call_max_tokens(
+                        dr_is_thinking_model(
+                            llm.config.model_name,
+                            is_reasoning_model,
+                            api_base=llm.config.api_base,
+                            model_provider=llm.config.model_provider,
+                        )
+                    ),
+                ) -> tuple[LlmStepResult, bool, list[ToolCallKickoff]]:
+                    llm_step_result, has_reasoned = run_llm_step(
+                        emitter=emitter,
+                        history=_history,
+                        tool_definitions=get_orchestrator_tools(
+                            include_think_tool=not is_reasoning_model
+                        ),
+                        tool_choice=ToolChoiceOptions.REQUIRED,
+                        llm=llm,
+                        reasoning_effort=reasoning_effort,
+                        placement=Placement(turn_index=_turn_index),
+                        # No citations in this step, it should just pass through all
+                        # tokens directly so initialized as an empty citation processor
+                        citation_processor=DynamicCitationProcessor(),
+                        state_container=state_container,
+                        final_documents=None,
+                        user_identity=user_identity,
+                        custom_token_processor=_custom_processor,
+                        is_deep_research=True,
+                        # The generation here is just tool calls (plus native
+                        # thinking on thinking-capable models). The cap targets
+                        # the tool-call answer; thinking models get a separate
+                        # reserve so reasoning cannot starve the call itself.
+                        # It still bounds runaway null/looped token streams.
+                        max_tokens=_max_tokens,
+                        # Tool-calling step: reliability of the call format
+                        # matters more than diversity.
+                        temperature=DR_TEMPERATURE_ORCHESTRATOR,
+                        should_abort=should_abort_from_connected(check_is_connected),
+                        retry_on_truncated_tool_call=True,
+                    )
+                    tool_calls = llm_step_result.tool_calls or []
+                    if not tool_calls:
+                        # Weak models sometimes emit the orchestrator's tool
+                        # calls as plain text in the native wire format instead
+                        # of using native tool calls. Parse the text before
+                        # giving up on the cycle, mirroring the regular chat
+                        # loop's fallback.
+                        llm_step_result, _ = try_fallback_tool_extraction(
+                            llm_step_result=llm_step_result,
+                            tool_choice=ToolChoiceOptions.REQUIRED,
+                            tool_defs=get_orchestrator_tools(
+                                include_think_tool=not is_reasoning_model
+                            ),
+                            turn_index=_turn_index,
+                        )
+                        tool_calls = llm_step_result.tool_calls or []
+                    return llm_step_result, has_reasoned, tool_calls
+
+                llm_step_result, has_reasoned, tool_calls = _orchestrator_step()
                 if has_reasoned:
                     reasoning_cycles += 1
 
-                tool_calls = llm_step_result.tool_calls or []
-                if not tool_calls:
-                    # Weak models sometimes emit the orchestrator's tool
-                    # calls as plain text in the native wire format instead
-                    # of using native tool calls. Parse the text before
-                    # giving up on the cycle, mirroring the regular chat
-                    # loop's fallback.
-                    llm_step_result, _ = try_fallback_tool_extraction(
-                        llm_step_result=llm_step_result,
-                        tool_choice=ToolChoiceOptions.REQUIRED,
-                        tool_defs=get_orchestrator_tools(
-                            include_think_tool=not is_reasoning_model
-                        ),
-                        turn_index=orchestrator_start_turn_index
-                        + cycle
-                        + reasoning_cycles,
+                if not tool_calls and cycle == 0:
+                    # A clean length-capped stream with an empty answer and no
+                    # tool call means native reasoning consumed the whole
+                    # generation cap (custom local models are invisible to the
+                    # capability registry unless overridden). One retry with
+                    # the thinking reserve forced on before failing the run.
+                    logger.warning(
+                        "Orchestrator cycle 0 produced no tool calls — native "
+                        "thinking likely consumed the generation cap; retrying "
+                        "with the thinking reserve forced on"
                     )
-                    tool_calls = llm_step_result.tool_calls or []
+                    llm_step_result, has_reasoned, tool_calls = _orchestrator_step(
+                        _max_tokens=dr_tool_call_max_tokens(True)
+                    )
+                    if has_reasoned:
+                        reasoning_cycles += 1
 
                 if not tool_calls and cycle == 0:
                     raise RuntimeError(

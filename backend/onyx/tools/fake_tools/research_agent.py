@@ -32,6 +32,7 @@ from onyx.configs.chat_configs import (
     DR_SUBAGENT_CONTEXT_TOKENS,
     DR_TEMPERATURE_REPORT,
     DR_TEMPERATURE_RESEARCH_AGENT,
+    dr_is_thinking_model,
     dr_tool_call_max_tokens,
 )
 from onyx.configs.constants import MessageType
@@ -443,7 +444,14 @@ def run_research_agent_call(
                     # targets the tool-call answer; thinking models get a
                     # separate reserve so reasoning cannot starve the
                     # call itself (same scheme as dr_loop.py).
-                    max_tokens=dr_tool_call_max_tokens(is_reasoning_model),
+                    max_tokens=dr_tool_call_max_tokens(
+                        dr_is_thinking_model(
+                            llm.config.model_name,
+                            is_reasoning_model,
+                            api_base=llm.config.api_base,
+                            model_provider=llm.config.model_provider,
+                        )
+                    ),
                     # Search steps: moderate diversity helps query and source
                     # coverage; the call format stays constrained by the
                     # low-ish value.
