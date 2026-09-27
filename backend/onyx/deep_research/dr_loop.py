@@ -194,8 +194,10 @@ def generate_final_report(
         # Weak models sometimes answer the tool-free report step by replaying
         # the research history's tool-call wire format. The streaming filter
         # suppresses that markup, which can leave this step with no answer at
-        # all. Retry once with an explicit nudge instead of failing the run.
-        if llm_step_result.answer is None:
+        # all. Degenerate generations can also return whitespace-only content
+        # (observed: "\n\n\n" with finish_reason=stop). Retry once with an
+        # explicit nudge instead of failing the run or saving an empty report.
+        if not (llm_step_result.answer or "").strip():
             logger.warning(
                 "Deep research report step produced no answer; retrying with "
                 "a no-tools nudge"
@@ -242,7 +244,7 @@ def generate_final_report(
         state_container.set_citation_mapping(citation_processor.citation_to_doc)
 
         final_report = llm_step_result.answer
-        if final_report is None:
+        if not (final_report or "").strip():
             raise ValueError("LLM failed to generate the final deep research report")
 
         if saved_reasoning:

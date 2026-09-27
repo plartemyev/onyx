@@ -4,6 +4,7 @@ from onyx.chat.llm_step import run_llm_step
 from onyx.configs.chat_configs import (
     DR_THINKING_TOKEN_RESERVE,
     DR_TOOL_CALL_ANSWER_TOKENS,
+    dr_step_generation_budget,
     dr_tool_call_max_tokens,
 )
 from onyx.llm.utils import (
@@ -43,6 +44,18 @@ def test_dr_tool_call_max_tokens_reasoning_model_gets_reserve(
     monkeypatch.delenv("DR_TOOL_CALL_ANSWER_TOKENS", raising=False)
     monkeypatch.delenv("DR_THINKING_TOKEN_RESERVE", raising=False)
     assert dr_tool_call_max_tokens(is_reasoning_model=True) == 1024 + 3072
+
+
+def test_dr_step_generation_budget_adds_reserve_for_thinking_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any answer-bearing step (e.g. the report steps) needs the thinking
+    reserve on top of its answer budget: max_tokens caps thinking + answer
+    combined, and a thinking model that exhausts the cap ends with no answer
+    at all (finish_reason=length, empty answer)."""
+    monkeypatch.delenv("DR_THINKING_TOKEN_RESERVE", raising=False)
+    assert dr_step_generation_budget(800, is_reasoning_model=False) == 800
+    assert dr_step_generation_budget(800, is_reasoning_model=True) == 800 + 3072
 
 
 def test_dr_tool_call_max_tokens_honors_config(

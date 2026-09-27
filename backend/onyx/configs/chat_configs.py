@@ -145,11 +145,20 @@ DR_TOOL_CALL_ANSWER_TOKENS = int(os.environ.get("DR_TOOL_CALL_ANSWER_TOKENS") or
 DR_THINKING_TOKEN_RESERVE = int(os.environ.get("DR_THINKING_TOKEN_RESERVE") or "3072")
 
 
+def dr_step_generation_budget(answer_budget: int, is_reasoning_model: bool) -> int:
+    """Total generation cap (max_tokens) for an answer-bearing DR step.
+
+    max_tokens counts native reasoning tokens too, so on thinking models the
+    thinking reserve is added on top of the answer budget; otherwise a long
+    thinking phase consumes the whole cap and the step ends with no answer
+    (observed as finish_reason=length with empty answer).
+    """
+    return answer_budget + (DR_THINKING_TOKEN_RESERVE if is_reasoning_model else 0)
+
+
 def dr_tool_call_max_tokens(is_reasoning_model: bool) -> int:
     """Total generation cap for a DR tool-calling step on the given model."""
-    return DR_TOOL_CALL_ANSWER_TOKENS + (
-        DR_THINKING_TOKEN_RESERVE if is_reasoning_model else 0
-    )
+    return dr_step_generation_budget(DR_TOOL_CALL_ANSWER_TOKENS, is_reasoning_model)
 
 
 # Model names/patterns for thinking-capable models that Onyx's capability

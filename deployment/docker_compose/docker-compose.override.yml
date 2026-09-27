@@ -148,10 +148,12 @@ services:
       # can still hold two slow batches plus local inference time.
       - CHAT_TURN_BUDGET_SECONDS=3600
       # Deep Research wall clocks, retuned for the paced search/crawl chains
-      # (tools run sequentially inside research agents). Ordering matters:
-      # agent force-report < agent timeout < overall force-report, and all
-      # above TOOL_EXECUTION_TIMEOUT_SECONDS.
-      - DR_FORCE_REPORT_S=3600
+      # (tools run sequentially inside research agents). The overall budget is
+      # deliberately generous (48h): slow is acceptable, undelivered reports
+      # are not — serial fan-outs of this scale and beyond must complete.
+      # Ordering matters: agent force-report < agent timeout < overall
+      # force-report, and all above TOOL_EXECUTION_TIMEOUT_SECONDS.
+      - DR_FORCE_REPORT_S=172800
       - DR_RESEARCH_AGENT_TIMEOUT_S=2700
       - DR_RESEARCH_AGENT_FORCE_REPORT_S=1800
       # download_file cap: the old 50 MB default rejected JDK-sized archives
@@ -207,9 +209,11 @@ services:
       # Whole-turn wall clock (see api_server above).
       - CHAT_TURN_BUDGET_SECONDS=3600
       # Deep Research wall clocks (see api_server above) for scheduled runs.
-      - DR_FORCE_REPORT_S=3600
+      - DR_FORCE_REPORT_S=172800
       - DR_RESEARCH_AGENT_TIMEOUT_S=2700
       - DR_RESEARCH_AGENT_FORCE_REPORT_S=1800
+      # Report-step read timeout (see api_server) for scheduled runs.
+      - DR_REPORT_LLM_TIMEOUT_S=1200
       # The Arch research executor bundles PlantUML; mention it in run_python
       # guidance (api_server below and here for scheduled chat runs).
       - PYTHON_SANDBOX_PLANTUML=true

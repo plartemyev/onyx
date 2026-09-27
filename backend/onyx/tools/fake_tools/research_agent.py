@@ -1,6 +1,6 @@
 import queue
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from typing import Any, cast
 
 from onyx.chat.chat_state import ChatStateContainer
@@ -33,6 +33,7 @@ from onyx.configs.chat_configs import (
     DR_TEMPERATURE_REPORT,
     DR_TEMPERATURE_RESEARCH_AGENT,
     dr_is_thinking_model,
+    dr_step_generation_budget,
     dr_tool_call_max_tokens,
 )
 from onyx.configs.constants import MessageType
@@ -127,6 +128,50 @@ def _subagent_context_tokens(llm: LLM) -> int:
     return min(llm.config.max_input_tokens, DR_SUBAGENT_CONTEXT_TOKENS)
 
 
+def _pump_intermediate_report_packets(
+    report_generator: Generator[Packet, None, tuple[LlmStepResult, bool]],
+    emitter: Emitter,
+    placement: Placement,
+) -> LlmStepResult:
+    """Translate the report step's raw packets and stream them to the UI.
+
+    Returns the step result carried by StopIteration. SectionEnd /
+    IntermediateReportCitedDocs are emitted by the caller after its final
+    attempt, so a retried step does not close the section twice.
+    """
+    while True:
+        try:
+            packet = next(report_generator)
+        except StopIteration as e:
+            llm_step_result, _ = e.value
+            return cast(LlmStepResult, llm_step_result)
+        # Translate AgentResponseStart/Delta packets to IntermediateReportStart/Delta
+        # Use original placement consistently for all packets
+        if isinstance(packet.obj, AgentResponseStart):
+            emitter.emit(
+                Packet(
+                    placement=placement,
+                    obj=IntermediateReportStart(),
+                )
+            )
+        elif isinstance(packet.obj, AgentResponseDelta):
+            emitter.emit(
+                Packet(
+                    placement=placement,
+                    obj=IntermediateReportDelta(content=packet.obj.content),
+                )
+            )
+        else:
+            # Pass through other packet types (e.g., ReasoningStart, ReasoningDelta, etc.)
+            # Also use original placement to keep everything in the same group
+            emitter.emit(
+                Packet(
+                    placement=placement,
+                    obj=packet.obj,
+                )
+            )
+
+
 def generate_intermediate_report(
     research_topic: str,
     history: list[ChatMessageSimple],
@@ -137,6 +182,7 @@ def generate_intermediate_report(
     emitter: Emitter,
     placement: Placement,
     language_section: str,
+    is_reasoning_model: bool,
     reasoning_effort: ReasoningEffort = ReasoningEffort.LOW,
     should_abort: Callable[[], bool] | None = None,
 ) -> str:
@@ -146,8 +192,9 @@ def generate_intermediate_report(
         span.span_data.input = (
             f"research_topic={research_topic}, history_length={len(history)}"
         )
-        # Having the state container here to handle the tokens and not passed through means there is no way to
-        # get partial saves of the report. Arguably this is not useful anyway so not going to implement partial saves.
+        # The report is consumed by the orchestrator, not people. When the
+        # deployment asks for compact reports, say so explicitly instead of
+        # relying on the sampling cap alone.
         state_container = ChatStateContainer()
         # The report streams to the UI, so it carries the reply-language line.
         report_prompt = with_language_section(RESEARCH_REPORT_PROMPT, language_section)
@@ -157,15 +204,18 @@ def generate_intermediate_report(
             else MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS
         )
         if DR_MAX_INTERMEDIATE_REPORT_TOKENS is not None:
-            # The report is consumed by the orchestrator, not a user; when the
-            # deployment asks for compact reports, say so explicitly instead
-            # of relying on the sampling cap alone.
             report_prompt += (
                 f"\n\nCRITICAL - Keep the report under {max_report_tokens} tokens "
                 f"(about {int(max_report_tokens * 0.75)} words). Summarize only "
                 "the facts relevant to the research task, each with its "
                 "citation; do not transcribe the research history."
             )
+        # max_tokens caps thinking + answer combined, so thinking models get
+        # the reserve on top of the answer budget; the prompt directive above
+        # still bounds the answer itself.
+        generation_max_tokens = dr_step_generation_budget(
+            max_report_tokens, is_reasoning_model
+        )
         system_prompt = ChatMessageSimple(
             message=report_prompt,
             token_count=token_counter(report_prompt),
@@ -188,79 +238,67 @@ def generate_intermediate_report(
             available_tokens=_subagent_context_tokens(llm),
         )
 
-        intermediate_report_generator = run_llm_step_pkt_generator(
-            history=research_history,
-            tool_definitions=[],
-            tool_choice=ToolChoiceOptions.NONE,
-            llm=llm,
-            placement=placement,
-            citation_processor=citation_processor,
-            state_container=state_container,
-            reasoning_effort=reasoning_effort,
-            final_documents=None,
-            user_identity=user_identity,
-            max_tokens=max_report_tokens,
-            use_existing_tab_index=True,
-            is_deep_research=True,
-            timeout_override=DR_REPORT_LLM_TIMEOUT_S,
-            temperature=DR_TEMPERATURE_REPORT,
-            should_abort=should_abort,
+        def _start_report_step(
+            max_tokens: int,
+        ) -> Generator[Packet, None, tuple[LlmStepResult, bool]]:
+            return run_llm_step_pkt_generator(
+                history=research_history,
+                tool_definitions=[],
+                tool_choice=ToolChoiceOptions.NONE,
+                llm=llm,
+                placement=placement,
+                citation_processor=citation_processor,
+                state_container=state_container,
+                reasoning_effort=reasoning_effort,
+                final_documents=None,
+                user_identity=user_identity,
+                max_tokens=max_tokens,
+                use_existing_tab_index=True,
+                is_deep_research=True,
+                timeout_override=DR_REPORT_LLM_TIMEOUT_S,
+                temperature=DR_TEMPERATURE_REPORT,
+                should_abort=should_abort,
+            )
+
+        llm_step_result = _pump_intermediate_report_packets(
+            _start_report_step(generation_max_tokens), emitter, placement
         )
 
-        while True:
-            try:
-                packet = next(intermediate_report_generator)
-                # Translate AgentResponseStart/Delta packets to IntermediateReportStart/Delta
-                # Use original placement consistently for all packets
-                if isinstance(packet.obj, AgentResponseStart):
-                    emitter.emit(
-                        Packet(
-                            placement=placement,
-                            obj=IntermediateReportStart(),
-                        )
-                    )
-                elif isinstance(packet.obj, AgentResponseDelta):
-                    emitter.emit(
-                        Packet(
-                            placement=placement,
-                            obj=IntermediateReportDelta(content=packet.obj.content),
-                        )
-                    )
-                else:
-                    # Pass through other packet types (e.g., ReasoningStart, ReasoningDelta, etc.)
-                    # Also use original placement to keep everything in the same group
-                    emitter.emit(
-                        Packet(
-                            placement=placement,
-                            obj=packet.obj,
-                        )
-                    )
-            except StopIteration as e:
-                llm_step_result, _ = e.value
-                # Use original placement for completion packets
-                emitter.emit(
-                    Packet(
-                        placement=placement,
-                        obj=IntermediateReportCitedDocs(
-                            cited_docs=list(
-                                citation_processor.get_seen_citations().values()
-                            )
-                        ),
-                    )
-                )
-                emitter.emit(
-                    Packet(
-                        placement=placement,
-                        obj=SectionEnd(),
-                    )
-                )
-                break
-
-        llm_step_result = cast(LlmStepResult, llm_step_result)
-
         final_report = llm_step_result.answer
+        if not final_report or not final_report.strip():
+            # Thinking models can spend the whole generation cap on native
+            # reasoning before any answer token (finish_reason=length, empty
+            # answer). One retry with a doubled budget instead of failing the
+            # call and losing everything the sub-agent gathered.
+            logger.warning(
+                "Intermediate report step produced no answer for task "
+                "(finish_reason=%s); retrying with a doubled generation budget",
+                llm_step_result.finish_reason,
+            )
+            state_container = ChatStateContainer()
+            llm_step_result = _pump_intermediate_report_packets(
+                _start_report_step(generation_max_tokens * 2), emitter, placement
+            )
+            final_report = llm_step_result.answer
+
+        # Use original placement for completion packets
+        emitter.emit(
+            Packet(
+                placement=placement,
+                obj=IntermediateReportCitedDocs(
+                    cited_docs=list(citation_processor.get_seen_citations().values())
+                ),
+            )
+        )
+        emitter.emit(
+            Packet(
+                placement=placement,
+                obj=SectionEnd(),
+            )
+        )
+
         span.span_data.output = final_report or None
-        if final_report is None:
+        if not final_report or not final_report.strip():
             raise ValueError(
                 f"LLM failed to generate a report for research task: {research_topic}"
             )
@@ -486,6 +524,7 @@ def run_research_agent_call(
                         user_identity=user_identity,
                         emitter=emitter,
                         language_section=language_section,
+                        is_reasoning_model=is_reasoning_model,
                         reasoning_effort=reasoning_effort,
                         placement=Placement(
                             turn_index=turn_index,
@@ -678,6 +717,7 @@ def run_research_agent_call(
                 user_identity=user_identity,
                 emitter=emitter,
                 language_section=language_section,
+                is_reasoning_model=is_reasoning_model,
                 reasoning_effort=reasoning_effort,
                 placement=Placement(
                     turn_index=turn_index,
