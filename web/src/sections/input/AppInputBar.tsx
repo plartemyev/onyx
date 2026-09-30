@@ -85,7 +85,8 @@ export interface AppInputBarProps {
   llmManager: LlmManager;
   chatState: ChatState;
   currentSessionFileTokenCount: number;
-  availableContextTokens: number;
+  // From the backend's persona/session budget APIs; `null` while unknown.
+  availableContextTokens: number | null;
 
   // agents
   activeAgent: MinimalAgent | undefined;
@@ -528,8 +529,9 @@ const AppInputBar = React.memo(
         );
         const totalTokens =
           (currentSessionFileTokenCount || 0) + currentFilesTokenTotal;
-        // Hide processing state when files are within context limits
-        return totalTokens < availableContextTokens;
+        // Hide processing state when files are within context limits. An
+        // unknown limit (null) cannot confirm a fit, so keep the state.
+        return availableContextTokens !== null && totalTokens < availableContextTokens;
       }
       return false;
     }, [

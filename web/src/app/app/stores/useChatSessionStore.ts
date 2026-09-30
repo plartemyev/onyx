@@ -22,7 +22,6 @@ interface ChatSessionData {
   regenerationState: RegenerationState | null;
   canContinue: boolean;
   submittedMessage: string;
-  maxTokens: number;
   chatSessionSharedStatus: ChatSessionSharedStatus;
   selectedNodeIdForDocDisplay: number | null; // should be the node ID, not the message ID
   abortController: AbortController;
@@ -187,7 +186,6 @@ const createInitialSessionData = (
   regenerationState: null,
   canContinue: false,
   submittedMessage: "",
-  maxTokens: 128_000,
   chatSessionSharedStatus: ChatSessionSharedStatus.Private,
   selectedNodeIdForDocDisplay: null,
   abortController: new AbortController(),

@@ -37,9 +37,9 @@ import WelcomeMessage from "@/app/app/components/WelcomeMessage";
 import useChatSessions from "@/hooks/useChatSessions";
 import { cn } from "@opal/utils";
 import { Spacer } from "@opal/components";
-import { DEFAULT_CONTEXT_TOKENS } from "@/lib/constants";
 import { SvgUser, SvgMenu, SvgAlertTriangle } from "@opal/icons";
 import { useAppBackground } from "@/providers/AppBackgroundProvider";
+import { getMaxSelectedDocumentTokens } from "@/lib/projects/svc";
 import { MinimalOnyxDocument } from "@/lib/search/interfaces";
 import DocumentsSidebar from "@/sections/document-sidebar/DocumentsSidebar";
 import PreviewModal from "@/sections/modals/PreviewModal";
@@ -56,9 +56,6 @@ const SearchUI = paidTierGated(EESearchUI);
 interface NRFPageProps {
   isSidePanel?: boolean;
 }
-
-// Reserve half of the context window for the model's response output
-const AVAILABLE_CONTEXT_TOKENS = Number(DEFAULT_CONTEXT_TOKENS) * 0.5;
 
 export default function NRFPage({ isSidePanel = false }: NRFPageProps) {
   const t = useTranslations("chat");
@@ -99,6 +96,32 @@ export default function NRFPage({ isSidePanel = false }: NRFPageProps) {
 
   // Assistant controller
   const activeAgent = useActiveAgent();
+
+  // Available context tokens for the input bar's file-fit check. Fetched from
+  // the persona budget API like the chat page; `null` while unknown — the
+  // backend owns the context-window numbers, the UI never assumes one.
+  const [availableContextTokens, setAvailableContextTokens] = useState<
+    number | null
+  >(null);
+  useEffect(() => {
+    let cancelled = false;
+    const personaId = activeAgent?.id;
+    if (personaId == null) {
+      setAvailableContextTokens(null);
+      return;
+    }
+    getMaxSelectedDocumentTokens(personaId)
+      .then((tokens) => {
+        if (!cancelled) setAvailableContextTokens(tokens);
+      })
+      .catch((e) => {
+        console.error("Failed to fetch available context tokens:", e);
+        if (!cancelled) setAvailableContextTokens(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAgent?.id]);
 
   // LLM manager for model selection.
   // - currentChatSession: undefined because NRF always starts new chats
@@ -556,7 +579,7 @@ export default function NRFPage({ isSidePanel = false }: NRFPageProps) {
                 onSubmit={handleChatInputSubmit}
                 chatState={currentChatState}
                 currentSessionFileTokenCount={currentSessionFileTokenCount}
-                availableContextTokens={AVAILABLE_CONTEXT_TOKENS}
+                availableContextTokens={availableContextTokens}
                 activeAgent={activeAgent}
                 handleFileUpload={handleFileUpload}
                 disabled={

@@ -19,7 +19,6 @@ import {
   getUnresolvedMultiModelTurn,
 } from "@/app/app/message/multiModel";
 import { getMaxSelectedDocumentTokens } from "@/lib/projects/svc";
-import { DEFAULT_CONTEXT_TOKENS } from "@/lib/constants";
 import { StreamStopInfo } from "@/lib/search/interfaces";
 import type { SourceMetadata } from "@/lib/search/interfaces";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1767,17 +1766,17 @@ export default function useChatController({
   // Available context tokens: if a chat session exists, fetch from the session
   // API (dynamic per session/model). Otherwise derive from the persona's max
   // document tokens. The backend already accounts for system prompt, tools,
-  // and user-message reservations.
-  const [availableContextTokens, setAvailableContextTokens] = useState<number>(
-    DEFAULT_CONTEXT_TOKENS
-  );
+  // and user-message reservations. `null` while unknown — the UI must not
+  // assume a context size the selected model has not reported.
+  const [availableContextTokens, setAvailableContextTokens] =
+    useState<number | null>(null);
 
   useEffect(() => {
     if (!llmManager.hasAnyProvider) return;
 
     let cancelled = false;
 
-    const setIfActive = (tokens: number) => {
+    const setIfActive = (tokens: number | null) => {
       if (!cancelled) setAvailableContextTokens(tokens);
     };
 
@@ -1793,21 +1792,20 @@ export default function useChatController({
             sessionId,
             llmManager.currentLlm.modelConfigurationId
           );
-          setIfActive(available ?? DEFAULT_CONTEXT_TOKENS);
+          setIfActive(available ?? null);
           return;
         }
 
         const personaId = activeAgent?.id;
         if (personaId == null) {
-          setIfActive(DEFAULT_CONTEXT_TOKENS);
+          setIfActive(null);
           return;
         }
 
-        const maxTokens = await getMaxSelectedDocumentTokens(personaId);
-        setIfActive(maxTokens ?? DEFAULT_CONTEXT_TOKENS);
+        setIfActive(await getMaxSelectedDocumentTokens(personaId));
       } catch (e) {
         console.error("Failed to fetch available context tokens:", e);
-        setIfActive(DEFAULT_CONTEXT_TOKENS);
+        setIfActive(null);
       }
     })();
 

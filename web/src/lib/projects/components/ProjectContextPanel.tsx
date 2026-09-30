@@ -25,13 +25,14 @@ import {
 
 export interface ProjectContextPanelProps {
   projectTokenCount?: number;
-  availableContextTokens?: number;
+  // From the backend's persona budget API; `null`/omitted while unknown.
+  availableContextTokens?: number | null;
   setPresentingDocument?: (document: MinimalOnyxDocument) => void;
 }
 
 export default function ProjectContextPanel({
   projectTokenCount = 0,
-  availableContextTokens = 128_000,
+  availableContextTokens = null,
   setPresentingDocument,
 }: ProjectContextPanelProps) {
   const t = useTranslations("chat");
@@ -263,11 +264,12 @@ export default function ProjectContextPanel({
                 )}
               </div>
 
-              {projectTokenCount > availableContextTokens && (
-                <Text as="p" font="secondary-body" color="text-02">
-                  {t("projects.contextPanel.contextExceeded.message")}
-                </Text>
-              )}
+              {availableContextTokens !== null &&
+                projectTokenCount > availableContextTokens && (
+                  <Text as="p" font="secondary-body" color="text-02">
+                    {t("projects.contextPanel.contextExceeded.message")}
+                  </Text>
+                )}
             </>
           ) : (
             <div
