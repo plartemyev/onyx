@@ -1,6 +1,7 @@
 import re
 
 from ee.onyx.prompts.query_expansion import KEYWORD_EXPANSION_PROMPT
+from onyx.llm.context_budgets import KEYWORD_EXPANSION_OUTPUT, scale
 from onyx.llm.interfaces import LLM
 from onyx.llm.models import LanguageModelInput, ReasoningEffort, UserMessage
 from onyx.llm.utils import llm_response_to_string
@@ -51,8 +52,9 @@ def expand_keywords(
         response = llm.invoke(
             prompt=messages,
             reasoning_effort=ReasoningEffort.OFF,
-            # Limit output - we only expect a few short keyword queries
-            max_tokens=150,
+            # Limit output - we only expect a few short keyword queries. The
+            # cap scales with the model's context window.
+            max_tokens=scale(llm.config.max_input_tokens, KEYWORD_EXPANSION_OUTPUT),
         )
 
         content = llm_response_to_string(response).strip()

@@ -3,6 +3,7 @@ from ee.onyx.prompts.search_flow_classification import (
     SEARCH_CHAT_PROMPT,
     SEARCH_CLASS,
 )
+from onyx.llm.context_budgets import SEARCH_FLOW_CLASSIFICATION_OUTPUT, scale
 from onyx.llm.interfaces import LLM
 from onyx.llm.models import LanguageModelInput, ReasoningEffort, UserMessage
 from onyx.llm.utils import llm_response_to_string
@@ -26,8 +27,10 @@ def classify_is_search_flow(
         # Nothing can happen in the UI until this call finishes so we need to be aggressive with the timeout
         timeout_override=2,
         # Well more than necessary but just to ensure completion and in case it succeeds with classifying but
-        # ends up rambling
-        max_tokens=20,
+        # ends up rambling. The cap scales with the model's context window.
+        max_tokens=scale(
+            llm.config.max_input_tokens, SEARCH_FLOW_CLASSIFICATION_OUTPUT
+        ),
     )
 
     content = llm_response_to_string(response).strip().lower()
