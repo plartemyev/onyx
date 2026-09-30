@@ -21,10 +21,10 @@ from typing import Any, cast
 from onyx.configs.model_configs import (
     GEN_AI_MAX_TOKENS,
     GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
-    GEN_AI_NUM_RESERVED_OUTPUT_TOKENS,
 )
 from onyx.llm.api_surfaces import OPENAI_COMPATIBLE_SURFACES, LlmApiSurface
 from onyx.llm.constants import BEDROCK_MODEL_TOKEN_LIMITS, LlmProviderNames
+from onyx.llm.context_budgets import output_token_reserve
 from onyx.llm.models import ReasoningEffort
 from onyx.utils.logger import setup_logger
 from shared_configs.contextvars import get_current_tenant_id
@@ -219,7 +219,7 @@ def get_llm_max_output_tokens(
 def get_max_input_tokens(
     model_name: str,
     model_provider: str,
-    output_tokens: int = GEN_AI_NUM_RESERVED_OUTPUT_TOKENS,
+    output_tokens: int | None = None,
 ) -> int:
     # NOTE: we previously used `litellm.get_max_tokens()`, but despite the name, this actually
     # returns the max OUTPUT tokens. Under the hood, this uses the `litellm.model_cost` dict,
@@ -229,14 +229,15 @@ def get_max_input_tokens(
     # model_map is  litellm.model_cost
     litellm_model_map = get_model_map()
 
-    input_toks = (
-        llm_max_input_tokens(
-            model_name=model_name,
-            model_provider=model_provider,
-            model_map=litellm_model_map,
-        )
-        - output_tokens
+    context_window = llm_max_input_tokens(
+        model_name=model_name,
+        model_provider=model_provider,
+        model_map=litellm_model_map,
     )
+    if output_tokens is None:
+        output_tokens = output_token_reserve(context_window)
+
+    input_toks = context_window - output_tokens
 
     if input_toks <= 0:
         return GEN_AI_MODEL_FALLBACK_MAX_TOKENS

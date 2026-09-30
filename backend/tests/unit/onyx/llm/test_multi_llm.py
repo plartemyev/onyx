@@ -916,14 +916,15 @@ def test_aliased_claude_model_still_reasons() -> None:
         list(llm.stream(messages, reasoning_effort=ReasoningEffort.HIGH))
 
         kwargs = mock_completion.call_args.kwargs
-        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+        # HIGH effort scales to 8192 tokens at this model's 100k window.
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 8192}
 
 
 @pytest.mark.parametrize(
     "max_tokens, expected_thinking",
     [
-        (None, {"type": "enabled", "budget_tokens": 4096}),
-        (8000, {"type": "enabled", "budget_tokens": 4096}),
+        (None, {"type": "enabled", "budget_tokens": 8192}),
+        (8000, {"type": "enabled", "budget_tokens": 6976}),
         (5000, {"type": "enabled", "budget_tokens": 3976}),
         (2048, {"type": "enabled", "budget_tokens": 1024}),
         (2000, None),
@@ -934,7 +935,10 @@ def test_legacy_claude_thinking_budget_fits_inside_max_tokens(
     expected_thinking: dict[str, int | str] | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("onyx.llm.multi_llm.GEN_AI_NUM_RESERVED_OUTPUT_TOKENS", 1024)
+    # HIGH effort scales to 8192 tokens at this model's 100k window.
+    monkeypatch.setattr(
+        "onyx.llm.context_budgets.GEN_AI_NUM_RESERVED_OUTPUT_TOKENS", 1024
+    )
     llm = LitellmLLM(
         api_key="test_key",
         timeout=30,

@@ -18,7 +18,6 @@ from onyx.configs.chat_configs import (
     LLM_SOCKET_READ_TIMEOUT,
 )
 from onyx.configs.model_configs import (
-    GEN_AI_NUM_RESERVED_OUTPUT_TOKENS,
     GEN_AI_TEMPERATURE,
     LITELLM_EXTRA_BODY,
 )
@@ -28,6 +27,7 @@ from onyx.llm.api_surfaces import (
     resolve_api_surface,
 )
 from onyx.llm.constants import MODEL_PREFIX_TO_VENDOR, LlmProviderNames
+from onyx.llm.context_budgets import output_token_reserve, scale
 from onyx.llm.cost import compute_cost_cents
 from onyx.llm.custom_config_mapping import (
     UI_ONLY_CONFIG_KEYS,
@@ -928,8 +928,13 @@ class LitellmLLM(LLM):
                     if not has_tool_call_history:
                         optional_kwargs["thinking"] = {"type": "adaptive"}
                 else:
-                    budget_tokens: int | None = ANTHROPIC_REASONING_EFFORT_BUDGET.get(
+                    budget_fraction = ANTHROPIC_REASONING_EFFORT_BUDGET.get(
                         reasoning_effort
+                    )
+                    budget_tokens: int | None = (
+                        scale(self.config.max_input_tokens, budget_fraction)
+                        if budget_fraction is not None
+                        else None
                     )
                     # thinking.type=enabled is rejected alongside a forced
                     # tool_choice (only adaptive thinking supports forced tool
@@ -940,7 +945,9 @@ class LitellmLLM(LLM):
                         and not isinstance(tool_choice, NamedToolChoice)
                     ):
                         if max_tokens is not None:
-                            response_reserve = max(1, GEN_AI_NUM_RESERVED_OUTPUT_TOKENS)
+                            response_reserve = output_token_reserve(
+                                self.config.max_input_tokens
+                            )
                             budget_tokens = min(
                                 budget_tokens, max_tokens - response_reserve
                             )

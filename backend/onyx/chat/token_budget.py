@@ -1,9 +1,7 @@
 from dataclasses import dataclass
 
-from onyx.configs.model_configs import (
-    GEN_AI_INPUT_TOKEN_SAFETY_MARGIN,
-    GEN_AI_NUM_RESERVED_OUTPUT_TOKENS,
-)
+from onyx.configs.model_configs import GEN_AI_INPUT_TOKEN_SAFETY_MARGIN
+from onyx.llm.context_budgets import output_token_reserve
 from onyx.llm.interfaces import LLM
 from onyx.llm.model_capabilities import (
     find_model_obj,
@@ -28,8 +26,10 @@ class ChatTokenBudget:
         available_output_tokens = (
             self.context_tokens - self.safety_tokens - estimated_input_tokens
         )
+        if available_output_tokens <= 0:
+            return None
         if available_output_tokens < min(
-            self.max_output_tokens, max(1, GEN_AI_NUM_RESERVED_OUTPUT_TOKENS)
+            self.max_output_tokens, output_token_reserve(self.context_tokens)
         ):
             return None
 

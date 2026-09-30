@@ -56,10 +56,16 @@ GEN_AI_MODEL_VERSION = os.environ.get("GEN_AI_MODEL_VERSION")
 # Override the auto-detection of LLM max context length
 GEN_AI_MAX_TOKENS = int(os.environ.get("GEN_AI_MAX_TOKENS") or 0) or None
 
-# Set this to be enough for an answer + quotes. Also used for Chat
-# This is the minimum token context we will leave for the LLM to generate an answer
-GEN_AI_NUM_RESERVED_OUTPUT_TOKENS = int(
-    os.environ.get("GEN_AI_NUM_RESERVED_OUTPUT_TOKENS") or 1024
+# Tokens kept available for the LLM to generate an answer (+ quotes). Unset:
+# a fraction of the selected model's context window (see
+# onyx.llm.context_budgets.output_token_reserve).
+_gen_ai_num_reserved_output_tokens_env = os.environ.get(
+    "GEN_AI_NUM_RESERVED_OUTPUT_TOKENS"
+)
+GEN_AI_NUM_RESERVED_OUTPUT_TOKENS: int | None = (
+    int(_gen_ai_num_reserved_output_tokens_env)
+    if _gen_ai_num_reserved_output_tokens_env
+    else None
 )
 
 # Fallback token limit for models where the max context is unknown

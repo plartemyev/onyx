@@ -15,7 +15,7 @@ def model_map(monkeypatch: pytest.MonkeyPatch) -> ModelMap:
     monkeypatch.setattr("onyx.chat.token_budget.get_model_map", lambda: models)
     monkeypatch.setattr("onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", 0.05)
     monkeypatch.setattr(
-        "onyx.chat.token_budget.GEN_AI_NUM_RESERVED_OUTPUT_TOKENS", 1024
+        "onyx.llm.context_budgets.GEN_AI_NUM_RESERVED_OUTPUT_TOKENS", 1024
     )
     return models
 

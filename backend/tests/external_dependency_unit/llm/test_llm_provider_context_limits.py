@@ -12,10 +12,7 @@ from collections.abc import Generator
 import pytest
 from sqlalchemy.orm import Session
 
-from onyx.configs.model_configs import (
-    GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
-    GEN_AI_NUM_RESERVED_OUTPUT_TOKENS,
-)
+from onyx.configs.model_configs import GEN_AI_MODEL_FALLBACK_MAX_TOKENS
 from onyx.db.llm import (
     fetch_existing_llm_provider,
     remove_llm_provider,
@@ -23,6 +20,7 @@ from onyx.db.llm import (
 )
 from onyx.db.models import ModelConfiguration
 from onyx.llm.constants import LlmProviderNames
+from onyx.llm.context_budgets import output_token_reserve
 from onyx.llm.model_capabilities import get_max_input_tokens
 from onyx.server.manage.llm.models import (
     LLMProviderUpsertRequest,
@@ -31,8 +29,8 @@ from onyx.server.manage.llm.models import (
 
 # A deployment name LiteLLM does not know, so the lookup lands on the fallback.
 _UNKNOWN_MODEL = "gpt-5.6-not-a-real-deployment"
-_FALLBACK_RESOLVED = (
-    GEN_AI_MODEL_FALLBACK_MAX_TOKENS - GEN_AI_NUM_RESERVED_OUTPUT_TOKENS
+_FALLBACK_RESOLVED = GEN_AI_MODEL_FALLBACK_MAX_TOKENS - output_token_reserve(
+    GEN_AI_MODEL_FALLBACK_MAX_TOKENS
 )
 
 

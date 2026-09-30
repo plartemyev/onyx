@@ -3,6 +3,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from onyx.llm.context_budgets import (
+    ANTHROPIC_THINKING_BUDGET_HIGH,
+    ANTHROPIC_THINKING_BUDGET_LOW,
+    ANTHROPIC_THINKING_BUDGET_MEDIUM,
+    TokenFraction,
+)
+
 
 class LLMErrorInfo(BaseModel):
     message: str
@@ -133,14 +140,16 @@ OPENAI_REASONING_EFFORT: dict[ReasoningEffort, str] = {
     ReasoningEffort.XHIGH: "xhigh",
 }
 
-# Anthropic reasoning effort to budget tokens mapping
-# Loosely based on budgets from LiteLLM but this ensures it's not updated without our knowing from a version bump.
-ANTHROPIC_REASONING_EFFORT_BUDGET: dict[ReasoningEffort, int] = {
-    ReasoningEffort.AUTO: 2048,
-    ReasoningEffort.LOW: 1024,
-    ReasoningEffort.MEDIUM: 2048,
-    ReasoningEffort.HIGH: 4096,
-    ReasoningEffort.XHIGH: 4096,
+# Anthropic reasoning effort to thinking-budget fractions of the model's
+# context window. Loosely based on budgets from LiteLLM but this ensures it's
+# not updated without our knowing from a version bump. Fractions are
+# calibrated so a 50,000-token window yields 1024 / 2048 / 4096 tokens.
+ANTHROPIC_REASONING_EFFORT_BUDGET: dict[ReasoningEffort, TokenFraction] = {
+    ReasoningEffort.AUTO: ANTHROPIC_THINKING_BUDGET_MEDIUM,
+    ReasoningEffort.LOW: ANTHROPIC_THINKING_BUDGET_LOW,
+    ReasoningEffort.MEDIUM: ANTHROPIC_THINKING_BUDGET_MEDIUM,
+    ReasoningEffort.HIGH: ANTHROPIC_THINKING_BUDGET_HIGH,
+    ReasoningEffort.XHIGH: ANTHROPIC_THINKING_BUDGET_HIGH,
 }
 
 # Newer Anthropic models (Claude Opus 4.7+) use adaptive thinking with
