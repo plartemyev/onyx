@@ -40,6 +40,7 @@ from onyx.chat.prompt_utils import (
     process_prompt_template,
 )
 from onyx.chat.search_receipts import maybe_append_search_receipt
+from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.chat.token_budget import resolve_chat_token_budget
 from onyx.configs.app_configs import INTEGRATION_TESTS_MODE
 from onyx.configs.chat_configs import CHAT_TURN_BUDGET_SECONDS, MAX_LLM_CYCLES
@@ -70,7 +71,6 @@ from onyx.server.query_and_chat.streaming_models import (
     TopLevelBranching,
 )
 from onyx.tools.built_in_tools import CITEABLE_TOOLS_NAMES, STOPPING_TOOLS_NAMES
-from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.tools.constants import FILE_READER_TOOL_NAME
 from onyx.tools.interface import Tool
 from onyx.tools.models import (
@@ -112,8 +112,8 @@ logger = setup_logger()
 _NON_VISION_MARKER_TOKEN_FALLBACK = 40
 
 # Used when no token_counter is available to measure the in-turn compaction
-# stub. TOOL_CALL_RESPONSE_COMPACTED is ~130 chars (~33 tokens).
-_COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK = 34
+# stub. TOOL_CALL_RESPONSE_COMPACTED is ~250 chars (~55 tokens).
+_COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK = 58
 
 # Model servers tokenize the prompt themselves, so their count can exceed
 # Onyx's estimate even inside the safety margin (chat-template overhead,

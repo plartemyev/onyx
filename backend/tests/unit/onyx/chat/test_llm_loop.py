@@ -13,11 +13,11 @@ from onyx.chat.llm_loop import (
     EmptyLLMResponseError,
     _build_empty_llm_response_error,
     _cycle_history_token_budget,
-    try_fallback_tool_extraction,
     construct_message_history,
     count_message_replay_tokens,
     run_llm_loop,
     select_reminder_text,
+    try_fallback_tool_extraction,
 )
 from onyx.chat.models import (
     ChatLoadedFile,
@@ -582,16 +582,16 @@ class TestConstructMessageHistory:
         simple_chat_history = [user_msg, assistant_with_tool, big_tool_response]
         context_files = create_context_files()
 
-        # History budget: 60 - 10 (system) = 50; after the 10-token user
-        # message, 40 remain. Tail = 5 + 60 = 65 does not fit, so the
-        # response is stubbed to ~34 tokens (5 + 34 = 39 <= 40).
+        # History budget: 84 - 10 (system) = 74; after the 10-token user
+        # message, 64 remain. Tail = 5 + 60 = 65 does not fit, so the
+        # response is stubbed to ~58 tokens (5 + 58 = 63 <= 64).
         result = construct_message_history(
             system_prompt=system_prompt,
             custom_agent_prompt=None,
             simple_chat_history=simple_chat_history,
             reminder_message=None,
             context_files=context_files,
-            available_tokens=60,
+            available_tokens=84,
         )
 
         assert len(result) == 4
@@ -637,9 +637,9 @@ class TestConstructMessageHistory:
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
         user_msg = create_message("User question", MessageType.USER, 10)
         assistant_1 = create_assistant_with_tool_call("tc_1", "tool", 5)
-        response_1 = create_tool_response("tc_1", "Result 1", 20)
+        response_1 = create_tool_response("tc_1", "Result 1", 60)
         assistant_2 = create_assistant_with_tool_call("tc_2", "tool", 5)
-        response_2 = create_tool_response("tc_2", "Result 2", 20)
+        response_2 = create_tool_response("tc_2", "Result 2", 60)
 
         simple_chat_history = [
             user_msg,
@@ -650,16 +650,17 @@ class TestConstructMessageHistory:
         ]
         context_files = create_context_files()
 
-        # History budget: 50; after the user message, 40 remain. Stubbed
-        # tail = 2 * (5 + 34) = 78 > 40, so the oldest exchange is dropped
-        # entirely; the newest (39) is kept.
+        # History budget: 100; after the user message, 80 remain. Raw tail
+        # = 2 * (5 + 60) = 130 > 80 and stubbed tail = 2 * (5 + 58) = 126
+        # > 80, so the oldest exchange is dropped entirely; the newest
+        # stubbed exchange (63) is kept.
         result = construct_message_history(
             system_prompt=system_prompt,
             custom_agent_prompt=None,
             simple_chat_history=simple_chat_history,
             reminder_message=None,
             context_files=context_files,
-            available_tokens=60,
+            available_tokens=100,
         )
 
         assert len(result) == 4
