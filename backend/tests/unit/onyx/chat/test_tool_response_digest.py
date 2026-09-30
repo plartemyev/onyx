@@ -13,6 +13,7 @@ from onyx.chat.tool_response_digest import (
     maybe_digest_tool_response,
     stub_message_for,
 )
+from onyx.llm.context_budgets import TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT, scale
 
 
 def _search_docs_payload(num_results: int, snippet_chars: int = 500) -> str:
@@ -107,6 +108,7 @@ def test_malformed_results_shape_falls_back_to_generic_head() -> None:
 
 def _mock_llm(summary: str | None = None, delay: float = 0.0) -> MagicMock:
     llm = MagicMock()
+    llm.config.max_input_tokens = 50_000
     response = MagicMock()
     response.choice.message.content = summary
     if delay:
@@ -135,10 +137,12 @@ def test_summary_used_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     text = _search_docs_payload(num_results=8)
     digest = compute_tool_response_digest(text, llm=llm)
     assert digest == "Pantip threads about mangrove fires; 87k-member group."
-    # summary call is bounded: temperature 0, small output, no thinking
+    # summary call is bounded: temperature 0, small output, no thinking; the
+    # output cap scales with the model's window (220 tokens at the
+    # 50,000-token calibration reference).
     _, kwargs = llm.invoke.call_args
     assert kwargs["temperature"] == 0.0
-    assert kwargs["max_tokens"] == tool_response_digest._SUMMARY_MAX_TOKENS
+    assert kwargs["max_tokens"] == scale(50_000, TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT)
 
 
 def test_summary_disabled_uses_extractive(monkeypatch: pytest.MonkeyPatch) -> None:

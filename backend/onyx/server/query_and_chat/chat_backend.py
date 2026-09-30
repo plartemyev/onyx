@@ -98,6 +98,12 @@ from onyx.file_store.serving import (
     resolve_inline_disposition,
 )
 from onyx.llm.constants import LlmProviderNames
+from onyx.llm.context_budgets import (
+    SESSION_NAMING_HISTORY,
+    TOKENS_RESERVED_FOR_USER_MESSAGE,
+    TOKENS_RESERVED_PER_TOOL,
+    scale,
+)
 from onyx.llm.factory import get_llm_for_persona, get_llm_token_counter
 from onyx.llm.models import (
     USER_SELECTABLE_REASONING_EFFORTS,
@@ -171,15 +177,14 @@ def _get_available_tokens_for_persona(
         model_max_input_tokens: int,
         system_and_agent_prompt_tokens: int,
         num_tools: int,
-        token_reserved_per_tool: int = 256,
-        # Estimating for a long user input message, hard to know ahead of time
-        default_reserved_tokens: int = 2000,
     ) -> int:
+        # Per-tool and user-message reserves scale with the model's context
+        # window (onyx.llm.context_budgets).
         return (
             model_max_input_tokens
             - system_and_agent_prompt_tokens
-            - num_tools * token_reserved_per_tool
-            - default_reserved_tokens
+            - num_tools * scale(model_max_input_tokens, TOKENS_RESERVED_PER_TOOL)
+            - scale(model_max_input_tokens, TOKENS_RESERVED_FOR_USER_MESSAGE)
         )
 
     llm = get_llm_for_persona(persona=persona, user=user, llm_override=llm_override)
@@ -517,7 +522,6 @@ def _generate_or_fallback_chat_session_name(
 ) -> str:
     user_id = user.id
     fallback_name = get_fallback_chat_session_name(chat_history)
-    max_tokens_for_naming = 3000
 
     try:
         check_token_rate_limits(user)
@@ -537,6 +541,10 @@ def _generate_or_fallback_chat_session_name(
             )
 
         token_counter = get_llm_token_counter(llm)
+        # History cap for the naming call, relative to the model's window.
+        max_tokens_for_naming = scale(
+            llm.config.max_input_tokens, SESSION_NAMING_HISTORY
+        )
         simple_chat_history = convert_chat_history_basic(
             chat_history=chat_history,
             token_counter=token_counter,

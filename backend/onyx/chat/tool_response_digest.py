@@ -31,6 +31,7 @@ from onyx.configs.model_configs import (
     GEN_AI_TOOL_RESPONSE_SUMMARIZATION,
     GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS,
 )
+from onyx.llm.context_budgets import TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT, scale
 from onyx.llm.interfaces import LLM
 from onyx.llm.models import ChatCompletionMessage, ReasoningEffort, UserMessage
 from onyx.prompts.chat_prompts import (
@@ -52,9 +53,10 @@ _RESULT_LINE_URL_MAX_CHARS = 200
 # model and starts duplicating the search it came from.
 _RESULT_DIGEST_MAX_ENTRIES = 12
 
-# LLM summary output cap, in tokens. A digest is only useful while it is
-# much smaller than the response it replaced.
-_SUMMARY_MAX_TOKENS = 220
+# LLM summary output cap, as a fraction of the model's context window. A
+# digest is only useful while it is much smaller than the response it
+# replaced.
+_SUMMARY_MAX_TOKENS_FRACTION = TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT
 
 # The stub wraps the digest in a ~250-character notice; a digest must beat
 # the bare notice by a real margin, or the "compacted" message would not be
@@ -163,7 +165,9 @@ def _summarize(text: str, llm: LLM) -> str:
             future = executor.submit(
                 llm.invoke,
                 messages,
-                max_tokens=_SUMMARY_MAX_TOKENS,
+                max_tokens=scale(
+                    llm.config.max_input_tokens, _SUMMARY_MAX_TOKENS_FRACTION
+                ),
                 temperature=0.0,
                 reasoning_effort=ReasoningEffort.OFF,
             )
