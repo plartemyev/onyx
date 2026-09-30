@@ -59,6 +59,21 @@ def _parse_positive_int_config(
     return value
 
 
+def _parse_bool_config(raw_value: object, *, default: bool) -> bool:
+    """Accept JSON booleans and their string spellings in provider config."""
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off"):
+            return False
+    raise ValueError(f"Invalid boolean provider config value: {raw_value!r}")
+
+
 def provider_requires_api_key(provider_type: WebSearchProviderType) -> bool:
     """Return True if the given provider type requires an API key.
     This list is most likely just going to contain SEARXNG. The way it works is that it uses public search engines that do not
@@ -84,6 +99,9 @@ def build_search_provider_from_config(
             searxng_base_url,
             num_results=num_results,
             language=config.get("language"),
+            enable_image_search=_parse_bool_config(
+                config.get("enable_image_search"), default=True
+            ),
         )
 
     # All other providers require an API key

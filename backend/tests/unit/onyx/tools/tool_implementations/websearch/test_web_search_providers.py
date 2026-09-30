@@ -1,6 +1,10 @@
 import pytest
+from typing_extensions import cast
 
 from onyx.tools.tool_implementations.web_search.clients.brave_client import BraveClient
+from onyx.tools.tool_implementations.web_search.clients.searxng_client import (
+    SearXNGClient,
+)
 from onyx.tools.tool_implementations.web_search.providers import (
     build_search_provider_from_config,
     provider_requires_api_key,
@@ -25,6 +29,67 @@ def test_build_searxng_provider_without_api_key() -> None:
         config={"searxng_base_url": "http://localhost:8080"},
     )
     assert provider is not None
+
+
+def test_build_searxng_image_search_enabled_by_default() -> None:
+    provider = build_search_provider_from_config(
+        provider_type=WebSearchProviderType.SEARXNG,
+        api_key=None,
+        config={"searxng_base_url": "http://localhost:8080"},
+    )
+    assert isinstance(provider, SearXNGClient)
+    assert provider._enable_image_search is True  # noqa: SLF001
+
+
+@pytest.mark.parametrize("raw_value", ["false", "False", "0", "no", "off", False])
+def test_build_searxng_image_search_disabled(raw_value: str | bool) -> None:
+    """String spellings and real booleans both disable the image fan-out.
+
+    The provider config column is JSON, so real booleans reach this code
+    too; the dict[str, str] annotation on the builder is a standing TODO.
+    """
+    provider = build_search_provider_from_config(
+        provider_type=WebSearchProviderType.SEARXNG,
+        api_key=None,
+        config=cast(
+            dict[str, str],
+            {
+                "searxng_base_url": "http://localhost:8080",
+                "enable_image_search": raw_value,
+            },
+        ),
+    )
+    assert isinstance(provider, SearXNGClient)
+    assert provider._enable_image_search is False  # noqa: SLF001
+
+
+@pytest.mark.parametrize("raw_value", ["true", "1", "yes", True])
+def test_build_searxng_image_search_enabled(raw_value: str | bool) -> None:
+    provider = build_search_provider_from_config(
+        provider_type=WebSearchProviderType.SEARXNG,
+        api_key=None,
+        config=cast(
+            dict[str, str],
+            {
+                "searxng_base_url": "http://localhost:8080",
+                "enable_image_search": raw_value,
+            },
+        ),
+    )
+    assert isinstance(provider, SearXNGClient)
+    assert provider._enable_image_search is True  # noqa: SLF001
+
+
+def test_build_searxng_rejects_invalid_bool() -> None:
+    with pytest.raises(ValueError, match="Invalid boolean"):
+        build_search_provider_from_config(
+            provider_type=WebSearchProviderType.SEARXNG,
+            api_key=None,
+            config={
+                "searxng_base_url": "http://localhost:8080",
+                "enable_image_search": "maybe",
+            },
+        )
 
 
 def test_build_searxng_provider_requires_base_url() -> None:

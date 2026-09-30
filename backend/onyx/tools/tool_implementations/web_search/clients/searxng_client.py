@@ -70,6 +70,7 @@ class SearXNGClient(WebSearchProvider):
         searxng_base_url: str,
         num_results: int = 10,
         language: str | None = None,
+        enable_image_search: bool = True,
     ) -> None:
         logger.debug("Initializing SearXNGClient with base URL: %s", searxng_base_url)
         self._searxng_base_url = searxng_base_url
@@ -79,6 +80,12 @@ class SearXNGClient(WebSearchProvider):
         # which can localize snippets (and skew engines) unexpectedly.
         # Serves as the default for `search(language=None)` calls.
         self._language = language or None
+        # Image results cost a second full search per query. On instances
+        # that fetch engines through a browser pool (challenge solving,
+        # human-paced requests), that doubles the load the instance must
+        # serve for every query, so it can be turned off in the provider
+        # config.
+        self._enable_image_search = enable_image_search
 
     # Paced retries: a challenge-hit search fails on the SearXNG side while
     # the lane keeps solving in the background. Re-querying 20s/40s later
@@ -119,6 +126,8 @@ class SearXNGClient(WebSearchProvider):
         # so we limit client-side after receiving the response
         limited_results = result_list[: self._num_results]
         general_results = [self._parse_web_result(result) for result in limited_results]
+        if not general_results or not self._enable_image_search:
+            return general_results
         image_results = self._search_images(query, language)
         return _interleave_image_results(general_results, image_results)
 

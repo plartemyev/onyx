@@ -327,3 +327,59 @@ def test_per_call_language_used_without_configured_language(
 
     assert len(captured_payloads) == 2
     assert all(payload.get("language") == "pt-BR" for payload in captured_payloads)
+
+
+def test_image_search_disabled_skips_the_images_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the image fan-out off, one query costs exactly one SearXNG
+    request — on browser-pooled instances each request is expensive."""
+    captured_payloads: list[dict[str, str]] = []
+
+    def _post(
+        url: str,  # noqa: ARG001
+        data: dict[str, str],
+        timeout: Any = None,  # noqa: ARG001
+    ) -> Any:
+        captured_payloads.append(dict(data))
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        key = "images" if data.get("categories") == "images" else "general"
+        response.json.return_value = payloads[key]
+        return response
+
+    payloads = {"general": GENERAL_PAYLOAD, "images": IMAGE_PAYLOAD}
+    monkeypatch.setattr(searxng_client.requests, "post", _post)
+    client = SearXNGClient("http://localhost:8080", enable_image_search=False)
+
+    results = client.search("drake meme")
+
+    assert [payload.get("categories") for payload in captured_payloads] == [None]
+    assert [r.title for r in results] == ["Meme history", "No image result"]
+
+
+def test_image_search_skipped_when_general_search_found_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No web results means no images to interleave with; the image
+    request would only add load."""
+    captured_payloads: list[dict[str, str]] = []
+
+    def _post(
+        url: str,  # noqa: ARG001
+        data: dict[str, str],
+        timeout: Any = None,  # noqa: ARG001
+    ) -> Any:
+        captured_payloads.append(dict(data))
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = (
+            IMAGE_PAYLOAD if data.get("categories") == "images" else {"results": []}
+        )
+        return response
+
+    monkeypatch.setattr(searxng_client.requests, "post", _post)
+    client = SearXNGClient("http://localhost:8080")
+
+    assert client.search("drake meme") == []
+    assert all(payload.get("categories") != "images" for payload in captured_payloads)
