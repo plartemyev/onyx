@@ -108,6 +108,13 @@ services:
       # margin keeps packed prompts under the server's limit; the loop also
       # retries with a shrunken history when the server still rejects one.
       - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN=0.10
+      # In-turn compaction stubs replay a digest of the removed tool
+      # response (deterministic; tier 1). Tier 2 summarizes large responses
+      # with the chat model so the model keeps findings (thread titles, URLs,
+      # numbers) instead of re-running identical calls — the failure mode
+      # that turned the 2026-09-30 Prachuap session into a 40-minute turn.
+      # Falls back to the tier-1 digest on timeout/error.
+      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION=true
       # Load the Ollama model with num_ctx above Onyx's max input tokens so
       # template overhead and generation never push the prompt over context.
       - OLLAMA_NUM_CTX_HEADROOM=8192
