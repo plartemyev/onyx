@@ -81,6 +81,37 @@ if not 0.0 <= GEN_AI_INPUT_TOKEN_SAFETY_MARGIN < 1.0:
         f"{GEN_AI_INPUT_TOKEN_SAFETY_MARGIN}"
     )
 
+# In-turn compaction: when a tool response is stubbed to fit the context
+# window, replay a short digest of what it returned instead of a bare notice
+# (deterministic, no LLM: result titles/URLs for our tools' {"results": [...]}
+# shape, a head excerpt for anything else).
+GEN_AI_TOOL_RESPONSE_DIGESTS = os.environ.get(
+    "GEN_AI_TOOL_RESPONSE_DIGESTS", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+# Digest size cap, in characters (~4 chars/token). Bounds what one stub can
+# re-consume of the budget it just freed.
+GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS = int(
+    os.environ.get("GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS") or 1200
+)
+# LLM summarization for digests (off by default: it spends an extra LLM call
+# per large tool response). When enabled, a tool response at or above the
+# eager threshold is summarized by the chat model into a compact digest;
+# any failure or timeout falls back to the deterministic digest.
+GEN_AI_TOOL_RESPONSE_SUMMARIZATION = os.environ.get(
+    "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", "false"
+).strip().lower() in ("1", "true", "yes", "on")
+# Wall-clock cap for one digest summarization call. The digest must not hold
+# the turn hostage: on timeout the call is abandoned and the deterministic
+# digest is used. The abandoned request dies at the client's own read timeout.
+GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS = float(
+    os.environ.get("GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS") or 30
+)
+# Tool responses at or above this size get their digest computed eagerly, at
+# response-creation time, instead of lazily when compaction first needs it.
+GEN_AI_TOOL_RESPONSE_DIGEST_EAGER_MIN_CHARS = int(
+    os.environ.get("GEN_AI_TOOL_RESPONSE_DIGEST_EAGER_MIN_CHARS") or 6000
+)
+
 GEN_AI_TEMPERATURE = float(os.environ.get("GEN_AI_TEMPERATURE") or 0)
 
 # Extra context-window headroom passed to Ollama (`num_ctx`) on top of the

@@ -1,5 +1,6 @@
 """Tests for llm_loop.py, including history construction and empty-response paths."""
 
+import json
 from contextlib import nullcontext
 from typing import Any
 from unittest.mock import Mock, patch
@@ -28,6 +29,7 @@ from onyx.chat.models import (
     LlmStepResult,
     ToolCallSimple,
 )
+from onyx.chat.tool_response_digest import stub_message_for
 from onyx.configs.constants import MessageType
 from onyx.file_store.models import ChatFileType
 from onyx.llm.interfaces import LLMConfig, ToolChoiceOptions
@@ -86,6 +88,11 @@ def create_tool_response(
         message_type=MessageType.TOOL_CALL_RESPONSE,
         tool_call_id=tool_call_id,
     )
+
+
+def _counter(text: str) -> int:
+    """The same ~4 chars/token estimate the helpers below default to."""
+    return max(1, len(text) // 4)
 
 
 def create_context_files(
@@ -607,6 +614,107 @@ class TestConstructMessageHistory:
         # ...the input history is never mutated by compaction.
         assert simple_chat_history[2].message == "Huge result"
         assert simple_chat_history[2].token_count == 60
+
+    def test_tail_stub_carries_extractive_digest(self) -> None:
+        """A stubbed search-shaped response replays a digest (titles and
+        URLs, snippets gone) instead of the bare notice — the model keeps
+        the findings without the payload."""
+        big_payload = json.dumps(
+            {
+                "results": [
+                    {
+                        "document": index,
+                        "title": f"Pantip thread {index}",
+                        "url": f"https://pantip.com/topic/{index}",
+                        "content": "x" * 400,
+                    }
+                    for index in range(1, 9)
+                ]
+            }
+        )
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        big_tool_response = create_tool_response(
+            "tc_1", big_payload, token_count=len(big_payload) // 4
+        )
+
+        simple_chat_history = [user_msg, assistant_with_tool, big_tool_response]
+
+        # Size the budget so the raw exchange does not fit but the stubbed
+        # exchange does: the digest must be what lets the turn keep its
+        # history instead of dropping the exchange entirely.
+        stubbed = stub_message_for(
+            tool_call_id="tc_1",
+            original_message=big_payload,
+            cache={},
+            token_counter=_counter,
+        )
+        assert stubbed is not None
+        stub_message, stub_tokens = stubbed
+        available_tokens = 10 + 10 + 5 + stub_tokens + 1
+
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=create_context_files(),
+            available_tokens=available_tokens,
+            token_counter=_counter,
+        )
+
+        assert len(result) == 4
+        assert result[3].tool_call_id == "tc_1"
+        assert result[3].message == stub_message
+        assert "https://pantip.com/topic/1" in result[3].message
+        assert "Pantip thread 1" in result[3].message
+        assert "xxxx" not in result[3].message
+        # The stub is what made the exchange fit: without the digest the
+        # response alone (1000 tokens) exceeded the whole budget.
+        assert result[3].token_count == stub_tokens
+
+    def test_tail_stub_prefers_eager_cached_digest(self) -> None:
+        """A digest computed eagerly at response time (tier 2 summaries
+        among them) is replayed as-is; compaction never re-derives it."""
+        big_payload = "x" * 4000
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        big_tool_response = create_tool_response(
+            "tc_1", big_payload, token_count=len(big_payload) // 4
+        )
+        simple_chat_history = [user_msg, assistant_with_tool, big_tool_response]
+
+        stubbed = stub_message_for(
+            tool_call_id="tc_1",
+            original_message=big_payload,
+            cache={"tc_1": "LLM summary: two mangrove-fire threads, one rail dispute."},
+            token_counter=_counter,
+        )
+        assert stubbed is not None
+        stub_message, stub_tokens = stubbed
+        available_tokens = 10 + 10 + 5 + stub_tokens + 1
+
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=create_context_files(),
+            available_tokens=available_tokens,
+            token_counter=_counter,
+            tool_response_digests={
+                "tc_1": "LLM summary: two mangrove-fire threads, one rail dispute."
+            },
+        )
+
+        assert len(result) == 4
+        assert (
+            result[3].message
+            == "LLM summary: two mangrove-fire threads, one rail dispute."
+        ) or "LLM summary" in result[3].message
+        assert result[3].token_count == stub_tokens
 
     def test_tail_overflow_stub_does_not_mutate_shared_messages(self) -> None:
         """Stubbing must copy: the same message objects feed later cycles."""

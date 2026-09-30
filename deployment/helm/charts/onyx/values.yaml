@@ -1593,6 +1593,19 @@ configMap:
   IMAGE_SUMMARIZATION_TIMEOUT: "300"
   CONTEXTUAL_RAG_LLM_TIMEOUT: "180"
   MAX_CHUNKS_FED_TO_CHAT: ""
+  # Replay a short digest of a removed tool response inside the in-turn
+  # compaction stub instead of a bare notice (default on).
+  GEN_AI_TOOL_RESPONSE_DIGESTS: ""
+  # Digest size cap in characters (~4 chars/token). Default 1200.
+  GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS: ""
+  # Summarize large tool responses into their digest with the chat model
+  # (default off: one extra LLM call per large response).
+  GEN_AI_TOOL_RESPONSE_SUMMARIZATION: ""
+  # Wall-clock cap in seconds for one digest summarization call (default 30).
+  GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS: ""
+  # Tool responses at or above this many characters get their digest computed
+  # eagerly at response time instead of when compaction first needs it.
+  GEN_AI_TOOL_RESPONSE_DIGEST_EAGER_MIN_CHARS: ""
   # Code Interpreter sandbox sessions (require code-interpreter >= 0.5.0).
   # When on, each chat runs in one persistent sandbox: workspace files and
   # installed packages survive across run_python calls and chat turns.

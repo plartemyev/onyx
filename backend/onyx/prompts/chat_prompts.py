@@ -113,6 +113,25 @@ TOOL_CALL_RESPONSE_COMPACTED = (
     "narrower call only if something specific is missing."
 )
 
+# Same tombstone with a digest of the removed output appended. The digest is
+# either a deterministic extraction (result titles/URLs, a head excerpt) or
+# an LLM summary of the dropped content — the model keeps the findings
+# without paying for the full payload again.
+TOOL_CALL_RESPONSE_COMPACTED_DIGEST = (
+    "This tool call completed earlier this turn; its full output was "
+    "removed to fit the context window. Repeating the identical call will "
+    "not recover it. Digest of what it returned:\n\n{digest}"
+)
+
+# LLM prompt for the summarizing digest (GEN_AI_TOOL_RESPONSE_SUMMARIZATION).
+TOOL_RESPONSE_SUMMARIZATION_PROMPT = (
+    "Summarize the following tool output for an AI agent that will continue "
+    "the same task working only from this summary. Keep every concrete fact: "
+    "names, titles, URLs, dates, numbers, and findings. Drop navigation "
+    "text, boilerplate, login screens, and repetition. Write at most 120 "
+    "words.\n\nTool output:\n{content}"
+)
+
 # Replayed in place of an image when the current model does not accept image
 # input (e.g. after a mid-session model switch).
 NON_VISION_IMAGE_MARKER = (
