@@ -264,6 +264,17 @@ class CurrentRunInfo(BaseModel):
     run_id: int
 
 
+class ChatSessionProcessingStatus(BaseModel):
+    """Lightweight in-flight probe for the chat session.
+
+    ``run_id`` mirrors the processing fence (0 = in flight but not resumable,
+    e.g. legacy pods or a failed stream-buffer reservation).
+    """
+
+    processing: bool
+    run_id: int | None = None
+
+
 class ChatSessionDetailResponse(BaseModel):
     chat_session_id: UUID
     description: str | None

@@ -125,6 +125,7 @@ from onyx.server.query_and_chat.models import (
     ChatSessionDetailResponse,
     ChatSessionDetails,
     ChatSessionGroup,
+    ChatSessionProcessingStatus,
     ChatSessionsResponse,
     ChatSessionSummary,
     ChatSessionUpdateRequest,
@@ -1301,6 +1302,36 @@ def search_chats(
 _RESUME_MAX_CHUNKS_PER_READ = 32
 
 
+@router.get("/chat-session/{session_id}/processing-status")
+def get_chat_session_processing_status(
+    session_id: UUID,
+    user: User = Depends(
+        require_permission(Permission.READ_CHAT, allow_anonymous=True)
+    ),
+) -> ChatSessionProcessingStatus:
+    """Cheap in-flight probe for the chat session.
+
+    The frontend checks this before regenerate/resend so a client that lost
+    track of a live run (transport drop, navigation abort, second device)
+    re-attaches to it instead of starting a duplicate run. Also serves as the
+    watch-mode poll when the stream buffer itself is unrecoverable."""
+    with get_session_with_current_tenant() as db_session:
+        try:
+            get_chat_session_by_id(
+                chat_session_id=session_id,
+                user_id=user.id,
+                db_session=db_session,
+            )
+        except ValueError:
+            raise OnyxError(OnyxErrorCode.SESSION_NOT_FOUND)
+
+    run_id = get_processing_run_id(session_id, get_cache_backend())
+    return ChatSessionProcessingStatus(
+        processing=run_id is not None,
+        run_id=run_id,
+    )
+
+
 @router.get("/chat-session/{session_id}/resume-stream")
 def resume_chat_stream(
     session_id: UUID,
@@ -1343,9 +1374,11 @@ def resume_chat_stream(
                 chunk_cursor,
                 max_chunks=_RESUME_MAX_CHUNKS_PER_READ,
             )
-            # Buffer expired/evicted or sequence broken: end the stream — the
-            # client refetches the session and renders the persisted message.
+            # Buffer expired/evicted or sequence broken: the client must watch
+            # the fence (the run may still be alive) instead of treating this
+            # as a completed stream — say so explicitly before ending.
             if read is None or read.gap:
+                yield get_json_line({"buffer_gap": True})
                 return
             if read.blocks:
                 yield "".join(read.blocks)
