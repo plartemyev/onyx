@@ -7,7 +7,6 @@ from sqlalchemy import select
 
 from onyx.configs.app_configs import (
     LITELLM_CUSTOM_ERROR_MESSAGE_MAPPINGS,
-    MAX_TOKENS_FOR_FULL_INCLUSION,
     SEND_USER_METADATA_TO_LLM_PROVIDER,
     USE_CHUNK_SUMMARY,
     USE_DOCUMENT_SUMMARY,
@@ -15,6 +14,12 @@ from onyx.configs.app_configs import (
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import LLMModelFlowType
 from onyx.db.models import LLMProvider, ModelConfiguration
+from onyx.llm.context_budgets import (
+    CONTEXTUAL_RAG_FULL_DOC_INCLUSION,
+    CONTEXTUAL_RAG_SUMMARY_OUTPUT,
+    LLM_PROBE_OUTPUT,
+    scale,
+)
 from onyx.llm.exceptions import ClassifiedLLMError
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.model_capabilities import (
@@ -38,7 +43,6 @@ if TYPE_CHECKING:
 
 logger = setup_logger()
 
-MAX_CONTEXT_TOKENS = 100
 ONE_MILLION = 1_000_000
 CHUNKS_PER_DOC_ESTIMATE = 5
 MAX_LITELLM_USER_ID_LENGTH = 64
@@ -510,7 +514,10 @@ def test_llm(llm: LLM) -> str | None:
     # try for up to 2 timeouts (e.g. 10 seconds in total)
     for _ in range(2):
         try:
-            llm.invoke(UserMessage(content="Do not respond"), max_tokens=50)
+            llm.invoke(
+                UserMessage(content="Do not respond"),
+                max_tokens=scale(llm.config.max_input_tokens, LLM_PROBE_OUTPUT),
+            )
             return None
         except Exception as e:
             logger.warning("Failed to call LLM with the following error: %s", e)
@@ -540,9 +547,18 @@ def get_llm_contextual_cost(
     num_tokens = ONE_MILLION
     num_input_chunks = num_tokens // DOC_EMBEDDING_CONTEXT_SIZE
 
-    # We assume that the documents are MAX_TOKENS_FOR_FULL_INCLUSION tokens long
+    # Full-document inclusion and per-context output budgets scale with this
+    # model's context window, mirroring the indexing pipeline.
+    full_doc_inclusion_tokens = scale(
+        llm.config.max_input_tokens, CONTEXTUAL_RAG_FULL_DOC_INCLUSION
+    )
+    summary_output_tokens = scale(
+        llm.config.max_input_tokens, CONTEXTUAL_RAG_SUMMARY_OUTPUT
+    )
+
+    # We assume that the documents are full_doc_inclusion_tokens long
     # on average.
-    num_docs = num_tokens // MAX_TOKENS_FOR_FULL_INCLUSION
+    num_docs = num_tokens // full_doc_inclusion_tokens
 
     num_input_tokens = 0
     num_output_tokens = 0
@@ -559,22 +575,22 @@ def get_llm_contextual_cost(
         # for each chunk, we prompt the LLM with the contextual RAG prompt
         # and the full document content (or the doc summary, so this is an overestimate)
         num_input_tokens += num_input_chunks * (
-            CONTEXTUAL_RAG_TOKEN_ESTIMATE + MAX_TOKENS_FOR_FULL_INCLUSION
+            CONTEXTUAL_RAG_TOKEN_ESTIMATE + full_doc_inclusion_tokens
         )
 
         # in aggregate, each chunk content is used as a prompt input once
         # so the full input size is covered
         num_input_tokens += num_tokens
 
-        # A single MAX_CONTEXT_TOKENS worth of output is generated per chunk
-        num_output_tokens += num_input_chunks * MAX_CONTEXT_TOKENS
+        # A single summary-output cap worth of output is generated per chunk
+        num_output_tokens += num_input_chunks * summary_output_tokens
 
     # going over each doc once means all the tokens, plus the prompt tokens for
     # the summary prompt. This CAN happen even when USE_DOCUMENT_SUMMARY is false,
     # since doc summaries are used for longer documents when USE_CHUNK_SUMMARY is true.
     # So, we include this unconditionally to overestimate.
     num_input_tokens += num_tokens + num_docs * DOCUMENT_SUMMARY_TOKEN_ESTIMATE
-    num_output_tokens += num_docs * MAX_CONTEXT_TOKENS
+    num_output_tokens += num_docs * summary_output_tokens
 
     try:
         from onyx.llm.cost import compute_cost_cents

@@ -1757,8 +1757,6 @@ AVERAGE_SUMMARY_EMBEDDINGS = (
     os.environ.get("AVERAGE_SUMMARY_EMBEDDINGS", "false").lower() == "true"
 )
 
-MAX_TOKENS_FOR_FULL_INCLUSION = 4096
-
 # The intent was to have this be configurable per query, but I don't think any
 # codepath was actually configuring this, so for the migrated Vespa interface
 # we'll just use the default value, but also have it be configurable by env var.

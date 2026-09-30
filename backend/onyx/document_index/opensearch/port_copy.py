@@ -16,6 +16,7 @@ so they stream PIT pages.
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 
+from onyx.configs.app_configs import USE_CHUNK_SUMMARY, USE_DOCUMENT_SUMMARY
 from onyx.db.models import SearchSettings
 from onyx.document_index.factory import build_opensearch_document_index
 from onyx.document_index.interfaces_new import TenantState
@@ -24,7 +25,6 @@ from onyx.document_index.opensearch.opensearch_document_index import (
     OpenSearchDocumentIndex,
 )
 from onyx.document_index.opensearch.schema import DocumentChunkWithoutVectors
-from onyx.indexing.chunker import DEFAULT_CONTEXTUAL_RAG_RESERVED_TOKENS
 from onyx.indexing.embedder import DefaultIndexingEmbedder, IndexingEmbedder
 from onyx.indexing.port_reembed import (
     AugmentationReembedContext,
@@ -32,6 +32,7 @@ from onyx.indexing.port_reembed import (
     re_embed_chunks,
     select_reembed_strategy,
 )
+from onyx.llm.context_budgets import CONTEXTUAL_RAG_SUMMARY_OUTPUT, scale
 from onyx.llm.factory import get_contextual_rag_llm_for_search_settings
 from onyx.natural_language_processing.utils import BaseTokenizer, get_tokenizer
 from shared_configs.configs import DOC_EMBEDDING_CONTEXT_SIZE, MULTI_TENANT
@@ -76,7 +77,12 @@ def _build_augmentation_ctx(
         # The same *2 fudge factor over the chunk size that the indexing
         # pipeline applies to absorb embedder-vs-LLM tokenizer drift.
         chunk_token_limit=DOC_EMBEDDING_CONTEXT_SIZE * 2,
-        contextual_rag_reserved_tokens=DEFAULT_CONTEXTUAL_RAG_RESERVED_TOKENS,
+        # Mirror the chunker's per-chunk reservation: one RAG generation cap
+        # per enabled summary type, scaled to the RAG model's window.
+        contextual_rag_reserved_tokens=scale(
+            llm.config.max_input_tokens, CONTEXTUAL_RAG_SUMMARY_OUTPUT
+        )
+        * (int(USE_CHUNK_SUMMARY) + int(USE_DOCUMENT_SUMMARY)),
     )
 
 

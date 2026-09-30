@@ -12,7 +12,6 @@ from onyx.configs.app_configs import (
     ENABLE_CONTEXTUAL_RAG,
     MAX_CHUNKS_PER_DOC_BATCH,
     MAX_DOCUMENT_CHARS,
-    MAX_TOKENS_FOR_FULL_INCLUSION,
     USE_CHUNK_SUMMARY,
     USE_DOCUMENT_SUMMARY,
 )
@@ -87,6 +86,11 @@ from onyx.indexing.models import (
     UpdatableChunkData,
 )
 from onyx.indexing.vector_db_insertion import write_chunks_to_vector_db_with_backoff
+from onyx.llm.context_budgets import (
+    CONTEXTUAL_RAG_FULL_DOC_INCLUSION,
+    CONTEXTUAL_RAG_SUMMARY_OUTPUT,
+    scale,
+)
 from onyx.llm.factory import (
     get_contextual_rag_llm_for_search_settings,
     get_default_llm_with_vision,
@@ -94,7 +98,7 @@ from onyx.llm.factory import (
 from onyx.llm.interfaces import LLM
 from onyx.llm.models import ReasoningEffort, UserMessage
 from onyx.llm.multi_llm import LLMRateLimitError
-from onyx.llm.utils import MAX_CONTEXT_TOKENS, llm_response_to_string
+from onyx.llm.utils import llm_response_to_string
 from onyx.natural_language_processing.utils import (
     BaseTokenizer,
     get_tokenizer,
@@ -130,7 +134,7 @@ LLM_ENRICHMENT_SPEND_LIMIT_FAILURE_MESSAGE = (
 INDEXING_PIPELINE_TRACE_NAME = "indexing_pipeline"
 
 # Contextual-RAG doc/chunk summaries are a short, non-reasoning task. On a reasoning
-# model the hidden reasoning tokens consume the small MAX_CONTEXT_TOKENS budget and the
+# model the hidden reasoning tokens consume the small summary-output budget and the
 # visible summary returns empty, so disable reasoning for these calls.
 CONTEXTUAL_RAG_REASONING_EFFORT = ReasoningEffort.OFF
 
@@ -963,6 +967,10 @@ def add_document_summaries(
     # So we just pass the full prompt without caching
     summary_prompt = DOCUMENT_SUMMARY_PROMPT.format(document=doc_content)
     prompt_msg = UserMessage(content=summary_prompt)
+    # Summary output cap, relative to the summary model's window.
+    summary_max_tokens = scale(
+        llm.config.max_input_tokens, CONTEXTUAL_RAG_SUMMARY_OUTPUT
+    )
 
     with llm_generation_span(
         llm=llm,
@@ -972,7 +980,7 @@ def add_document_summaries(
     ) as span_generation:
         response = llm.invoke(
             prompt_msg,
-            max_tokens=MAX_CONTEXT_TOKENS,
+            max_tokens=summary_max_tokens,
             reasoning_effort=CONTEXTUAL_RAG_REASONING_EFFORT,
             total_timeout_override=CONTEXTUAL_RAG_LLM_TIMEOUT,
         )
@@ -1006,11 +1014,19 @@ def add_chunk_summaries(
         chunks_by_doc[0].source_document.get_text_content()
     )
     doc_content = tokenizer_trim_middle(doc_tokens, trunc_doc_chunk_tokens, tokenizer)
+    # Chunk-context output cap and full-document inclusion threshold, both
+    # relative to the RAG model's window.
+    context_max_tokens = scale(
+        llm.config.max_input_tokens, CONTEXTUAL_RAG_SUMMARY_OUTPUT
+    )
+    full_doc_inclusion_tokens = scale(
+        llm.config.max_input_tokens, CONTEXTUAL_RAG_FULL_DOC_INCLUSION
+    )
 
     # only compute doc summary if needed
     doc_info = (
         doc_content
-        if len(doc_tokens) <= MAX_TOKENS_FOR_FULL_INCLUSION
+        if len(doc_tokens) <= full_doc_inclusion_tokens
         else chunks_by_doc[0].doc_summary
     )
     if not doc_info:
@@ -1027,7 +1043,7 @@ def add_chunk_summaries(
         ) as span_generation:
             response = llm.invoke(
                 fallback_prompt,
-                max_tokens=MAX_CONTEXT_TOKENS,
+                max_tokens=context_max_tokens,
                 reasoning_effort=CONTEXTUAL_RAG_REASONING_EFFORT,
                 total_timeout_override=CONTEXTUAL_RAG_LLM_TIMEOUT,
             )
@@ -1058,7 +1074,7 @@ def add_chunk_summaries(
             ) as span_generation:
                 response = llm.invoke(
                     processed_prompt,
-                    max_tokens=MAX_CONTEXT_TOKENS,
+                    max_tokens=context_max_tokens,
                     reasoning_effort=CONTEXTUAL_RAG_REASONING_EFFORT,
                     total_timeout_override=CONTEXTUAL_RAG_LLM_TIMEOUT,
                 )
@@ -1701,6 +1717,11 @@ def run_indexing_pipeline(
         enable_multipass=multipass_config.multipass_indexing,
         enable_large_chunks=multipass_config.enable_large_chunks,
         enable_contextual_rag=contextual_rag_configured and llm_enrichment_allowed,
+        contextual_rag_output_tokens=(
+            scale(llm.config.max_input_tokens, CONTEXTUAL_RAG_SUMMARY_OUTPUT)
+            if llm is not None
+            else 0
+        ),
         # after every doc, update status in case there are a bunch of really long docs
     )
 

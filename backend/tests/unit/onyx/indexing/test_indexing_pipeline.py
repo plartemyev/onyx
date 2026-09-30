@@ -39,6 +39,7 @@ from onyx.indexing.indexing_pipeline import (
     run_indexing_pipeline,
 )
 from onyx.llm.constants import LlmProviderNames
+from onyx.llm.context_budgets import CONTEXTUAL_RAG_SUMMARY_OUTPUT, scale
 from onyx.llm.model_capabilities import get_max_input_tokens
 from onyx.llm.model_response import Choice, Message, ModelResponse
 from onyx.tracing.framework.traces import TraceContentMode
@@ -232,6 +233,8 @@ def test_contextual_rag(
         tokenizer=embedder.embedding_model.tokenizer,
         enable_multipass=False,
         enable_contextual_rag=enable_contextual_rag,
+        # Same reservation the indexing pipeline derives from the RAG model.
+        contextual_rag_output_tokens=scale(50_000, CONTEXTUAL_RAG_SUMMARY_OUTPUT),
     )
     chunks = chunker.chunk(indexing_documents)
 

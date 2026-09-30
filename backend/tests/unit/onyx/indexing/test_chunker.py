@@ -9,7 +9,7 @@ from onyx.connectors.models import Document, TextSection
 from onyx.indexing.chunker import Chunker
 from onyx.indexing.embedder import DefaultIndexingEmbedder
 from onyx.indexing.indexing_pipeline import process_image_sections
-from onyx.llm.utils import MAX_CONTEXT_TOKENS
+from onyx.llm.context_budgets import CONTEXTUAL_RAG_SUMMARY_OUTPUT, scale
 from tests.unit.onyx.indexing.conftest import MockHeartbeat
 
 
@@ -62,6 +62,8 @@ def test_chunk_document(
         tokenizer=embedder.embedding_model.tokenizer,
         enable_multipass=False,
         enable_contextual_rag=enable_contextual_rag,
+        # Same reservation the indexing pipeline derives from the RAG model.
+        contextual_rag_output_tokens=scale(50_000, CONTEXTUAL_RAG_SUMMARY_OUTPUT),
     )
     chunks = chunker.chunk(indexing_documents)
 
@@ -72,7 +74,10 @@ def test_chunk_document(
     assert "tag1" in chunks[0].metadata_suffix_keyword
     assert "tag2" in chunks[0].metadata_suffix_semantic
 
-    rag_tokens = MAX_CONTEXT_TOKENS * (
+    # Default construction reserves one summary-output cap (scaled to a
+    # 50,000-token window — the calibration reference) per enabled summary
+    # type.
+    rag_tokens = scale(50_000, CONTEXTUAL_RAG_SUMMARY_OUTPUT) * (
         int(USE_DOCUMENT_SUMMARY) + int(USE_CHUNK_SUMMARY)
     )
     for chunk in chunks:

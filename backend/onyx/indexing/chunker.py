@@ -17,7 +17,6 @@ from onyx.connectors.models import IndexingDocument
 from onyx.indexing.chunking import DocumentChunker, extract_blurb
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.indexing.models import DocAwareChunk
-from onyx.llm.utils import MAX_CONTEXT_TOKENS
 from onyx.natural_language_processing.utils import BaseTokenizer
 from onyx.utils.logger import setup_logger
 from shared_configs.configs import DOC_EMBEDDING_CONTEXT_SIZE
@@ -29,11 +28,6 @@ CHUNK_OVERLAP = 0
 # overwhelm the actual contents of the chunk
 MAX_METADATA_PERCENTAGE = 0.25
 CHUNK_MIN_CONTENT = 256
-# Tokens reserved per chunk for the contextual-RAG doc summary + chunk context.
-# Single source of truth — the reindex port reuses it to mirror indexing budgets.
-DEFAULT_CONTEXTUAL_RAG_RESERVED_TOKENS = MAX_CONTEXT_TOKENS * (
-    int(USE_CHUNK_SUMMARY) + int(USE_DOCUMENT_SUMMARY)
-)
 
 logger = setup_logger()
 
@@ -138,6 +132,10 @@ class Chunker:
         chunk_overlap: int = CHUNK_OVERLAP,
         mini_chunk_size: int = MINI_CHUNK_SIZE,
         callback: IndexingHeartbeatInterface | None = None,
+        # Output cap of one contextual-RAG generation (chunk context or doc
+        # summary) on the RAG model, scaled to that model's context window by
+        # the caller. Reserved per chunk so the generated context fits.
+        contextual_rag_output_tokens: int = 0,
     ) -> None:
         self.include_metadata = include_metadata
         self.chunk_token_limit = chunk_token_limit
@@ -148,8 +146,8 @@ class Chunker:
             assert USE_CHUNK_SUMMARY or USE_DOCUMENT_SUMMARY, (
                 "Contextual RAG requires at least one of chunk summary and document summary enabled"
             )
-        self.default_contextual_rag_reserved_tokens = (
-            DEFAULT_CONTEXTUAL_RAG_RESERVED_TOKENS
+        self.default_contextual_rag_reserved_tokens = contextual_rag_output_tokens * (
+            int(USE_CHUNK_SUMMARY) + int(USE_DOCUMENT_SUMMARY)
         )
         self.tokenizer = tokenizer
         self.callback = callback
