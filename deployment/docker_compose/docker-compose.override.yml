@@ -115,6 +115,11 @@ services:
       # that turned the 2026-09-30 Prachuap session into a 40-minute turn.
       # Falls back to the tier-1 digest on timeout/error.
       - GEN_AI_TOOL_RESPONSE_SUMMARIZATION=true
+      # 120s: big page fetches (tens of KB) need far more prompt-processing
+      # time on the local model than the 30s default allows; matches the
+      # deployment's LLM_SOCKET_READ_TIMEOUT. On timeout the digest call is
+      # abandoned and the deterministic tier-1 digest is used.
+      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=120
       # Load the Ollama model with num_ctx above Onyx's max input tokens so
       # template overhead and generation never push the prompt over context.
       - OLLAMA_NUM_CTX_HEADROOM=8192
