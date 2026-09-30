@@ -74,6 +74,16 @@ MAX_CHARS_ACROSS_URLS = 10 * MAX_CHARS_PER_URL
 # it still gets included normally.
 MIN_CONTENT_CHARS = 200
 
+# Page image URLs share the per-page metadata budget with content. A board or
+# gallery page can carry hundreds of `<img>` URLs — logos, icons, tracking
+# pixels — that eat the char budget and the model's context without telling
+# it anything. Keep a small content-bearing subset.
+MAX_IMAGES_PER_RESULT = 8
+
+# Image URL suffixes that carry page chrome, never page content. Content
+# images are photos/screenshots: jpg/png/webp/avif files of the page itself.
+_NON_CONTENT_IMAGE_SUFFIXES = (".svg", ".php")
+
 # LLM-facing reason used when the chat disabled web access (Web Search off) and
 # a URL couldn't be served from indexed documents.
 WEB_FETCH_DISABLED_REASON = (
@@ -311,6 +321,26 @@ def _estimate_result_chars(result: dict[str, Any]) -> int:
     return total
 
 
+def _llm_facing_image_urls(image_urls: list[str]) -> list[str]:
+    """The subset of a page's image URLs worth telling the model about.
+
+    Drops embedded data, icon/script-served chrome (.svg, .php — the latter
+    is where tracking pixels live) and everything past the cap. Fetch-time
+    extraction stays complete; this trims only the LLM-facing view.
+    """
+    kept: list[str] = []
+    for url in image_urls:
+        if url.startswith("data:"):
+            continue
+        path = url.split("?", 1)[0].lower()
+        if path.endswith(_NON_CONTENT_IMAGE_SUFFIXES):
+            continue
+        kept.append(url)
+        if len(kept) >= MAX_IMAGES_PER_RESULT:
+            break
+    return kept
+
+
 def _convert_sections_to_llm_string_with_citations(
     sections: list[InferenceSection],
     existing_citation_mapping: dict[str, int],
@@ -383,7 +413,9 @@ def _convert_sections_to_llm_string_with_citations(
         if chunk.metadata:
             result["metadata"] = json.dumps(chunk.metadata, ensure_ascii=False)
         if chunk.image_urls:
-            result["images"] = chunk.image_urls
+            images = _llm_facing_image_urls(chunk.image_urls)
+            if images:
+                result["images"] = images
 
         # Calculate chars used by metadata fields (everything except content)
         metadata_chars = _estimate_result_chars(result)
