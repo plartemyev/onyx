@@ -128,16 +128,32 @@ outgoing:
   # a burst waits at most 45s per request before it goes.
   browser_origin_gap_search: [4, 10]
   browser_origin_gap_site: [8, 20]
+
+  # Persistent SERP cache: a /search request whose canonical identity
+  # (query, locale, pageno, safesearch, time_range, engine set) matches a
+  # fresh entry is answered from disk without touching any browser lane.
+  # Bodies are zstd-compressed JSON envelopes with per-engine result
+  # blocks. TTL is fixed on write and never extended by reads.
+  search_cache:
+    enabled: true
+    ttl_seconds: 86400
+    path: /var/cache/searxng/serp_cache.sqlite3
+    compression_level: 3
+    prune_interval_writes: 50
   request_timeout: 60.0
 # Engine overrides merge by name with the defaults. google / bing / brave are
 # disabled in the upstream defaults; the rest stay enabled.
-# Timeouts: the budget covers the origin pacing gap (4-10s, bursts more),
-# the bounded lane wait (usually seconds; browsing preemption at 20s) and
-# browser-speed fetches including challenge solving. Onyx's client read
-# timeout (SEARXNG_READ_TIMEOUT_SECONDS, 450s = 2x the worst attempt) must
-# stay above this budget; its retries land 20s/40s later, paced like a
-# person re-querying, and by then a banked clearance often lets the search
-# through.
+# Timeouts: the budget covers the origin pacing gap (4-10s, bursts more), the
+# bounded lane wait (usually seconds; browsing preemption at 20s), lane cold
+# starts after an idle reap (Chromium relaunch), and browser-speed fetches
+# including challenge solving. A chat turn fans a query burst out over the
+# same 6 lanes, so per-origin queueing eats into these budgets -- 2026-09-30
+# (Prachuap session postmortem): 60-85s budgets expired mid-burst, every
+# engine returned "timeout", and Onyx's retries piled onto the congestion.
+# The raised budgets ride out a burst; Onyx's client read timeout
+# (SEARXNG_READ_TIMEOUT_SECONDS, 450s) stays far above all of them, and its
+# retries land 20s/40s later, paced like a person re-querying, by which time
+# a banked clearance often lets the search through.
 engines:
   # 2026-09-26 (evening): live-tested again on this residential IP. The
   # lane identity is now fully self-consistent (real distro Chromium, no
@@ -148,7 +164,7 @@ engines:
   # vs a normal desktop are the Chromium-vs-Chrome binary brand, the
   # young cookie jars, and this IP's google-side history from our own
   # earlier automated attempts. Left ENABLED per owner decision: a google
-  # search costs up to 85s (client budget) while the lane keeps solving
+  # search costs up to 100s (client budget) while the lane keeps solving
   # in the background (12 slides x 6 votes, minutes per challenge).
   # Disable here if that latency is not acceptable; the solver itself is
   # harmless for engines that never challenge.
@@ -158,12 +174,21 @@ engines:
     # the lane, the request fails at this budget while the lane keeps
     # solving in the background and earns clearance for later requests
     # (Onyx's client read timeout is 450s; the budget must stay below it).
-    timeout: 85.0
+    timeout: 100.0
   - name: bing
     disabled: false
-    # 2x the worst warm-lane search observed (~35s incl. render + settle).
-    timeout: 75.0
+    # 2x the worst warm-lane search observed (~35s incl. render + settle),
+    # plus headroom for burst queueing behind the per-origin gap.
+    timeout: 90.0
   - name: brave
     disabled: false
-    # 2x the worst warm-lane search observed (~35s incl. render + settle).
-    timeout: 75.0
+    # 2x the worst warm-lane search observed (~35s incl. render + settle),
+    # plus headroom for burst queueing behind the per-origin gap.
+    timeout: 90.0
+  # duckduckgo / wikipedia have no engine-specific override upstream: they
+  # inherit outgoing.request_timeout (60s), which a burst can eat entirely.
+  # Give them the same burst headroom as the other browser-served engines.
+  - name: duckduckgo
+    timeout: 90.0
+  - name: wikipedia
+    timeout: 90.0
