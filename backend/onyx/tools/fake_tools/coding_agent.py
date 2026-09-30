@@ -23,6 +23,11 @@ from onyx.deep_research.dr_mock_tools import (
     THINK_TOOL_RESPONSE_TOKEN_COUNT,
 )
 from onyx.deep_research.utils import create_think_tool_token_processor
+from onyx.llm.context_budgets import (
+    CODING_AGENT_FINAL_ANSWER_OUTPUT,
+    CODING_AGENT_STEP_OUTPUT,
+    scale,
+)
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.model_capabilities import model_is_reasoning_model
 from onyx.llm.models import ReasoningEffort, ToolChoiceOptions
@@ -75,7 +80,6 @@ REPO_TARBALL_PATH = "repo.tar.gz"
 # Sentinel tool_id used when constructing the in-memory BashTool. Bash sub-tool
 # calls are not persisted to the DB through this loop, so the id is unused.
 BASH_TOOL_SENTINEL_ID = 0
-MAX_FINAL_ANSWER_TOKENS = 4000
 CODING_AGENT_GITHUB_MAX_REPO_BYTES = 500 * 1024 * 1024
 CODING_AGENT_GITHUB_DOWNLOAD_TIMEOUT = (30, 300)
 
@@ -224,7 +228,10 @@ def _generate_final_answer(
             reasoning_effort=ReasoningEffort.LOW,
             final_documents=None,
             user_identity=user_identity,
-            max_tokens=MAX_FINAL_ANSWER_TOKENS,
+            # Output cap for the final answer, relative to the model's window.
+            max_tokens=scale(
+                llm.config.max_input_tokens, CODING_AGENT_FINAL_ANSWER_OUTPUT
+            ),
             use_existing_tab_index=True,
             is_deep_research=False,
         )
@@ -368,7 +375,9 @@ def run_coding_agent_call(
                         custom_token_processor=custom_processor,
                         use_existing_tab_index=True,
                         is_deep_research=False,
-                        max_tokens=2048,
+                        max_tokens=scale(
+                            llm.config.max_input_tokens, CODING_AGENT_STEP_OUTPUT
+                        ),
                     )
 
                     while True:

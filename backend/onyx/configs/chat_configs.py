@@ -2,6 +2,12 @@ import fnmatch
 import logging
 import os
 
+from onyx.llm.context_budgets import (
+    DR_THINKING_RESERVE_BUDGET,
+    DR_TOOL_CALL_ANSWER_BUDGET,
+    scale,
+)
+
 NUM_RETURNED_HITS = 50
 
 # May be less depending on model
@@ -124,6 +130,13 @@ DR_TEMPERATURE_REPORT = _optional_float_env("DR_TEMPERATURE_REPORT")
 # hardware turns every sub-agent cycle into a long prefill. Oldest messages
 # are dropped first when the cap is hit. `None` = uncapped.
 DR_SUBAGENT_CONTEXT_TOKENS = _optional_int_env("DR_SUBAGENT_CONTEXT_TOKENS")
+# Cap on the Deep Research final report's output tokens. These reports are
+# user-facing, so a larger window can justify a longer report — but on slow
+# inference a big cap means a long wait. Unset: a fraction of the selected
+# model's context window (see onyx.llm.context_budgets).
+DR_FINAL_REPORT_MAX_TOKENS = _optional_int_env("DR_FINAL_REPORT_MAX_TOKENS")
+
+
 # Cap on a research sub-agent's intermediate report output tokens. These
 # reports are consumed by the orchestrator, not by users, so a large cap
 # mostly costs generation time on slow inference. `None` = the built-in
@@ -141,11 +154,18 @@ DR_MAX_INTERMEDIATE_REPORT_TOKENS = _optional_int_env(
 # a separate thinking reserve; plain models keep the tight cap because their
 # entire output is answer. The stream-level reasoning/answer split in
 # llm_step is what keeps these two distinguishable in logs.
-DR_TOOL_CALL_ANSWER_TOKENS = int(os.environ.get("DR_TOOL_CALL_ANSWER_TOKENS") or "1024")
-DR_THINKING_TOKEN_RESERVE = int(os.environ.get("DR_THINKING_TOKEN_RESERVE") or "3072")
+#
+# Unset, both scale with the selected model's context window (see
+# onyx.llm.context_budgets); set, they pin an absolute value.
+DR_TOOL_CALL_ANSWER_TOKENS = _optional_int_env("DR_TOOL_CALL_ANSWER_TOKENS")
+DR_THINKING_TOKEN_RESERVE = _optional_int_env("DR_THINKING_TOKEN_RESERVE")
 
 
-def dr_step_generation_budget(answer_budget: int, is_reasoning_model: bool) -> int:
+def dr_step_generation_budget(
+    answer_budget: int,
+    is_reasoning_model: bool,
+    max_input_tokens: int,
+) -> int:
     """Total generation cap (max_tokens) for an answer-bearing DR step.
 
     max_tokens counts native reasoning tokens too, so on thinking models the
@@ -153,12 +173,26 @@ def dr_step_generation_budget(answer_budget: int, is_reasoning_model: bool) -> i
     thinking phase consumes the whole cap and the step ends with no answer
     (observed as finish_reason=length with empty answer).
     """
-    return answer_budget + (DR_THINKING_TOKEN_RESERVE if is_reasoning_model else 0)
+    if not is_reasoning_model:
+        return answer_budget
+    thinking_reserve = (
+        DR_THINKING_TOKEN_RESERVE
+        if DR_THINKING_TOKEN_RESERVE is not None
+        else scale(max_input_tokens, DR_THINKING_RESERVE_BUDGET)
+    )
+    return answer_budget + thinking_reserve
 
 
-def dr_tool_call_max_tokens(is_reasoning_model: bool) -> int:
+def dr_tool_call_max_tokens(is_reasoning_model: bool, max_input_tokens: int) -> int:
     """Total generation cap for a DR tool-calling step on the given model."""
-    return dr_step_generation_budget(DR_TOOL_CALL_ANSWER_TOKENS, is_reasoning_model)
+    answer_budget = (
+        DR_TOOL_CALL_ANSWER_TOKENS
+        if DR_TOOL_CALL_ANSWER_TOKENS is not None
+        else scale(max_input_tokens, DR_TOOL_CALL_ANSWER_BUDGET)
+    )
+    return dr_step_generation_budget(
+        answer_budget, is_reasoning_model, max_input_tokens
+    )
 
 
 # Model names/patterns for thinking-capable models that Onyx's capability

@@ -52,6 +52,7 @@ from onyx.deep_research.utils import (
     check_special_tool_calls,
     create_think_tool_token_processor,
 )
+from onyx.llm.context_budgets import DR_INTERMEDIATE_REPORT_OUTPUT, scale
 from onyx.llm.exceptions import LLMStreamCancelled
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.models import ReasoningEffort, ToolChoiceOptions
@@ -106,8 +107,6 @@ logger = setup_logger()
 RESEARCH_AGENT_TIMEOUT_MESSAGE = (
     f"Research Agent timed out after {DR_RESEARCH_AGENT_TIMEOUT_S // 60} minutes"
 )
-# May be good to experiment with this, empirically reports of around 5,000 tokens are pretty good.
-MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS = 10000
 
 
 def _stop_requested(check_is_connected: Callable[[], bool] | None) -> bool:
@@ -194,14 +193,15 @@ def generate_intermediate_report(
         )
         # The report is consumed by the orchestrator, not people. When the
         # deployment asks for compact reports, say so explicitly instead of
-        # relying on the sampling cap alone.
+        # relying on the sampling cap alone. The cap scales with the model's
+        # context window when no absolute override is configured.
         state_container = ChatStateContainer()
         # The report streams to the UI, so it carries the reply-language line.
         report_prompt = with_language_section(RESEARCH_REPORT_PROMPT, language_section)
         max_report_tokens = (
             DR_MAX_INTERMEDIATE_REPORT_TOKENS
             if DR_MAX_INTERMEDIATE_REPORT_TOKENS is not None
-            else MAX_INTERMEDIATE_REPORT_LENGTH_TOKENS
+            else scale(llm.config.max_input_tokens, DR_INTERMEDIATE_REPORT_OUTPUT)
         )
         if DR_MAX_INTERMEDIATE_REPORT_TOKENS is not None:
             report_prompt += (
@@ -214,7 +214,7 @@ def generate_intermediate_report(
         # the reserve on top of the answer budget; the prompt directive above
         # still bounds the answer itself.
         generation_max_tokens = dr_step_generation_budget(
-            max_report_tokens, is_reasoning_model
+            max_report_tokens, is_reasoning_model, llm.config.max_input_tokens
         )
         system_prompt = ChatMessageSimple(
             message=report_prompt,
@@ -483,7 +483,8 @@ def run_research_agent_call(
                     # separate reserve so reasoning cannot starve the
                     # call itself (same scheme as dr_loop.py).
                     max_tokens=dr_tool_call_max_tokens(
-                        dr_is_thinking_model(llm.config.model_name, is_reasoning_model)
+                        dr_is_thinking_model(llm.config.model_name, is_reasoning_model),
+                        llm.config.max_input_tokens,
                     ),
                     # Search steps: moderate diversity helps query and source
                     # coverage; the call format stays constrained by the

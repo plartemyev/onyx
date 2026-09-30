@@ -35,7 +35,12 @@ def test_dr_tool_call_max_tokens_plain_model_gets_answer_budget_only(
 ) -> None:
     monkeypatch.delenv("DR_TOOL_CALL_ANSWER_TOKENS", raising=False)
     monkeypatch.delenv("DR_THINKING_TOKEN_RESERVE", raising=False)
-    assert dr_tool_call_max_tokens(is_reasoning_model=False) == 1024
+    # 50,000 tokens is the calibration reference window: the relative
+    # defaults reproduce the historical absolute budgets there.
+    assert (
+        dr_tool_call_max_tokens(is_reasoning_model=False, max_input_tokens=50_000)
+        == 1024
+    )
 
 
 def test_dr_tool_call_max_tokens_reasoning_model_gets_reserve(
@@ -43,7 +48,9 @@ def test_dr_tool_call_max_tokens_reasoning_model_gets_reserve(
 ) -> None:
     monkeypatch.delenv("DR_TOOL_CALL_ANSWER_TOKENS", raising=False)
     monkeypatch.delenv("DR_THINKING_TOKEN_RESERVE", raising=False)
-    assert dr_tool_call_max_tokens(is_reasoning_model=True) == 1024 + 3072
+    assert dr_tool_call_max_tokens(
+        is_reasoning_model=True, max_input_tokens=50_000
+    ) == (1024 + 3072)
 
 
 def test_dr_step_generation_budget_adds_reserve_for_thinking_models(
@@ -54,8 +61,16 @@ def test_dr_step_generation_budget_adds_reserve_for_thinking_models(
     combined, and a thinking model that exhausts the cap ends with no answer
     at all (finish_reason=length, empty answer)."""
     monkeypatch.delenv("DR_THINKING_TOKEN_RESERVE", raising=False)
-    assert dr_step_generation_budget(800, is_reasoning_model=False) == 800
-    assert dr_step_generation_budget(800, is_reasoning_model=True) == 800 + 3072
+    assert (
+        dr_step_generation_budget(
+            800, is_reasoning_model=False, max_input_tokens=50_000
+        )
+        == 800
+    )
+    assert (
+        dr_step_generation_budget(800, is_reasoning_model=True, max_input_tokens=50_000)
+        == 800 + 3072
+    )
 
 
 def test_dr_tool_call_max_tokens_honors_config(
@@ -67,15 +82,30 @@ def test_dr_tool_call_max_tokens_honors_config(
 
     monkeypatch.setattr(chat_configs, "DR_TOOL_CALL_ANSWER_TOKENS", 2048)
     monkeypatch.setattr(chat_configs, "DR_THINKING_TOKEN_RESERVE", 512)
-    assert dr_tool_call_max_tokens(is_reasoning_model=False) == 2048
-    assert dr_tool_call_max_tokens(is_reasoning_model=True) == 2560
+    assert (
+        dr_tool_call_max_tokens(is_reasoning_model=False, max_input_tokens=50_000)
+        == 2048
+    )
+    assert (
+        dr_tool_call_max_tokens(is_reasoning_model=True, max_input_tokens=50_000)
+        == 2560
+    )
 
 
 def test_defaults_unchanged() -> None:
-    """Guard against accidental default drift: the answer budget stays the
-    historical 1024; the thinking reserve is the new 3072."""
-    assert DR_TOOL_CALL_ANSWER_TOKENS == 1024
-    assert DR_THINKING_TOKEN_RESERVE == 3072
+    """Guard against accidental default drift: with no env override, the
+    budgets scale with the model's context window and reproduce the
+    historical 1024 / 3072 at the calibration reference window."""
+    assert DR_TOOL_CALL_ANSWER_TOKENS is None
+    assert DR_THINKING_TOKEN_RESERVE is None
+    from onyx.llm.context_budgets import (
+        DR_THINKING_RESERVE_BUDGET,
+        DR_TOOL_CALL_ANSWER_BUDGET,
+        scale,
+    )
+
+    assert scale(50_000, DR_TOOL_CALL_ANSWER_BUDGET) == 1024
+    assert scale(50_000, DR_THINKING_RESERVE_BUDGET) == 3072
 
 
 def test_truncated_tool_call_exception_detected() -> None:

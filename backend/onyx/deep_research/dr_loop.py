@@ -20,6 +20,7 @@ from onyx.chat.models import (
 from onyx.chat.prompt_utils import build_language_section, with_language_section
 from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.configs.chat_configs import (
+    DR_FINAL_REPORT_MAX_TOKENS,
     DR_FORCE_REPORT_S,
     DR_MAX_ORCHESTRATOR_CYCLES,
     DR_MAX_ORCHESTRATOR_CYCLES_REASONING,
@@ -32,7 +33,10 @@ from onyx.configs.chat_configs import (
     dr_tool_call_max_tokens,
 )
 from onyx.configs.constants import MessageType
-from onyx.configs.model_configs import GEN_AI_INPUT_TOKEN_SAFETY_MARGIN
+from onyx.configs.model_configs import (
+    GEN_AI_INPUT_TOKEN_SAFETY_MARGIN,
+    GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
+)
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import SupportedLanguage
 from onyx.db.tools import get_tool_by_name
@@ -46,6 +50,11 @@ from onyx.deep_research.dr_mock_tools import (
 from onyx.deep_research.utils import (
     check_special_tool_calls,
     create_think_tool_token_processor,
+)
+from onyx.llm.context_budgets import (
+    DR_FINAL_REPORT_OUTPUT,
+    DR_MIN_WINDOW_VS_FALLBACK,
+    scale,
 )
 from onyx.llm.exceptions import LLMStreamCancelled
 from onyx.llm.interfaces import LLM, LLMUserIdentity
@@ -89,7 +98,6 @@ from onyx.utils.timing import log_function_time
 logger = setup_logger()
 
 MAX_USER_MESSAGES_FOR_CONTEXT = 5
-MAX_FINAL_REPORT_TOKENS = 20000
 
 
 def _stop_requested(check_is_connected: Callable[[], bool] | None) -> bool:
@@ -134,6 +142,13 @@ def generate_final_report(
     """
     with function_span("generate_report") as span:
         span.span_data.input = f"history_length={len(history)}, turn_index={turn_index}"
+        # Output cap for the final report: DR_FINAL_REPORT_MAX_TOKENS pins an
+        # absolute value; unset, it scales with the model's window.
+        max_report_tokens = (
+            DR_FINAL_REPORT_MAX_TOKENS
+            if DR_FINAL_REPORT_MAX_TOKENS is not None
+            else scale(llm.config.max_input_tokens, DR_FINAL_REPORT_OUTPUT)
+        )
         final_report_prompt = with_language_section(
             FINAL_REPORT_PROMPT.format(
                 current_datetime=get_current_llm_day_time(full_sentence=False),
@@ -183,7 +198,7 @@ def generate_final_report(
             state_container=state_container,
             final_documents=final_documents,
             user_identity=user_identity,
-            max_tokens=MAX_FINAL_REPORT_TOKENS,
+            max_tokens=max_report_tokens,
             is_deep_research=True,
             pre_answer_processing_time=pre_answer_processing_time,
             timeout_override=DR_REPORT_LLM_TIMEOUT_S,
@@ -231,7 +246,7 @@ def generate_final_report(
                 state_container=state_container,
                 final_documents=final_documents,
                 user_identity=user_identity,
-                max_tokens=MAX_FINAL_REPORT_TOKENS,
+                max_tokens=max_report_tokens,
                 is_deep_research=True,
                 pre_answer_processing_time=pre_answer_processing_time,
                 timeout_override=DR_REPORT_LLM_TIMEOUT_S,
@@ -294,10 +309,16 @@ def run_deep_research_llm_loop(
         from onyx.llm.litellm_singleton.config import initialize_litellm
 
         # An approximate limit. In extreme cases it may still fail but this should allow deep research
-        # to work in most cases.
-        if llm.config.max_input_tokens < 50000:
+        # to work in most cases. Relative to the configured fallback window
+        # (GEN_AI_MODEL_FALLBACK_MAX_TOKENS), so deployments that declare a
+        # larger baseline get a proportionally larger floor.
+        minimum_dr_input_tokens = scale(
+            GEN_AI_MODEL_FALLBACK_MAX_TOKENS, DR_MIN_WINDOW_VS_FALLBACK
+        )
+        if llm.config.max_input_tokens < minimum_dr_input_tokens:
             raise RuntimeError(
-                "Deep Research requires a model with at least 50,000 max input "
+                "Deep Research requires a model with at least "
+                f"{minimum_dr_input_tokens} max input "
                 f"tokens, but the selected model ({llm.config.model_name}) has "
                 f"{llm.config.max_input_tokens}. Pick a larger-context model in "
                 "chat, or raise this model's 'Max Input Tokens' under Admin "
@@ -639,7 +660,8 @@ def run_deep_research_llm_loop(
                     ]
                     | None = custom_processor,
                     _max_tokens: int = dr_tool_call_max_tokens(
-                        dr_is_thinking_model(llm.config.model_name, is_reasoning_model)
+                        dr_is_thinking_model(llm.config.model_name, is_reasoning_model),
+                        llm.config.max_input_tokens,
                     ),
                 ) -> tuple[LlmStepResult, bool, list[ToolCallKickoff]]:
                     llm_step_result, has_reasoned = run_llm_step(
@@ -706,7 +728,9 @@ def run_deep_research_llm_loop(
                         "with the thinking reserve forced on"
                     )
                     llm_step_result, has_reasoned, tool_calls = _orchestrator_step(
-                        _max_tokens=dr_tool_call_max_tokens(True)
+                        _max_tokens=dr_tool_call_max_tokens(
+                            True, llm.config.max_input_tokens
+                        )
                     )
                     if has_reasoned:
                         reasoning_cycles += 1
