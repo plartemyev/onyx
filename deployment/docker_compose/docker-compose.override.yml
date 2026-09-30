@@ -17,8 +17,9 @@ services:
     # with ~7 engines per search, a 16-search Onyx burst used to spawn 100+
     # WSGI threads that all queued on the 6 browser lanes and timed out
     # together. Backpressure bounds in-flight requests (≈4 searches' worth of
-    # engine fetches); the rest queue at the HTTP layer within Onyx's 90s
-    # client read timeout instead of piling onto the lanes.
+    # engine fetches); the rest queue at the HTTP layer within Onyx's 450s
+    # client read timeout (SEARXNG_READ_TIMEOUT_SECONDS=450, set below for
+    # api_server and background) instead of piling onto the lanes.
     entrypoint:
       - granian
       - --interface
