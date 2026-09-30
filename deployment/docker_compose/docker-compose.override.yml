@@ -38,14 +38,18 @@ services:
     sysctls:
       - net.ipv4.ip_default_ttl=65
     # Cap blast radius: a browser-pool leak must not starve the host.
-    # Measured legitimate peak of the fleet under a research session
-    # (6 lanes + reader tabs + crawls + solver): memory.peak 3.8G plus
-    # 3.0G swap — the old 3g cap sat below real demand and caused
-    # swap thrash, then kernel oom_kills of the lane browsers
-    # (2026-09-26 14:48-16:09 outage). 6g fits demand with headroom;
-    # memswap_limit bounds total pressure before the kill.
-    mem_limit: 6g
-    memswap_limit: 8g
+    # Measured peak under a research session: memory.peak 7.03G with
+    # oom_kill 38 (2026-09-27 13:00-14:30): the OOM killer took the shared
+    # playwright driver first, and every lane then failed until the pool
+    # was restarted. The old 6g cap sat below this demand.
+    # 8g fits the peak with headroom; memswap_limit bounds total pressure
+    # before the kill.
+    mem_limit: 8g
+    memswap_limit: 10g
+    # PID 1 (granian) does not reap children: OOM-killed chromium processes
+    # pile up as zombies (148 after the 2026-09-27 OOM storm) until the PID
+    # space runs out. tini reaps them.
+    init: true
     healthcheck:
       # No wget/curl in this image; python3 ships with searxng.
       test:
