@@ -786,7 +786,7 @@ const AppInputBar = React.memo(
                 ? SvgSimpleLoader
                 : chatState !== "input" && message.trim()
                   ? SvgArrowUp
-                  : chatState === "streaming" || isVoicePlaybackControllable
+                  : chatState !== "input" || isVoicePlaybackControllable
                     ? SvgStop
                     : SvgArrowUp
             }
@@ -800,7 +800,10 @@ const AppInputBar = React.memo(
                   // empty-save.
                   clearChatDraft();
                 }
-              } else if (chatState == "streaming") {
+              } else if (chatState !== "input") {
+                // Streaming, loading (run started, no packets yet) and
+                // tool-building all have a live server run the stop fence
+                // can cancel.
                 stopTTS({ manual: true });
                 stopGenerating();
               } else if (isVoicePlaybackControllable) {

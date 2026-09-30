@@ -1,6 +1,10 @@
 import { DocumentInfoPacket, StreamStopInfo } from "@/lib/search/interfaces";
 import type { SearchFiltersRequest } from "@/lib/searchFilters/types";
 import { handleSSEStream } from "@/lib/search/streamingUtils";
+import {
+  ProcessingProbeResult,
+  StreamHttpError,
+} from "@/app/app/services/resilientStream";
 import { ReasoningEffortOverride } from "@/lib/languageModels/types";
 import { FeedbackType } from "@/app/app/interfaces";
 import {
@@ -270,28 +274,20 @@ export async function* sendMessage({
       return;
     }
 
-    throw new Error(data.detail ?? `HTTP error! status: ${response.status}`);
+    throw new StreamHttpError(
+      response.status,
+      data.detail ?? `HTTP error! status: ${response.status}`
+    );
   }
 
-  yield* withoutHeartbeats(handleSSEStream<PacketType>(response, signal));
-}
-
-// Drops keepalive heartbeats so stream consumers only ever see run state.
-async function* withoutHeartbeats(
-  stream: AsyncGenerator<PacketType, void, unknown>
-): AsyncGenerator<PacketType, void, unknown> {
-  for await (const packet of stream) {
-    if ("obj" in packet && packet.obj.type === "chat_heartbeat") {
-      continue;
-    }
-    yield packet;
-  }
+  // Heartbeats pass through: the resilient stream layer consumes them as
+  // watchdog liveness ticks and filters them from what consumers see.
+  yield* handleSSEStream<PacketType>(response, signal);
 }
 
 // Replays an in-flight run's buffered stream from `cursor`, then tails it live.
 // 404 means there is nothing to resume — callers fall back to the persisted
-// session state. Heartbeats pass through: the consumer uses them as liveness
-// ticks to re-check session focus during quiet phases.
+// session state.
 export async function* resumeStream(
   chatSessionId: string,
   cursor: number,
@@ -304,10 +300,33 @@ export async function* resumeStream(
 
   if (!response.ok) {
     const data: ErrorResponseBody = await response.json().catch(() => ({}));
-    throw new Error(data.detail ?? `HTTP error! status: ${response.status}`);
+    throw new StreamHttpError(
+      response.status,
+      data.detail ?? `HTTP error! status: ${response.status}`
+    );
   }
 
   yield* handleSSEStream<PacketType>(response, signal);
+}
+
+// Fence probe for the processing status of a chat session. Returns null when
+// the check itself could not complete (offline) — callers treat that as
+// "unknown" rather than "idle".
+export async function getChatSessionProcessingStatus(
+  chatSessionId: string
+): Promise<ProcessingProbeResult | null> {
+  try {
+    const response = await fetch(
+      `/api/chat/chat-session/${chatSessionId}/processing-status`
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const data: ProcessingProbeResult = await response.json();
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 export async function setPreferredResponse(

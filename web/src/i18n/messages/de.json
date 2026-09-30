@@ -5835,7 +5835,9 @@
       "panel": {
         "description": "{start} – {end} · Systemnutzung ist LLM-Aktivität, die Onyx im Hintergrund statt für einen bestimmten Benutzer ausführt. Beispiele sind Bildzusammenfassungen, kontextbezogene RAG-Verarbeitung und Knowledge-Graph-Extraktion.",
         "emptyDescription": "Systemnutzung ist LLM-Aktivität, die Onyx im Hintergrund statt für einen bestimmten Benutzer ausführt. Beispiele sind Bildzusammenfassungen, kontextbezogene RAG-Verarbeitung und Knowledge-Graph-Extraktion.",
-        "error": { "title": "Die Systemnutzung für diesen Zeitraum konnte nicht geladen werden." },
+        "error": {
+          "title": "Die Systemnutzung für diesen Zeitraum konnte nicht geladen werden."
+        },
         "title": "Systemnutzung"
       },
       "summary": {
@@ -9297,8 +9299,14 @@
       "oauthConnected": {
         "toast": "Authentifizierung erfolgreich"
       },
+      "reconnecting": {
+        "toast": "Verbindung unterbrochen — es wird wieder an die laufende Antwort angebunden. Es geht nichts verloren."
+      },
       "scrollToBottomButton": {
         "label": "Nach unten scrollen"
+      },
+      "stillProcessing": {
+        "toast": "Dieser Chat wird noch im Hintergrund verarbeitet. Es wird wieder an die laufende Antwort angebunden, statt sie neu zu starten."
       },
       "sessionAccessDenied": {
         "description": "Sie haben keine Berechtigung, diese Chat-Sitzung zu sehen.",

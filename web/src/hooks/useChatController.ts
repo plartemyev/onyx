@@ -3,10 +3,14 @@
 import {
   buildChatUrl,
   getAvailableContextTokens,
+  getChatSessionProcessingStatus,
   nameChatSession,
+  processRawChatHistory,
   setPreferredResponse,
   updateLlmOverrideForChatSession,
 } from "@/app/app/services/lib";
+import { isStreamResyncMarker } from "@/app/app/services/resilientStream";
+import { attachToRunningRun } from "@/app/app/services/resumeRun";
 import {
   applyPreferredResponse,
   chooseImplicitPreferred,
@@ -36,6 +40,7 @@ import { OnyxDocument } from "@/lib/search/interfaces";
 import { LlmDescriptor, LlmManager } from "@/lib/hooks";
 import {
   BackendMessage,
+  BackendChatSession,
   ChatFileType,
   CitationMap,
   FileChatDisplay,
@@ -67,6 +72,7 @@ import {
   selectedSourcesFrom,
 } from "@/lib/searchFilters/utils";
 import { toast } from "@opal/layouts";
+import { useTranslations } from "next-intl";
 import {
   ReadonlyURLSearchParams,
   usePathname,
@@ -188,6 +194,7 @@ export default function useChatController({
     (state) => state.currentSessionId
   );
   const sessions = useChatSessionStore((state) => state.sessions);
+  const t = useTranslations("chat.app");
 
   // Store actions - these don't cause re-renders
   const updateChatStateAction = useChatSessionStore(
@@ -369,6 +376,38 @@ export default function useChatController({
     return newCompleteMessageTree;
   };
 
+  /**
+   * Rebuilds the message tree from the persisted session. Used when a run
+   * finished server-side while this client was disconnected: the backend is
+   * authoritative and the work must never be re-run because a stream dropped.
+   */
+  const refreshSessionFromBackend = async (
+    sessionId: string
+  ): Promise<boolean> => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch(`/api/chat/get-chat-session/${sessionId}`);
+        if (response.ok) {
+          const session: BackendChatSession = await response.json();
+          useChatSessionStore
+            .getState()
+            .updateSessionAndMessageTree(
+              sessionId,
+              processRawChatHistory(session.messages, session.packets)
+            );
+          return true;
+        }
+        if (response.status < 500) {
+          return false;
+        }
+      } catch {
+        // Transient (offline or server blip): retry after a short wait.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    return false;
+  };
+
   const stopGenerating = useCallback(async () => {
     const currentSession = getCurrentSessionId();
     const lastMessage = currentMessageHistory[currentMessageHistory.length - 1];
@@ -418,6 +457,24 @@ export default function useChatController({
       additionalContext,
       selectedModels,
     }: OnSubmitProps) => {
+      // A client can lose track of a live run — a spurious transport error,
+      // an SPA navigation abort, a second device. Submitting into a running
+      // session starts a duplicate run and orphans the first one's work, so
+      // probe the server fence and re-attach instead. Brand-new sessions
+      // have nothing to probe.
+      const probeSessionId = getCurrentSessionId();
+      if (probeSessionId) {
+        const processingStatus =
+          await getChatSessionProcessingStatus(probeSessionId);
+        if (processingStatus?.processing) {
+          toast.error(t("stillProcessing.toast"));
+          if (processingStatus.run_id && processingStatus.run_id > 0) {
+            void attachToRunningRun(probeSessionId, processingStatus.run_id);
+          }
+          return;
+        }
+      }
+
       // Read at submit time so no caller can capture a stale value.
       const incognito = incognitoEnabledRef.current ?? false;
       const isMultiModel =
@@ -623,7 +680,13 @@ export default function useChatController({
         !hadAnyUserMessagesBeforeSubmit &&
         !sessions.get(currChatSessionId)?.description;
 
-      // set the ability to cancel the request
+      // set the ability to cancel the request. Any prior stream producer for
+      // this session (e.g. one polling a dead connection after a failure) is
+      // stale once a new run starts — kill it so it can't keep looping.
+      const staleController = useChatSessionStore
+        .getState()
+        .sessions.get(currChatSessionId)?.abortController;
+      staleController?.abort();
       const controller = new AbortController();
       setAbortController(currChatSessionId, controller);
 
@@ -875,6 +938,56 @@ export default function useChatController({
       let userNodeDirty = false;
       let pendingFlush = false;
 
+      /**
+       * Resets everything the stream packets accumulated, before a post-drop
+       * replay from the stream buffer re-derives it. Kept in lockstep with
+       * the declarations above — the replay re-processes the same packets,
+       * so state must start from the same initial values as a fresh send.
+       */
+      function resetTurnStreamState() {
+        answer = "";
+        query = null;
+        retrievalType =
+          selectedDocuments.length > 0
+            ? RetrievalType.SelectedDocs
+            : RetrievalType.None;
+        documents = selectedDocuments;
+        citations = {};
+        aiMessageImages = null;
+        error = null;
+        stackTrace = null;
+        errorCode = null;
+        isRetryable = true;
+        errorDetails = null;
+        finalMessage = null;
+        toolCall = null;
+        files = effectiveFileDescriptors;
+        packets = [];
+        packetsVersion++;
+        newUserMessageId = null;
+        newAgentMessageId = null;
+        assistantMessageIds.fill(null);
+        packetsPerModel.forEach((modelPackets) => {
+          modelPackets.length = 0;
+        });
+        documentsPerModel.forEach((modelDocuments) => {
+          modelDocuments.length = 0;
+        });
+        citationsPerModel.forEach((modelCitations) => {
+          for (const key of Object.keys(modelCitations)) {
+            delete modelCitations[Number(key)];
+          }
+        });
+        erroredModelIndices.clear();
+        modelDisplayNames = isMultiModel
+          ? (selectedModels?.map((m) => m.displayName) ?? [])
+          : [];
+        dirtyModelIndices.clear();
+        userNodeDirty = false;
+        singleModelDirty = false;
+        pendingFlush = false;
+      }
+
       /** Build a non-errored multi-model assistant node for upsert. */
       function buildAssistantNodeUpdate(
         idx: number,
@@ -1076,74 +1189,82 @@ export default function useChatController({
         const messageOrigin = isExtension ? "chrome_extension" : "webapp";
 
         const stack = new CurrentMessageFIFO();
-        updateCurrentMessageFIFO(stack, {
-          signal: controller.signal,
-          message: currMessage,
-          fileDescriptors: effectiveFileDescriptors,
-          parentMessageId: (() => {
-            const parentId =
-              regenerationRequest?.parentMessage.messageId ||
-              messageToResendParent?.messageId ||
-              lastSuccessfulMessageId;
-            // Don't send SYSTEM_MESSAGE_ID (-3) as parent, use null instead
-            // The backend expects null for "the first message in the chat"
-            return parentId === SYSTEM_MESSAGE_ID ? null : parentId;
-          })(),
-          chatSessionId: currChatSessionId,
-          filters: buildFilters(
-            selectedSearchSources,
-            toolConfiguration.filters.documentSets,
-            toolConfiguration.filters.timeRange
-              ? { from: toolConfiguration.filters.timeRange.from }
-              : null,
-            toolConfiguration.filters.tags
-          ),
-          modelProvider: isMultiModel
-            ? undefined
-            : modelOverride?.name || llmManager.currentLlm.name || undefined,
-          modelVersion: isMultiModel
-            ? undefined
-            : modelOverride?.modelName ||
-              llmManager.currentLlm.modelName ||
-              searchParams?.get(SEARCH_PARAM_NAMES.MODEL_VERSION) ||
-              undefined,
-          modelConfigurationId: isMultiModel
-            ? undefined
-            : modelOverride
-              ? (modelOverride.modelConfigurationId ?? undefined)
-              : (llmManager.currentLlm.modelConfigurationId ?? undefined),
-          // Only a chosen temperature is sent, zero included. Without one the
-          // backend resolves the admin default, then GEN_AI_TEMPERATURE.
-          temperature: llmManager.hasTemperatureOverride
-            ? llmManager.temperature
-            : undefined,
-          deepResearch,
-          // Internal search starts disabled for every chat, so this whitelist
-          // is the common path. To the backend an explicit list is a
-          // whitelist, but it is only applied to tools the frontend can see
-          // — tools marked `expose_to_frontend=False` keep flowing, so
-          // disabling one visible tool cannot withhold the hidden ones.
-          enabledToolIds:
-            activeAgent && toolConfiguration.disabledToolIds.length > 0
-              ? activeAgent.tools
-                  .filter(
-                    (tool) =>
-                      !toolConfiguration.disabledToolIds.includes(tool.id)
-                  )
-                  .map((tool) => tool.id)
+        updateCurrentMessageFIFO(
+          stack,
+          {
+            signal: controller.signal,
+            message: currMessage,
+            fileDescriptors: effectiveFileDescriptors,
+            parentMessageId: (() => {
+              const parentId =
+                regenerationRequest?.parentMessage.messageId ||
+                messageToResendParent?.messageId ||
+                lastSuccessfulMessageId;
+              // Don't send SYSTEM_MESSAGE_ID (-3) as parent, use null instead
+              // The backend expects null for "the first message in the chat"
+              return parentId === SYSTEM_MESSAGE_ID ? null : parentId;
+            })(),
+            chatSessionId: currChatSessionId,
+            filters: buildFilters(
+              selectedSearchSources,
+              toolConfiguration.filters.documentSets,
+              toolConfiguration.filters.timeRange
+                ? { from: toolConfiguration.filters.timeRange.from }
+                : null,
+              toolConfiguration.filters.tags
+            ),
+            modelProvider: isMultiModel
+              ? undefined
+              : modelOverride?.name || llmManager.currentLlm.name || undefined,
+            modelVersion: isMultiModel
+              ? undefined
+              : modelOverride?.modelName ||
+                llmManager.currentLlm.modelName ||
+                searchParams?.get(SEARCH_PARAM_NAMES.MODEL_VERSION) ||
+                undefined,
+            modelConfigurationId: isMultiModel
+              ? undefined
+              : modelOverride
+                ? (modelOverride.modelConfigurationId ?? undefined)
+                : (llmManager.currentLlm.modelConfigurationId ?? undefined),
+            // Only a chosen temperature is sent, zero included. Without one the
+            // backend resolves the admin default, then GEN_AI_TEMPERATURE.
+            temperature: llmManager.hasTemperatureOverride
+              ? llmManager.temperature
               : undefined,
-          forcedToolId: effectiveForcedToolId,
-          origin: messageOrigin,
-          additionalContext,
-          llmOverrides: isMultiModel
-            ? selectedModels!.map((m) => ({
-                model_provider: m.name,
-                model_version: m.modelName,
-                display_name: m.displayName,
-                model_configuration_id: m.modelConfigurationId ?? undefined,
-              }))
-            : undefined,
-        });
+            deepResearch,
+            // Internal search starts disabled for every chat, so this whitelist
+            // is the common path. To the backend an explicit list is a
+            // whitelist, but it is only applied to tools the frontend can see
+            // — tools marked `expose_to_frontend=False` keep flowing, so
+            // disabling one visible tool cannot withhold the hidden ones.
+            enabledToolIds:
+              activeAgent && toolConfiguration.disabledToolIds.length > 0
+                ? activeAgent.tools
+                    .filter(
+                      (tool) =>
+                        !toolConfiguration.disabledToolIds.includes(tool.id)
+                    )
+                    .map((tool) => tool.id)
+                : undefined,
+            forcedToolId: effectiveForcedToolId,
+            origin: messageOrigin,
+            additionalContext,
+            llmOverrides: isMultiModel
+              ? selectedModels!.map((m) => ({
+                  model_provider: m.name,
+                  model_version: m.modelName,
+                  display_name: m.displayName,
+                  model_configuration_id: m.modelConfigurationId ?? undefined,
+                }))
+              : undefined,
+          },
+          {
+            // Reassures the user mid-drop: the run is alive server-side and
+            // the timeline will catch up — no regenerate needed.
+            onReconnectStart: () => toast.info(t("reconnecting.toast")),
+          }
+        );
 
         const delay = (ms: number) => {
           return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1163,6 +1284,13 @@ export default function useChatController({
           if (!stack.isEmpty() && !controller.signal.aborted) {
             const packet = stack.nextPacket();
             if (!packet) {
+              continue;
+            }
+
+            // A post-drop replay from the stream buffer is starting: the
+            // accumulated turn state must be re-derived from the replay.
+            if (isStreamResyncMarker(packet)) {
+              resetTurnStreamState();
               continue;
             }
 
@@ -1424,9 +1552,25 @@ export default function useChatController({
         // could get stranded in local state.
         flushPendingUpdates();
 
-        // Surface FIFO errors (e.g. 429 before any packets arrive) so the
-        // catch block replaces the thinking placeholder with an error message.
-        if (stack.error) {
+        // The run finished server-side while this client was disconnected.
+        // The persisted session is authoritative — rebuild the tree from it
+        // rather than trusting the partially-delivered stream (and never
+        // offer a regenerate that would re-run completed work).
+        if (stack.needsSessionRefresh) {
+          const refreshed = await refreshSessionFromBackend(frozenSessionId!);
+          if (!refreshed) {
+            // The finished answer stays on the server; a reload shows it.
+            // Deliberately not retryable — regenerating would re-run a
+            // completed turn.
+            errorCode = "SESSION_REFRESH_FAILED";
+            isRetryable = false;
+            throw new Error(
+              "The response finished but could not be loaded. Reload the page to see it."
+            );
+          }
+        } else if (stack.error) {
+          // Surface FIFO errors (e.g. 429 before any packets arrive) so the
+          // catch block replaces the thinking placeholder with an error message.
           throw new Error(stack.error);
         }
         streamSucceeded = true;

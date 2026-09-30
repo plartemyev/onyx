@@ -5835,7 +5835,9 @@
       "panel": {
         "description": "{start} – {end} · El uso del sistema es actividad del LLM que Onyx ejecuta en segundo plano, no para un usuario específico. Algunos ejemplos son los resúmenes de imágenes, el procesamiento RAG contextual y la extracción del grafo de conocimiento.",
         "emptyDescription": "El uso del sistema es actividad del LLM que Onyx ejecuta en segundo plano, no para un usuario específico. Algunos ejemplos son los resúmenes de imágenes, el procesamiento RAG contextual y la extracción del grafo de conocimiento.",
-        "error": { "title": "No se pudo cargar el uso del sistema de este periodo." },
+        "error": {
+          "title": "No se pudo cargar el uso del sistema de este periodo."
+        },
         "title": "Uso del sistema"
       },
       "summary": {
@@ -9297,8 +9299,14 @@
       "oauthConnected": {
         "toast": "Autenticación correcta"
       },
+      "reconnecting": {
+        "toast": "Conexión interrumpida: reconectando con la respuesta en curso. No se pierde nada."
+      },
       "scrollToBottomButton": {
         "label": "Ir al final"
+      },
+      "stillProcessing": {
+        "toast": "Este chat todavía se está procesando en segundo plano. Se reconecta con la respuesta en curso en lugar de reiniciarla."
       },
       "sessionAccessDenied": {
         "description": "No tienes permiso para ver esta sesión de chat.",

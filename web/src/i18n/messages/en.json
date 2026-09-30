@@ -9327,8 +9327,14 @@
       "oauthConnected": {
         "toast": "Authentication successful"
       },
+      "reconnecting": {
+        "toast": "Connection interrupted — reattaching to the running response. Nothing is lost."
+      },
       "scrollToBottomButton": {
         "label": "Scroll to bottom"
+      },
+      "stillProcessing": {
+        "toast": "This chat is still processing in the background. Reattaching to the running response instead of restarting it."
       },
       "sessionAccessDenied": {
         "description": "You don't have permission to view this chat session.",

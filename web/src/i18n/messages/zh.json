@@ -9297,8 +9297,14 @@
       "oauthConnected": {
         "toast": "身份验证成功"
       },
+      "reconnecting": {
+        "toast": "连接中断 — 正在重新接入正在进行的响应。不会丢失任何内容。"
+      },
       "scrollToBottomButton": {
         "label": "滚动到底部"
+      },
+      "stillProcessing": {
+        "toast": "此聊天仍在后台处理中。正在重新接入正在进行的响应，而不是重新开始。"
       },
       "sessionAccessDenied": {
         "description": "您没有查看此聊天会话的权限。",

@@ -1,15 +1,31 @@
-import { PacketType, sendMessage, SendMessageParams } from "./lib";
+import {
+  getChatSessionProcessingStatus,
+  PacketType,
+  resumeStream,
+  SendMessageParams,
+  sendMessage,
+} from "./lib";
+import { resilientPacketStream, StreamResyncMarker } from "./resilientStream";
+
+/** What the FIFO hands to the stream consumer. */
+type FifoItem = PacketType | StreamResyncMarker;
 
 export class CurrentMessageFIFO {
-  private stack: PacketType[] = [];
+  private stack: FifoItem[] = [];
   isComplete: boolean = false;
   error: string | null = null;
+  /**
+   * The run finished server-side while the client was disconnected; the
+   * consumer must refetch the persisted session instead of trusting the
+   * partially-delivered stream.
+   */
+  needsSessionRefresh: boolean = false;
 
-  push(packetBunch: PacketType) {
-    this.stack.push(packetBunch);
+  push(item: FifoItem) {
+    this.stack.push(item);
   }
 
-  nextPacket(): PacketType | undefined {
+  nextPacket(): FifoItem | undefined {
     return this.stack.shift();
   }
 
@@ -18,16 +34,34 @@ export class CurrentMessageFIFO {
   }
 }
 
+export interface UpdateCurrentMessageFIFOOptions {
+  /** Fires once per drop streak, when the stream first needs a re-attach. */
+  onReconnectStart?: () => void;
+}
+
 export async function updateCurrentMessageFIFO(
   stack: CurrentMessageFIFO,
-  params: SendMessageParams
+  params: SendMessageParams,
+  options?: UpdateCurrentMessageFIFOOptions
 ) {
   try {
-    for await (const packet of sendMessage(params)) {
+    for await (const item of resilientPacketStream({
+      sendConnect: async (signal) => sendMessage({ ...params, signal }),
+      resumeConnect: async (signal) =>
+        resumeStream(params.chatSessionId, 0, signal),
+      probe: () => getChatSessionProcessingStatus(params.chatSessionId),
+      signal: params.signal,
+      onReconnectStart: options?.onReconnectStart,
+      onSessionRefresh: () => {
+        stack.needsSessionRefresh = true;
+      },
+    })) {
       if (params.signal?.aborted) {
         throw new Error("AbortError");
       }
-      stack.push(packet);
+      // Resync markers are forwarded: the consumer resets its accumulated
+      // stream state and rebuilds it from the replay that follows.
+      stack.push(item);
     }
   } catch (error: unknown) {
     if (error instanceof Error) {
