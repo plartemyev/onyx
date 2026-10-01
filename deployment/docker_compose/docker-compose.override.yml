@@ -271,6 +271,11 @@ services:
     ports:
       - "127.0.0.1:19000:9000"
 
+  # Host-published for external-dependency tests (relational DB).
+  relational_db:
+    ports:
+      - "127.0.0.1:5432:5432"
+
   # Host-published for external-dependency tests (session mapping store).
   cache:
     ports:
