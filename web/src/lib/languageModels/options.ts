@@ -29,6 +29,11 @@ export interface LLMOption {
   region?: string | null;
   version?: string | null;
   supportsReasoning?: boolean;
+  /**
+   * See ModelConfiguration.temperature_pinned. Falls back to
+   * supportsReasoning so an older backend keeps the slider locked.
+   */
+  temperaturePinned?: boolean;
   /** See ModelConfiguration.supported_reasoning_efforts. */
   supportedReasoningEfforts?: ReasoningEffortOverride[];
   /** See ModelConfiguration.reasoning_effort_max. */
@@ -125,6 +130,8 @@ export function buildLlmOptions(
           region: mc.region || null,
           version: mc.version || null,
           supportsReasoning: mc.supports_reasoning || false,
+          temperaturePinned:
+            mc.temperature_pinned ?? (mc.supports_reasoning || false),
           supportedReasoningEfforts: mc.supported_reasoning_efforts,
           reasoningEffortMax: mc.reasoning_effort_max,
           reasoningEffortDefault: mc.reasoning_effort_default,

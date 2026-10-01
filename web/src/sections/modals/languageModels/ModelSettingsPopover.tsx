@@ -2,13 +2,7 @@
 
 import { useState } from "react";
 import { useTranslations } from "next-intl";
-import {
-  Button,
-  InputTypeIn,
-  Popover,
-  Text,
-  Tooltip,
-} from "@opal/components";
+import { Button, InputTypeIn, Popover, Text, Tooltip } from "@opal/components";
 import { SvgBarChart, SvgCode, SvgSliders, SvgThermometer } from "@opal/icons";
 import { ContentAction, Section } from "@opal/layouts";
 import { Disabled } from "@opal/core";
@@ -58,6 +52,7 @@ export type ModelSettingsModel = Pick<
   | "vendor"
   | "max_input_tokens"
   | "supports_reasoning"
+  | "temperature_pinned"
   | "supports_image_input"
   | "supported_reasoning_efforts"
   | "reasoning_effort_max"
@@ -190,8 +185,10 @@ export function ModelSettingsPopover({
   const minStop = minReasoningStop(model.supported_reasoning_efforts);
   // No supported levels means the model takes no effort parameter at all.
   const showReasoning = model.supports_reasoning && supportedStop >= 0;
-  // The backend pins reasoning models to 1, so the control renders disabled.
-  const temperatureDisabled = model.supports_reasoning;
+  // Hosted reasoning APIs always run at 1, so the control renders disabled.
+  // Self-hosted engines honor a configured temperature, so theirs stays live.
+  const temperatureDisabled =
+    model.temperature_pinned ?? model.supports_reasoning;
   const maxTemperature = isAnthropic(model.vendor ?? "", model.name) ? 1 : 2;
 
   const maxStop = reasoningStopIndex(model.reasoning_effort_max);
@@ -221,7 +218,11 @@ export function ModelSettingsPopover({
     tModelSelector("temperature.balanced.label"),
     tModelSelector("temperature.creative.label"),
   ];
-  const temperature = model.temperature_default ?? UNSET_TEMPERATURE;
+  // A tunable reasoning model with no stored default still runs at 1 (the
+  // reasoning default), so the slider parks there instead of at zero.
+  const unsetTemperature =
+    model.supports_reasoning && !temperatureDisabled ? 1 : UNSET_TEMPERATURE;
+  const temperature = model.temperature_default ?? unsetTemperature;
   const temperatureMark = Math.min(
     Math.floor((temperature / maxTemperature) * TEMPERATURE_MARK_COUNT),
     TEMPERATURE_MARK_COUNT - 1

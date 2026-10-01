@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from onyx.error_handling.exceptions import OnyxError
+from onyx.llm.constants import LlmProviderNames
 from onyx.llm.models import ReasoningEffort, UserMessage, resolve_reasoning_effort
 from onyx.llm.multi_llm import LitellmLLM
 from onyx.server.manage.llm.models import (
@@ -367,3 +368,23 @@ class TestTemperatureDefault:
         """The existing pin sits above admin policy and is unchanged."""
         llm = _make_llm(temperature=0.25)
         assert _sent_kwargs(llm, ReasoningEffort.HIGH)["temperature"] == 1
+
+    def test_self_hosted_reasoning_model_honors_explicit_temperature(self) -> None:
+        """Self-hosted engines sample thinking models fine, so the configured
+        temperature reaches the request."""
+        llm = _make_llm(temperature=0.25, model_provider=LlmProviderNames.OLLAMA_CHAT)
+        with patch("onyx.llm.multi_llm.model_is_reasoning_model", return_value=True):
+            assert _sent_kwargs(llm, ReasoningEffort.HIGH)["temperature"] == 0.25
+
+    def test_self_hosted_reasoning_model_without_a_config_keeps_one(self) -> None:
+        """No configured temperature must not fall through to the global
+        GEN_AI_TEMPERATURE default (0): the reasoning default of 1 stays."""
+        llm = _make_llm(model_provider=LlmProviderNames.OLLAMA_CHAT)
+        with patch("onyx.llm.multi_llm.model_is_reasoning_model", return_value=True):
+            assert _sent_kwargs(llm, ReasoningEffort.HIGH)["temperature"] == 1
+
+    def test_self_hosted_non_reasoning_model_uses_global_default(self) -> None:
+        """Without reasoning in play, the normal resolution chain applies."""
+        llm = _make_llm(model_provider=LlmProviderNames.OLLAMA_CHAT)
+        with patch("onyx.llm.multi_llm.model_is_reasoning_model", return_value=False):
+            assert _sent_kwargs(llm, ReasoningEffort.AUTO)["temperature"] == 0.0

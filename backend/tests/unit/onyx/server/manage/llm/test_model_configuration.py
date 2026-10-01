@@ -289,6 +289,72 @@ class TestModelConfigurationViewReasoningFallback:
         assert view.supports_reasoning is True
 
 
+# ModelConfigurationView.from_model — temperature pin (dynamic providers)
+
+
+class TestModelConfigurationViewTemperaturePinned:
+    """temperature_pinned = reasoning AND a provider that pins sampling.
+    Self-hosted engines stay tunable so admins can set a temperature there."""
+
+    def _view(self, mc: MagicMock, provider: str) -> ModelConfigurationView:
+        # The request-path is_reasoning probe (which for Ollama would hit the
+        # engine) is not under test here; the stored flow drives the flag.
+        with patch(
+            "onyx.server.manage.llm.models.model_is_reasoning_model",
+            return_value=False,
+        ):
+            return ModelConfigurationView.from_model(mc, provider)
+
+    def test_reasoning_on_self_hosted_engine_is_not_pinned(self) -> None:
+        mc = _make_model_config(
+            name="ornith:1.5-9b",
+            display_name="Ornith 1.5 9B",
+            flow_types=[LLMModelFlowType.CHAT, LLMModelFlowType.REASONING],
+        )
+
+        view = self._view(mc, "ollama_chat")
+
+        assert view.supports_reasoning is True
+        assert view.temperature_pinned is False
+
+    def test_reasoning_on_hosted_provider_is_pinned(self) -> None:
+        mc = _make_model_config(
+            name="qwen3-32b",
+            display_name="Qwen3 32B",
+            flow_types=[LLMModelFlowType.CHAT, LLMModelFlowType.REASONING],
+        )
+
+        view = self._view(mc, "bifrost")
+
+        assert view.supports_reasoning is True
+        assert view.temperature_pinned is True
+
+    def test_non_reasoning_model_is_never_pinned(self) -> None:
+        mc = _make_model_config(
+            name="llama3:8b",
+            display_name="Llama 3 8B",
+            flow_types=[LLMModelFlowType.CHAT],
+        )
+
+        view = self._view(mc, "ollama_chat")
+
+        assert view.supports_reasoning is False
+        assert view.temperature_pinned is False
+
+    def test_static_provider_branch_pins_reasoning_models(self) -> None:
+        """The LiteLLM-enriched branch answers too."""
+        mc = _make_model_config(
+            name="gpt-5.1",
+            display_name=None,
+            flow_types=[LLMModelFlowType.CHAT, LLMModelFlowType.REASONING],
+        )
+
+        view = self._view(mc, "openai")
+
+        assert view.supports_reasoning is True
+        assert view.temperature_pinned is True
+
+
 # ModelConfigurationView.from_model — static provider branch
 
 

@@ -4,7 +4,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from onyx.auth.permissions import has_global_permission
-from onyx.configs.model_configs import GEN_AI_TEMPERATURE, OLLAMA_NUM_CTX_HEADROOM
+from onyx.configs.model_configs import OLLAMA_NUM_CTX_HEADROOM
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import LLMModelFlowType, Permission
 from onyx.db.llm import (
@@ -479,8 +479,10 @@ def get_llm(
     reasoning_effort_user_default: ReasoningEffort | None = None,
     reasoning_effort_max: ReasoningEffort | None = None,
 ) -> LLM:
-    if temperature is None:
-        temperature = GEN_AI_TEMPERATURE
+    # Temperature stays None here on purpose: LitellmLLM applies the
+    # GEN_AI_TEMPERATURE fallback itself, and it needs the None to tell an
+    # unset temperature from an explicit one (reasoning models on
+    # temperature-tunable providers keep their default of 1 when unset).
 
     extra_headers = build_llm_extra_headers(additional_headers)
 

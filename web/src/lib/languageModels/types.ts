@@ -20,6 +20,13 @@ export interface ModelConfiguration {
   supports_image_input: boolean;
   supports_reasoning: boolean;
   /**
+   * True when the backend ignores every configured temperature for this model
+   * and always sends 1 (hosted reasoning APIs). Self-hosted engines are false
+   * even for reasoning models, so sampling stays tunable there. Absent from an
+   * older backend, in which case reasoning models stay pinned.
+   */
+  temperature_pinned?: boolean;
+  /**
    * Effort levels this model tells apart, ascending, as resolved by the
    * backend that builds the request. Absent from an older backend, in which
    * case the picker falls back to the levels every reasoning model supports.

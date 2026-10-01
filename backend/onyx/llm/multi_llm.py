@@ -54,6 +54,7 @@ from onyx.llm.model_capabilities import (
     openai_chat_variant_rejects_reasoning,
     openai_model_rejects_reasoning_effort,
     openai_model_supports_reasoning_none,
+    reasoning_temperature_tunable,
     resolve_reasoning_param_style,
 )
 from onyx.llm.model_capabilities import (
@@ -503,6 +504,10 @@ class LitellmLLM(LLM):
         self._timeout = timeout if timeout is not None else LLM_SOCKET_READ_TIMEOUT
 
         self._temperature = GEN_AI_TEMPERATURE if temperature is None else temperature
+        # Kept separate from _temperature: on providers that let reasoning
+        # models sample freely, an unset temperature must keep the reasoning
+        # default of 1 instead of falling through to GEN_AI_TEMPERATURE.
+        self._explicit_temperature = temperature
 
         self._model_provider = model_provider
         self._model_version = model_name
@@ -800,11 +805,25 @@ class LitellmLLM(LLM):
             anthropic_omits_sampling_params(name) for name in model_identity_names
         )
         if not omits_sampling_params:
-            optional_kwargs["temperature"] = (
-                1
-                if is_reasoning
-                else (temperature if temperature is not None else self._temperature)
-            )
+            if is_reasoning and not reasoning_temperature_tunable(self._model_provider):
+                optional_kwargs["temperature"] = 1
+            elif is_reasoning:
+                # Self-hosted engines sample thinking models fine: a
+                # configured temperature wins, an unset one keeps the
+                # reasoning default of 1.
+                optional_kwargs["temperature"] = (
+                    temperature
+                    if temperature is not None
+                    else (
+                        self._explicit_temperature
+                        if self._explicit_temperature is not None
+                        else 1
+                    )
+                )
+            else:
+                optional_kwargs["temperature"] = (
+                    temperature if temperature is not None else self._temperature
+                )
 
         if stream and not is_vertex_model_rejecting_stream_options:
             optional_kwargs["stream_options"] = {"include_usage": True}

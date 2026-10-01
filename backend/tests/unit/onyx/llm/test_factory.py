@@ -1,4 +1,5 @@
 from functools import partial
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from onyx.chat.incognito import (
@@ -15,7 +16,9 @@ from onyx.llm.factory import (
     get_llm_for_persona,
     llm_from_provider,
 )
-from onyx.llm.interfaces import LlmRequestPolicy
+from onyx.llm.interfaces import LlmRequestPolicy, ReasoningEffort
+from onyx.llm.models import UserMessage
+from onyx.llm.multi_llm import LitellmLLM
 from onyx.llm.well_known_providers.constants import (
     BIFROST_PROVIDER_NAME,
     LM_STUDIO_API_KEY_CONFIG_KEY,
@@ -171,6 +174,62 @@ def test_llm_from_provider_never_sets_ollama_num_ctx_for_non_ollama_provider() -
         kwargs = mock_get_llm.call_args.kwargs
         assert kwargs["max_input_tokens"] == 16384
         assert kwargs["model_kwargs"] == {}
+
+
+_SENTINEL = object()
+
+
+def test_get_llm_passes_unset_temperature_through_as_none() -> None:
+    """LitellmLLM applies the GEN_AI_TEMPERATURE fallback itself. Pre-applying
+    it here would stop the constructor from telling an unset temperature from
+    an explicit one, and reasoning models on temperature-tunable providers
+    would drop their default of 1 to the global 0."""
+    with patch("onyx.llm.factory.LitellmLLM") as mock_litellm_llm:
+        get_llm(
+            provider=LlmProviderNames.OLLAMA_CHAT,
+            model="test-model",
+            deployment_name=None,
+            max_input_tokens=4096,
+        )
+
+        assert mock_litellm_llm.call_args.kwargs["temperature"] is None
+
+
+def test_get_llm_self_hosted_reasoning_model_without_a_temperature_keeps_one() -> None:
+    """End-to-end through the production constructor: an Ollama reasoning
+    model with no configured temperature runs at 1, not GEN_AI_TEMPERATURE."""
+    # get_llm's return type is the LLM interface; the request builder under
+    # test lives on the concrete class.
+    llm = cast(
+        LitellmLLM,
+        get_llm(
+            provider=LlmProviderNames.OLLAMA_CHAT,
+            model="test-model",
+            deployment_name=None,
+            max_input_tokens=4096,
+        ),
+    )
+    calls: list[dict] = []
+
+    def completion(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return _SENTINEL
+
+    with (
+        patch("onyx.llm.multi_llm.model_is_reasoning_model", return_value=True),
+        patch("onyx.llm.litellm_singleton.litellm.completion", side_effect=completion),
+    ):
+        llm._completion(
+            prompt=[UserMessage(content="hello")],
+            tools=None,
+            tool_choice=None,
+            stream=False,
+            parallel_tool_calls=False,
+            reasoning_effort=ReasoningEffort.HIGH,
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["temperature"] == 1
 
 
 def test_get_llm_policy_headers_win_over_every_other_source() -> None:

@@ -158,11 +158,13 @@ interface ModelDetailPaneProps {
 function ModelDetailPane({ option, managers, onBack }: ModelDetailPaneProps) {
   const t = useTranslations("chat.modelSelector");
   const { user } = useUser();
-  // Backend pins temperature to 1 (or omits it) for reasoning models, so
-  // the slider is locked at 1.
+  // Hosted reasoning APIs run at 1 no matter what, so the slider locks.
+  // Self-hosted engines honor the configured temperature, so theirs stays live.
   const temperatureManager = managers.temperature;
   const reasoningManager = managers.reasoning;
-  const temperatureEnabled = !option.supportsReasoning && !!temperatureManager;
+  const temperatureEnabled =
+    (!option.supportsReasoning || !option.temperaturePinned) &&
+    !!temperatureManager;
   const capabilityStop = maxReasoningStop(option.supportedReasoningEfforts);
   // Models that always reason omit "off", so the slider needs a floor as well
   // as a ceiling.

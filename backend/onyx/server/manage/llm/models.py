@@ -15,6 +15,7 @@ from onyx.llm.model_capabilities import (
     get_max_input_tokens,
     litellm_thinks_model_supports_image_input,
     model_is_reasoning_model,
+    reasoning_temperature_tunable,
     supported_reasoning_efforts,
 )
 from onyx.llm.model_capabilities import (
@@ -321,6 +322,10 @@ class ModelConfigurationView(BaseModel):
     configured_max_input_tokens: int | None = Field(default=None, exclude=True)
     supports_image_input: bool
     supports_reasoning: bool = False
+    # True when the request path ignores every configured temperature for this
+    # model and always sends 1 (hosted reasoning APIs). Self-hosted engines are
+    # False even for reasoning models, so admins can tune sampling there.
+    temperature_pinned: bool = False
     # Effort levels this model tells apart, ascending. Read alongside
     # supports_reasoning: an empty list on a reasoning model means the model
     # takes no effort parameter. The model picker offers exactly these.
@@ -358,6 +363,14 @@ class ModelConfigurationView(BaseModel):
             model_identity_names,
             resolve_api_surface(provider_name, custom_config),
         )
+        supports_reasoning = (
+            LLMModelFlowType.REASONING in model_configuration_model.llm_model_flow_types
+            or any(anthropic_supports_thinking(name) for name in model_identity_names)
+            or any(
+                model_is_reasoning_model(name, provider_name)
+                for name in model_identity_names
+            )
+        )
 
         # For dynamic providers (OpenRouter, Bedrock, Ollama) and custom-config
         # providers, use the display_name stored in DB. Skip LiteLLM parsing.
@@ -367,6 +380,14 @@ class ModelConfigurationView(BaseModel):
             # Extract vendor from model name for grouping (e.g., "Anthropic", "OpenAI")
             vendor = extract_vendor_from_model_name(
                 model_configuration_model.name, provider_name
+            )
+
+            # The display-name substring heuristic is dynamic-branch-only;
+            # derive the temperature pin from the final value so every
+            # reasoning term counts.
+            model_supports_reasoning = supports_reasoning or any(
+                is_reasoning_model(name, model_configuration_model.display_name or "")
+                for name in model_identity_names
             )
 
             return cls(
@@ -388,23 +409,10 @@ class ModelConfigurationView(BaseModel):
                 # Prefer the stored flow, then the Claude version parse, then
                 # the LiteLLM cost map, then a name/display-name substring
                 # heuristic. Mirrors multi_llm.py's is_reasoning.
-                supports_reasoning=(
-                    LLMModelFlowType.REASONING
-                    in model_configuration_model.llm_model_flow_types
-                    or any(
-                        anthropic_supports_thinking(name)
-                        for name in model_identity_names
-                    )
-                    or any(
-                        model_is_reasoning_model(name, provider_name)
-                        for name in model_identity_names
-                    )
-                    or any(
-                        is_reasoning_model(
-                            name, model_configuration_model.display_name or ""
-                        )
-                        for name in model_identity_names
-                    )
+                supports_reasoning=model_supports_reasoning,
+                temperature_pinned=(
+                    model_supports_reasoning
+                    and not reasoning_temperature_tunable(provider_name)
                 ),
                 supported_reasoning_efforts=reasoning_efforts,
                 reasoning_effort_max=model_configuration_model.reasoning_effort_max,
@@ -459,16 +467,9 @@ class ModelConfigurationView(BaseModel):
             # Prefer the stored flow, then the Claude version parse, then
             # LiteLLM-based detection for legacy rows saved before the flow
             # existed. Mirrors multi_llm.py's is_reasoning.
-            supports_reasoning=(
-                LLMModelFlowType.REASONING
-                in model_configuration_model.llm_model_flow_types
-                or any(
-                    anthropic_supports_thinking(name) for name in model_identity_names
-                )
-                or any(
-                    model_is_reasoning_model(name, provider_name)
-                    for name in model_identity_names
-                )
+            supports_reasoning=supports_reasoning,
+            temperature_pinned=(
+                supports_reasoning and not reasoning_temperature_tunable(provider_name)
             ),
             supported_reasoning_efforts=reasoning_efforts,
             reasoning_effort_max=model_configuration_model.reasoning_effort_max,

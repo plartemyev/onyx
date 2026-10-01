@@ -438,6 +438,28 @@ def model_is_reasoning_model(
         return False
 
 
+# Hosted reasoning APIs pin sampling: several reject a non-default temperature
+# with a 400, and the rest assume provider-default sampling for thinking
+# models. Self-hosted engines apply temperature to thinking models without
+# complaint, so a configured temperature is honored there. Gateways are
+# excluded because they can front hosted models; if one rejects the
+# parameter, the best-effort retry ladder in multi_llm strips it.
+_REASONING_TEMPERATURE_TUNABLE_PROVIDERS: frozenset[str] = frozenset(
+    provider.value
+    for provider in (
+        LlmProviderNames.OLLAMA_CHAT,
+        LlmProviderNames.LM_STUDIO,
+        LlmProviderNames.OPENAI_COMPATIBLE,
+    )
+)
+
+
+def reasoning_temperature_tunable(model_provider: str) -> bool:
+    """True when reasoning models on this provider honor a configured
+    temperature instead of the pinned reasoning default of 1."""
+    return model_provider.lower() in _REASONING_TEMPERATURE_TUNABLE_PROVIDERS
+
+
 # OpenAI models that reject the reasoning-effort parameter on every API surface
 # (chat completions and responses alike) — only their default effort works.
 # Explicit list rather than a registry lookup: LiteLLM's Azure config wrongly
