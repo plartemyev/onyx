@@ -1,17 +1,24 @@
 # Local additions merged on top of docker-compose.yml automatically.
 services:
   searxng:
-    # Fork with the masqueraded Chromium fetch pool (outgoing.using_browser),
+    # Fork with the masqueraded browser fetch pool (outgoing.using_browser),
     # global per-provider send pacing and the human-like input fallback.
     # Engine requests go through a real, fingerprint-masqueraded browser:
     # no more CAPTCHA walls, wrong-query junk pages or Thai geo-mangling.
     # Onyx connects DIRECTLY to this service (searxng_base_url in the web
     # search provider settings points at http://searxng:8080): pacing now
     # lives inside the fork, so the old searxng-pacer proxy is gone.
-    image: searxng-browser:dev
+    #
+    # EXPERIMENT (feat/distro-firefox-fleet): the fleet runs distro Firefox
+    # (Arch package, driven over WebDriver BiDi via Playwright's
+    # "moz-firefox" channel) instead of distro Chromium.
+    image: searxng-browser:firefox-exp
     build:
-      # build straight from the fork, no local checkout needed
-      context: https://github.com/plartemyev/searxng.git#feat/browser-masquerade
+      # EXPERIMENT: build from the local checkout of the Firefox-port
+      # branch. To go back to the Chromium fleet: restore
+      # image: searxng-browser:dev and the git context
+      # https://github.com/plartemyev/searxng.git#feat/browser-masquerade
+      context: /home/nameless/searxng
       dockerfile: container/browser.dockerfile
     # Same command as the image ENTRYPOINT plus granian's backpressure cap:
     # with ~7 engines per search, a 16-search Onyx burst used to spawn 100+
@@ -32,7 +39,7 @@ services:
       - "28"
       - searx.webapp:app
     restart: unless-stopped
-    # The persona is a Linux desktop Chromium, but the docker NAT forwards
+    # The persona is a Linux desktop Firefox, but the docker NAT forwards
     # packets one hop below this container: the kernel default TTL 64 leaves
     # the VM as 63, telling google "automated guest behind another machine".
     # 65 here arrives as exactly 64, the TTL of any Linux client on this LAN.
@@ -75,10 +82,13 @@ services:
       # ip_locale.json) survives container recreations: restarts then reuse
       # the resolved identity instead of re-querying the geoip services.
       - searxng-cache:/var/cache/searxng
-      # Persistent per-lane Chromium cookie jars (outgoing.browser_profile_dir
+      # Persistent per-lane Firefox cookie jars (outgoing.browser_profile_dir
       # in searxng/settings.yml): one profile per lane, fully isolated, so
       # earned clearances and engine cookies survive container recreations.
-      - searxng-browser-lanes:/var/lib/searxng/lanes
+      # EXPERIMENT: a dedicated volume -- Firefox profiles are not Chromium
+      # profiles, and the Chromium fleet's trained jars stay intact on
+      # searxng-browser-lanes for an instant revert.
+      - searxng-browser-lanes-ff:/var/lib/searxng/lanes
 
   # Deep Research / long-run chat tuning for slow local inference (48h budget).
   # Merged into the api_server service from docker-compose.yml by compose.
@@ -284,6 +294,8 @@ services:
 volumes:
   # Holds /var/cache/searxng for the searxng service (geo-locale cache).
   searxng-cache:
-  # Holds /var/lib/searxng/lanes for the searxng service: one persistent
-  # Chromium profile per browser lane (cookies, storage, clearances).
-  searxng-browser-lanes:
+  # EXPERIMENT (Firefox fleet): holds /var/lib/searxng/lanes for the
+  # searxng service -- one persistent Firefox profile per lane (cookies,
+  # storage, clearances). The Chromium fleet's volume
+  # (searxng-browser-lanes) is kept untouched for the revert.
+  searxng-browser-lanes-ff:

@@ -46,7 +46,7 @@ general:
 # per-provider pacing waits and the human-input fallback.
 outgoing:
   using_browser: true
-  # Each lane runs its own Chromium on its own Xvfb display (one pointer
+  # Each lane runs its own browser on its own Xvfb display (one pointer
   # per lane), so parallel human sessions cannot steal each other's
   # clicks. 6 lanes = 6 browser processes: keep an eye on container RAM.
   browser_pool_size: 6
@@ -76,7 +76,12 @@ outgoing:
   # /tmp/captcha_debug). Off for duty; flip on (and create the dump dir)
   # while debugging the browser flow. The /crawl response then also carries
   # a per-lane memory snapshot for affinity diagnostics.
-  browser_debug_trace: false
+  # (Was on for the 2026-09-30 Firefox-fleet experiment; solver evidence
+  # saved to the host. To re-enable: set true and
+  # docker exec -u root onyx-searxng-1 mkdir -p /tmp/captcha_debug
+  # && docker exec -u root onyx-searxng-1 chown searxng:searxng
+  #   /tmp/captcha_debug -- /tmp is ephemeral, create AFTER a restart.)
+  browser_debug_trace: true
   # Page crawling endpoint (/crawl): lets Onyx's fetchers drive these same
   # masqueraded lanes for page fetches, so search and crawl traffic comes
   # from one fleet of cookie-trained identities. Internal docker network
@@ -96,19 +101,23 @@ outgoing:
     endpoint: 'http://172.17.172.35:11434'
     api_key: ''
     model: 'ornith-1.5:9b'
-    context_size: 58192
+    context_size: 20192
     timeout: 360
     max_rounds: 12
     # Wall-clock cap for one whole solve attempt (all rounds and votes).
     # Bounds how long a lane can be held by a challenge that never clears:
     # ~2x the slowest solve observed to succeed (~12min).
     session_budget: 1500
-    # 5 samples per round at rising temperature, per-tile strict-majority
-    # quorum: the model localizes the right region reliably but flickers on
-    # a tile or two between samples. ~35s per sample, so a round costs
-    # ~3min -- the search request may time out while the lane keeps
-    # solving, but the lane keeps the clearance cookies once it succeeds.
-    votes: 6
+    # 3 samples per round at rising temperature (capped low, see
+    # captcha_vision), per-tile strict-majority quorum: the model
+    # localizes the right region reliably but flickers on a tile or two
+    # between samples. 3 = 2 direct + 1 inverted vote, quorum of 2: the
+    # direct side alone reaches it, so a negation-blind inverted vote
+    # cannot deadlock the round into an empty skip (the 6-vote 3-3 tie
+    # observed 2026-10-01). ~35s per sample, so a round costs ~2min --
+    # the search request may time out while the lane keeps solving, but
+    # the lane keeps the clearance cookies once it succeeds.
+    votes: 3
   # Global per-provider send pacing (searx/network/pacing.py): requests to
   # the same upstream host are spaced a random 1-5s apart, whatever engine
   # or search sent them; different providers never block each other. max_wait
@@ -169,12 +178,23 @@ engines:
   # Disable here if that latency is not acceptable; the solver itself is
   # harmless for engines that never challenge.
   - name: google
-    disabled: false
+    # DISABLED 2026-10-01 (evening): (a) every jar is hard-flagged -- the
+    # homepage itself lands on /sorry, so submissions never navigate and
+    # each attempt just burns 100s of engine budget; jars need days of
+    # mixed-traffic aging before a re-test is meaningful. (b) Google's
+    # pages are the fleet's main live exposure to the Playwright BiDi
+    # console-entry driver crash (see container/patch-bidi-console.py) --
+    # every google page is heavy JS emitting console entries. Re-enable
+    # here (and google images below) after the jars have aged.
+    disabled: true
     # Normal search returns in ~20-40s on a warm lane. If google challenges
     # the lane, the request fails at this budget while the lane keeps
     # solving in the background and earns clearance for later requests
     # (Onyx's client read timeout is 450s; the budget must stay below it).
     timeout: 100.0
+  - name: google images
+    # disabled together with google (see above)
+    disabled: true
   - name: bing
     disabled: false
     # 2x the worst warm-lane search observed (~35s incl. render + settle),
