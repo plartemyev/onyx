@@ -69,13 +69,16 @@ def cleanup_idle_sandboxes_task(self: Task, *, tenant_id: str) -> None:  # noqa:
         return
 
     try:
-        sandbox_manager = get_sandbox_manager()
-
         with get_session_with_current_tenant() as db_session:
             running_sandboxes = get_running_sandboxes(db_session)
             if not running_sandboxes:
                 task_logger.debug("No running sandboxes found")
                 return
+
+            # Built after the empty-check: with nothing running the sweep
+            # stays a DB-only no-op, even when the manager's env contract
+            # (e.g. SANDBOX_PROXY_HOST) is unmet.
+            sandbox_manager = get_sandbox_manager()
 
             # Tenant-work-gating hook: refresh this tenant's active-set
             # membership whenever the sweep has work to do.
