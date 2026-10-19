@@ -152,6 +152,7 @@ function hasContentPackets(packets: Packet[]): boolean {
 const FINAL_ANSWER_PACKET_TYPES_SET = new Set<PacketType>([
   PacketType.MESSAGE_START,
   PacketType.MESSAGE_DELTA,
+  PacketType.MESSAGE_FINAL,
   PacketType.IMAGE_GENERATION_TOOL_START,
   PacketType.IMAGE_GENERATION_TOOL_DELTA,
 ]);

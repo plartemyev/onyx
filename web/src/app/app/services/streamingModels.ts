@@ -8,6 +8,7 @@ interface BaseObj {
 export enum PacketType {
   MESSAGE_START = "message_start",
   MESSAGE_DELTA = "message_delta",
+  MESSAGE_FINAL = "message_final",
   MESSAGE_END = "message_end",
 
   STOP = "stop",
@@ -100,6 +101,14 @@ export interface MessageStart extends BaseObj {
 export interface MessageDelta extends BaseObj {
   content: string;
   type: "message_delta";
+}
+
+// Full final message text, emitted right before "stop". Carries the text
+// exactly as persisted (e.g. placeholder file links rewritten); replaces the
+// joined message_start/message_delta content when present.
+export interface MessageFinal extends BaseObj {
+  content: string;
+  type: "message_final";
 }
 
 export interface MessageEnd extends BaseObj {
@@ -401,7 +410,7 @@ export interface BashToolDelta extends BaseObj {
   timed_out: boolean;
 }
 
-export type ChatObj = MessageStart | MessageDelta | MessageEnd;
+export type ChatObj = MessageStart | MessageDelta | MessageFinal | MessageEnd;
 
 export type StopObj = Stop;
 

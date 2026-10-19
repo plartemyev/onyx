@@ -1,5 +1,4 @@
 import json
-import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -8,6 +7,7 @@ from onyx.chat.chat_state import ChatStateContainer, SearchDocKey
 from onyx.chat.chat_utils import (
     dedupe_generated_files_latest_by_filename,
     file_descriptors_from_generated_files,
+    rewrite_placeholder_file_links,
 )
 from onyx.configs.constants import DocumentSource
 from onyx.context.search.models import SearchDoc
@@ -20,50 +20,11 @@ from onyx.db.models import ChatMessage, ToolCall
 from onyx.db.tools import create_tool_call_no_commit
 from onyx.file_store.models import FileDescriptor
 from onyx.natural_language_processing.utils import BaseTokenizer, get_tokenizer
-from onyx.tools.models import PythonExecutionFile, ToolCallInfo
+from onyx.tools.models import ToolCallInfo
 from onyx.utils.logger import setup_logger
 from onyx.utils.postgres_sanitization import sanitize_string
 
 logger = setup_logger()
-
-# Link target models copy verbatim from the tool notices when they fail to
-# substitute the real URL, e.g. ![chart.png](file_link).
-_PLACEHOLDER_FILE_LINK = "file_link"
-_PLACEHOLDER_LINK_PATTERN = re.compile(r"(!?\[[^\]]*\])\(\s*file_link\s*\)")
-
-
-def _rewrite_placeholder_file_links(
-    message_text: str,
-    generated_files: list[PythonExecutionFile],
-) -> str:
-    """Resolve `](file_link)` placeholder links to real generated-file URLs.
-
-    Models sometimes copy the placeholder from the tool notices verbatim
-    (e.g. `![chart.png](file_link)`). A bracket name maps to the newest save
-    of that filename; with a single generated file any placeholder resolves
-    to it. Unresolvable placeholders stay unchanged.
-    """
-    if _PLACEHOLDER_FILE_LINK not in message_text or not generated_files:
-        return message_text
-
-    links_by_filename: dict[str, str] = {}
-    for gen_file in generated_files:
-        if gen_file.file_link:
-            links_by_filename[gen_file.filename] = gen_file.file_link
-
-    def _resolve(match: re.Match[str]) -> str:
-        bracket = match.group(1)
-        inner = bracket.lstrip("!").strip()
-        name = inner[1:-1] if inner.startswith("[") and inner.endswith("]") else ""
-        link = links_by_filename.get(name)
-        if not link and name not in links_by_filename and len(generated_files) == 1:
-            # One generated file: any placeholder resolves to it.
-            link = generated_files[0].file_link
-        if not link:
-            return match.group(0)
-        return f"{bracket}({link})"
-
-    return _PLACEHOLDER_LINK_PATTERN.sub(_resolve, message_text)
 
 
 def _extract_referenced_file_descriptors(
@@ -295,7 +256,7 @@ def save_chat_turn(
             for gen_file in tool_call_info.generated_files or []
         ]
         if generated_files:
-            sanitized_message_text = _rewrite_placeholder_file_links(
+            sanitized_message_text = rewrite_placeholder_file_links(
                 sanitized_message_text, generated_files
             )
         assistant_message.message = sanitized_message_text

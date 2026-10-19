@@ -84,10 +84,9 @@ CODE_INTERPRETER_UNSAFE_FILENAME_CHARS = re.compile(r"[\x00-\x1f/\\:\*\?\"<>\|]+
 # Shown to the LLM when files were generated
 FILES_NOTICE_TEMPLATE = (
     "Generated files are saved and stay available by filename in later "
-    "executions of this session. Image files are displayed to the user in chat; "
-    "to show one, embed its exact file_link URL from generated_files as the "
-    "markdown image target, copied verbatim. Never write a placeholder in "
-    "place of the URL."
+    "executions of this session. Image files are displayed to the user in "
+    "chat; to embed a generated file in your reply, copy its markdown field "
+    "verbatim. Never write the word file_link in place of the URL."
 )
 # Shown to the LLM when execution ran in the persistent session sandbox
 SESSION_NOTICE_TEMPLATE = (
@@ -1091,14 +1090,21 @@ class PythonTool(Tool[PythonToolOverrideKwargs]):
                     # bounded — oldest evicted first).
                     self._record_generated_artifact(filename, file_content)
 
+                file_link = build_full_frontend_file_url(onyx_file_id)
+                is_image = mime_type.startswith("image/")
                 generated_file = PythonExecutionFile(
                     filename=filename,
-                    file_link=build_full_frontend_file_url(onyx_file_id),
+                    file_link=file_link,
+                    markdown=(
+                        f"![{filename}]({file_link})"
+                        if is_image
+                        else f"[{filename}]({file_link})"
+                    ),
                 )
                 generated_files.append(generated_file)
                 generated_file_ids.append(onyx_file_id)
 
-                if mime_type.startswith("image/"):
+                if is_image:
                     images_to_annotate.append(
                         (filename, file_content, onyx_file_id, generated_file)
                     )

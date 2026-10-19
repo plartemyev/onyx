@@ -15,7 +15,7 @@ import {
   getDisplayNameForSource,
 } from "@/refresh-components/buttons/source-tag/sourceTagUtils";
 import { openDocument } from "@/lib/search/utils";
-import { ensureHrefProtocol } from "@/lib/utils";
+import { ensureHrefProtocol, isFileLinkPlaceholder } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 
 interface DocumentCardProps {
@@ -187,6 +187,14 @@ export const MemoizedLink = memo(
           className="me-0.5"
         />
       );
+    }
+
+    if (isFileLinkPlaceholder(href)) {
+      // The model copied the tool notice's placeholder word instead of the
+      // real file URL. The artifact row under the message carries the file,
+      // so render the text without a link rather than a dead
+      // https://file_link/ target.
+      return <>{rest.children}</>;
     }
 
     const url = ensureHrefProtocol(href);

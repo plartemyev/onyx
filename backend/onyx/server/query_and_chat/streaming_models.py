@@ -19,6 +19,7 @@ class StreamingType(Enum):
 
     MESSAGE_START = "message_start"
     MESSAGE_DELTA = "message_delta"
+    MESSAGE_FINAL = "message_final"
     SEARCH_TOOL_START = "search_tool_start"
     SEARCH_TOOL_QUERIES_DELTA = "search_tool_queries_delta"
     SEARCH_TOOL_FILTER_DELTA = "search_tool_filter_delta"
@@ -137,6 +138,16 @@ class AgentResponseStart(BaseObj):
 # There is no end packet for this as the stream is over and a final OverallStop packet is emitted
 class AgentResponseDelta(BaseObj):
     type: Literal["message_delta"] = StreamingType.MESSAGE_DELTA.value
+
+    content: str
+
+
+# Emitted right before OverallStop with the full final text, exactly as it will
+# be persisted (save-time fixups such as placeholder file-link rewriting
+# applied). Lets the client replace its streamed buffer so the visible message
+# matches the saved one.
+class AgentResponseFinal(BaseObj):
+    type: Literal["message_final"] = StreamingType.MESSAGE_FINAL.value
 
     content: str
 
@@ -497,6 +508,7 @@ PacketObj = Union[
     # Agent Response Packets
     AgentResponseStart,
     AgentResponseDelta,
+    AgentResponseFinal,
     # Tool Packets
     SearchToolStart,
     SearchToolQueriesDelta,

@@ -11,13 +11,12 @@ import "katex/dist/katex.min.css";
 
 import { useTypewriter } from "@/hooks/useTypewriter";
 import Text from "@/refresh-components/texts/Text";
-import {
-  ChatPacket,
-  PacketType,
-  StopReason,
-} from "../../../services/streamingModels";
+import { ChatPacket, StopReason } from "../../../services/streamingModels";
 import { MessageRenderer, FullChatState } from "../interfaces";
-import { isFinalAnswerComplete } from "../../../services/packetUtils";
+import {
+  getMessageContent,
+  isFinalAnswerComplete,
+} from "../../../services/packetUtils";
 import { processContent, ScrollableTable } from "../markdownUtils";
 import { BlinkingBar } from "../../BlinkingBar";
 import { useVoiceMode } from "@/providers/VoiceModeProvider";
@@ -133,17 +132,7 @@ export const MessageTextRenderer: MessageRenderer<
     isAwaitingAutoPlaybackStart,
   } = useVoiceMode();
 
-  const fullContent = packets
-    .map((packet) => {
-      if (
-        packet.obj.type === PacketType.MESSAGE_DELTA ||
-        packet.obj.type === PacketType.MESSAGE_START
-      ) {
-        return packet.obj.content;
-      }
-      return "";
-    })
-    .join("");
+  const fullContent = getMessageContent(packets);
 
   const shouldUseAutoPlaybackSync =
     autoPlayback &&

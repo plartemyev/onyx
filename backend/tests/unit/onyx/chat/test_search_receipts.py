@@ -435,7 +435,10 @@ def _run_loop(
     ):
         run_llm_loop(
             emitter=Mock(),
-            state_container=Mock(),
+            state_container=Mock(
+                get_answer_tokens=Mock(return_value=""),
+                get_tool_calls=Mock(return_value=[]),
+            ),
             simple_chat_history=history,
             tools=[_fake_search_tool()],
             custom_agent_prompt=None,

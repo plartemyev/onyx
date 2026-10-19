@@ -22,6 +22,17 @@ describe("findRenderer", () => {
     expect(findRenderer(packets)).toBe(MessageTextRenderer);
   });
 
+  it("routes a group carrying message_final to the message text renderer", () => {
+    const packets = [
+      makeMessageStartPacket(),
+      makePacket({
+        type: "message_final",
+        content: "final text",
+      }),
+    ];
+    expect(findRenderer(packets)).toBe(MessageTextRenderer);
+  });
+
   it("prioritizes chat over reasoning when both are present", () => {
     const packets = [
       makePacket({ type: "reasoning_start" }),

@@ -348,6 +348,10 @@ class PythonExecutionFile(BaseModel):
 
     filename: str
     file_link: str
+    # Ready-to-paste markdown embed for the model's reply. Models sometimes
+    # copy the `file_link` key name instead of its value; a verbatim snippet
+    # next to it removes the assembly step.
+    markdown: str | None = None
     # Vision-model description, set for generated image files
     image_caption: str | None = None
 

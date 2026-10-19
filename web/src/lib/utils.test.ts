@@ -1,4 +1,25 @@
-import { ensureHrefProtocol, transformLinkUri } from "./utils";
+import {
+  ensureHrefProtocol,
+  isFileLinkPlaceholder,
+  transformLinkUri,
+} from "./utils";
+
+describe("isFileLinkPlaceholder", () => {
+  it("matches the bare placeholder and its URL-dressed variants", () => {
+    expect(isFileLinkPlaceholder("file_link")).toBe(true);
+    expect(isFileLinkPlaceholder("https://file_link")).toBe(true);
+    expect(isFileLinkPlaceholder("https://file_link/")).toBe(true);
+    expect(isFileLinkPlaceholder("http://file_link/")).toBe(true);
+    expect(isFileLinkPlaceholder("  file_link  ")).toBe(true);
+  });
+
+  it("does not match real links or prose", () => {
+    expect(isFileLinkPlaceholder("/api/chat/file/abc-123")).toBe(false);
+    expect(isFileLinkPlaceholder("https://example.com/file_link")).toBe(false);
+    expect(isFileLinkPlaceholder("file_linkage")).toBe(false);
+    expect(isFileLinkPlaceholder(undefined)).toBe(false);
+  });
+});
 
 describe("ensureHrefProtocol", () => {
   it("adds https protocol to bare domains", () => {

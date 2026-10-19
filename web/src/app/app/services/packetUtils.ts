@@ -1,5 +1,6 @@
 import {
   MessageDelta,
+  MessageFinal,
   MessageStart,
   PacketType,
   StreamingCitation,
@@ -151,6 +152,22 @@ export function groupPacketsByTurnIndex(
 }
 
 export function getTextContent(packets: Packet[]) {
+  return getMessageContent(packets);
+}
+
+/**
+ * Message text for display: the joined message_start/message_delta content,
+ * replaced wholesale by a message_final packet when the backend sent one
+ * (it carries the text exactly as persisted).
+ */
+export function getMessageContent(packets: Packet[]): string {
+  const finalPacket = packets.find(
+    (packet): packet is Packet & { obj: MessageFinal } =>
+      packet.obj.type === PacketType.MESSAGE_FINAL
+  );
+  if (finalPacket) {
+    return finalPacket.obj.content || "";
+  }
   return packets
     .map((packet) => {
       if (

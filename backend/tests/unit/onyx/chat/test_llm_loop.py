@@ -1126,7 +1126,10 @@ class TestNonVisionImageBudgeting:
         ):
             run_llm_loop(
                 emitter=Mock(),
-                state_container=Mock(),
+                state_container=Mock(
+                    get_answer_tokens=Mock(return_value=""),
+                    get_tool_calls=Mock(return_value=[]),
+                ),
                 simple_chat_history=[older_user, older_answer, image_msg],
                 tools=[],
                 custom_agent_prompt=None,
@@ -2239,7 +2242,10 @@ class TestRunLlmLoopCycleAlignedHistory:
         ):
             run_llm_loop(
                 emitter=Mock(),
-                state_container=Mock(),
+                state_container=Mock(
+                    get_answer_tokens=Mock(return_value=""),
+                    get_tool_calls=Mock(return_value=[]),
+                ),
                 simple_chat_history=[
                     create_message("Find the thing", MessageType.USER, 10)
                 ],
@@ -2369,7 +2375,10 @@ class TestForcedFinalAnswerCycle:
         ):
             run_llm_loop(
                 emitter=Mock(),
-                state_container=Mock(),
+                state_container=Mock(
+                    get_answer_tokens=Mock(return_value=""),
+                    get_tool_calls=Mock(return_value=[]),
+                ),
                 simple_chat_history=[
                     create_message("Find the thing", MessageType.USER, 10)
                 ],
@@ -2464,7 +2473,10 @@ class TestStopSignalChecks:
         ):
             run_llm_loop(
                 emitter=Mock(),
-                state_container=Mock(),
+                state_container=Mock(
+                    get_answer_tokens=Mock(return_value=""),
+                    get_tool_calls=Mock(return_value=[]),
+                ),
                 simple_chat_history=[
                     create_message("Find the thing", MessageType.USER, 10)
                 ],

@@ -43,6 +43,7 @@ function isChatPacket(packet: Packet): packet is ChatPacket {
   return (
     packet.obj.type === PacketType.MESSAGE_START ||
     packet.obj.type === PacketType.MESSAGE_DELTA ||
+    packet.obj.type === PacketType.MESSAGE_FINAL ||
     packet.obj.type === PacketType.MESSAGE_END
   );
 }

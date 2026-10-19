@@ -9,10 +9,10 @@ from unittest.mock import MagicMock
 from pytest import MonkeyPatch
 
 from onyx.chat import save_chat
-from onyx.chat.save_chat import (
-    _extract_referenced_file_descriptors,
-    _rewrite_placeholder_file_links,
+from onyx.chat.chat_utils import (
+    rewrite_placeholder_file_links as _rewrite_placeholder_file_links,
 )
+from onyx.chat.save_chat import _extract_referenced_file_descriptors
 from onyx.file_store.models import ChatFileType
 from onyx.tools.models import PythonExecutionFile, ToolCallInfo
 
@@ -173,6 +173,31 @@ def test_placeholder_link_rewritten_in_anchor_form() -> None:
     result = _rewrite_placeholder_file_links(message, files)
 
     assert result == "Download: [data.csv](http://localhost/api/chat/file/csv-1)"
+
+
+def test_placeholder_link_url_dressed_variants_rewritten() -> None:
+    """Models sometimes dress the placeholder up as a URL before embedding
+    it; those variants resolve to the real link too."""
+    files = [
+        PythonExecutionFile(
+            filename="report.txt",
+            file_link="http://localhost/api/chat/file/rep-1",
+        )
+    ]
+    link = "http://localhost/api/chat/file/rep-1"
+
+    assert (
+        _rewrite_placeholder_file_links("[report.txt](https://file_link)", files)
+        == f"[report.txt]({link})"
+    )
+    assert (
+        _rewrite_placeholder_file_links("[report.txt](https://file_link/)", files)
+        == f"[report.txt]({link})"
+    )
+    assert (
+        _rewrite_placeholder_file_links("![report.txt](http://file_link/)", files)
+        == f"![report.txt]({link})"
+    )
 
 
 def test_placeholder_link_single_file_resolves_without_name() -> None:

@@ -9,6 +9,7 @@ from onyx.chat.chat_utils import (
     build_parallel_tool_call_messages,
     build_python_chat_files_from_search_docs,
     create_tool_call_failure_messages,
+    rewrite_placeholder_file_links,
 )
 from onyx.chat.citation_processor import (
     CitationMapping,
@@ -66,6 +67,7 @@ from onyx.prompts.chat_prompts import (
 from onyx.prompts.prompt_utils import substitute_user_placeholders
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
+    AgentResponseFinal,
     OverallStop,
     Packet,
     ToolCallDebug,
@@ -2011,6 +2013,29 @@ def run_llm_loop(
                 "Typically this indicates invalid tool-call output, a model/provider mismatch, "
                 "or serving API misconfiguration."
             )
+
+        # Sync the client to the final, persisted text before the stop packet
+        # closes the stream. save_chat_turn rewrites placeholder file links at
+        # save time; without this packet the live UI would keep showing the
+        # raw streamed text (e.g. a dead https://file_link/ link) until reload.
+        answer_text = state_container.get_answer_tokens()
+        if answer_text:
+            generated_files = [
+                gen_file
+                for tool_call_info in state_container.get_tool_calls()
+                for gen_file in tool_call_info.generated_files or []
+            ]
+            final_text = rewrite_placeholder_file_links(answer_text, generated_files)
+            if final_text != answer_text:
+                emitter.emit(
+                    Packet(
+                        placement=Placement(
+                            turn_index=llm_cycle_count  # ty: ignore[possibly-unresolved-reference]
+                            + reasoning_cycles
+                        ),
+                        obj=AgentResponseFinal(content=final_text),
+                    )
+                )
 
         emitter.emit(
             Packet(

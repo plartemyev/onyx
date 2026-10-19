@@ -11,6 +11,7 @@ import {
   isSearchToolPacket,
   isStreamingComplete,
   isFinalAnswerComing,
+  getMessageContent,
 } from "./packetUtils";
 
 // Helper to create a mock packet with a specific type
@@ -23,6 +24,39 @@ function createPacket(
     obj: { type } as any,
   };
 }
+
+describe("getMessageContent", () => {
+  it("joins message_start and message_delta content", () => {
+    const packets: Packet[] = [
+      {
+        placement: { turn_index: 0, tab_index: 0 },
+        obj: { type: PacketType.MESSAGE_START, content: "Hello " },
+      } as any,
+      {
+        placement: { turn_index: 0, tab_index: 0 },
+        obj: { type: PacketType.MESSAGE_DELTA, content: "world" },
+      } as any,
+    ];
+    expect(getMessageContent(packets)).toBe("Hello world");
+  });
+
+  it("replaces joined content with message_final when present", () => {
+    const packets: Packet[] = [
+      {
+        placement: { turn_index: 0, tab_index: 0 },
+        obj: { type: PacketType.MESSAGE_START, content: "[f](file_link)" },
+      } as any,
+      {
+        placement: { turn_index: 0, tab_index: 0 },
+        obj: {
+          type: PacketType.MESSAGE_FINAL,
+          content: "[f](/api/chat/file/abc)",
+        },
+      } as any,
+    ];
+    expect(getMessageContent(packets)).toBe("[f](/api/chat/file/abc)");
+  });
+});
 
 describe("packetUtils", () => {
   describe("isToolPacket", () => {

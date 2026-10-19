@@ -74,6 +74,7 @@ from onyx.prompts.tool_prompts import INTERNAL_SEARCH_GUIDANCE
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     AgentResponseDelta,
+    AgentResponseFinal,
     AgentResponseStart,
     IntermediateReportCitedDocs,
     IntermediateReportDelta,
@@ -160,6 +161,10 @@ def _pump_intermediate_report_packets(
                     obj=IntermediateReportDelta(content=packet.obj.content),
                 )
             )
+        elif isinstance(packet.obj, AgentResponseFinal):
+            # Loop-level final-answer sync; the report text was already
+            # re-labeled above. Never leak it as the main answer.
+            pass
         else:
             # Pass through other packet types (e.g., ReasoningStart, ReasoningDelta, etc.)
             # Also use original placement to keep everything in the same group

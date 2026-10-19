@@ -2,12 +2,8 @@
 // markdown to `children`. 9a inline citations ride along as `[[n]](url)` markers opened by openUrl.
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import {
-  MessageDelta,
-  MessageStart,
-  Packet,
-  PacketType,
-} from "@/chat/streamingModels";
+import { Packet, PacketType } from "@/chat/streamingModels";
+import { getMessageContent } from "@/chat/timeline/packetUtils";
 import { openUrl } from "@/chat/openSource";
 import { StreamingMarkdown } from "@/components/chat/StreamingMarkdown";
 import { useTypewriter } from "@/hooks/useTypewriter";
@@ -15,17 +11,7 @@ import { useTypewriter } from "@/hooks/useTypewriter";
 import type { FullChatState, MessageRenderer } from "./timelineContract";
 
 function accumulateContent(packets: Packet[]): string {
-  let content = "";
-  for (const packet of packets) {
-    if (
-      packet.obj.type === PacketType.MESSAGE_START ||
-      packet.obj.type === PacketType.MESSAGE_DELTA
-    ) {
-      // message_start can arrive with no content; guard prevents appending literal "undefined".
-      content += (packet.obj as MessageStart | MessageDelta).content ?? "";
-    }
-  }
-  return content;
+  return getMessageContent(packets);
 }
 
 export const MessageTextRenderer: MessageRenderer<Packet, FullChatState> = ({

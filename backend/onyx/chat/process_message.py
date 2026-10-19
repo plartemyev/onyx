@@ -141,6 +141,7 @@ from onyx.server.query_and_chat.models import (
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     AgentResponseDelta,
+    AgentResponseFinal,
     AgentResponseStart,
     CitationInfo,
     OverallStop,
@@ -2272,6 +2273,10 @@ def gather_stream(
                     answer = ""
                 if packet.obj.content:
                     answer += packet.obj.content
+            elif isinstance(packet.obj, AgentResponseFinal):
+                # Authoritative final text (save-time fixups applied);
+                # replaces the joined deltas.
+                answer = packet.obj.content
             elif isinstance(packet.obj, CitationInfo):
                 # CitationInfo contains citation information
                 citations.append(packet.obj)
@@ -2337,6 +2342,10 @@ def gather_stream_full(
                     answer = ""
                 if packet.obj.content:
                     answer += packet.obj.content
+            elif isinstance(packet.obj, AgentResponseFinal):
+                # Authoritative final text (save-time fixups applied);
+                # replaces the joined deltas.
+                answer = packet.obj.content
             elif isinstance(packet.obj, CitationInfo):
                 citations.append(packet.obj)
         elif isinstance(packet, StreamingError):

@@ -19,6 +19,17 @@ export const truncateString = (str: string, maxLength: number) => {
   return str.length > maxLength ? str.slice(0, maxLength - 1) + "..." : str;
 };
 
+// The literal `file_link` placeholder models sometimes copy from tool notices
+// into markdown link targets instead of the real URL. It must never reach
+// ensureHrefProtocol: adding a scheme would turn it into a plausible-looking
+// dead URL (https://file_link/).
+const FILE_LINK_PLACEHOLDER_REGEX = /^(?:https?:\/\/)?file_link\/?$/i;
+
+export function isFileLinkPlaceholder(href: string | undefined): boolean {
+  if (!href) return false;
+  return FILE_LINK_PLACEHOLDER_REGEX.test(href.trim());
+}
+
 /**
  * Ensures an href has a protocol, adding https:// only to bare domains.
  * Converts bare email addresses to mailto: links.

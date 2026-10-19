@@ -42,6 +42,7 @@ from onyx.prompts.prompt_utils import get_current_llm_day_time
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     AgentResponseDelta,
+    AgentResponseFinal,
     AgentResponseStart,
     CodingAgentFinal,
     CodingAgentThinkingDelta,
@@ -239,7 +240,12 @@ def _generate_final_answer(
         while True:
             try:
                 packet = next(answer_generator)
-                if isinstance(packet.obj, (AgentResponseStart, AgentResponseDelta)):
+                if isinstance(
+                    packet.obj,
+                    (AgentResponseStart, AgentResponseDelta, AgentResponseFinal),
+                ):
+                    # AgentResponseFinal is loop-level answer sync; the coding
+                    # agent's answer is returned, not streamed as the main one.
                     continue
                 emitter.emit(Packet(placement=placement, obj=packet.obj))
             except StopIteration as e:
@@ -385,7 +391,11 @@ def run_coding_agent_call(
                             packet = next(step_generator)
                             if isinstance(
                                 packet.obj,
-                                (AgentResponseStart, AgentResponseDelta),
+                                (
+                                    AgentResponseStart,
+                                    AgentResponseDelta,
+                                    AgentResponseFinal,
+                                ),
                             ):
                                 if isinstance(packet.obj, AgentResponseDelta):
                                     emitter.emit(

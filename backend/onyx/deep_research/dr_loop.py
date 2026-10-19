@@ -79,6 +79,7 @@ from onyx.prompts.prompt_utils import get_current_llm_day_time
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     AgentResponseDelta,
+    AgentResponseFinal,
     AgentResponseStart,
     DeepResearchPlanDelta,
     DeepResearchPlanStart,
@@ -497,6 +498,11 @@ def run_deep_research_llm_loop(
                                 obj=DeepResearchPlanDelta(content=packet.obj.content),
                             )
                         )
+                    elif isinstance(packet.obj, AgentResponseFinal):
+                        # Loop-level final-answer sync; the plan text was
+                        # already re-labeled above. Never leak it as the main
+                        # answer.
+                        pass
                     else:
                         # Pass through other packet types (e.g., ReasoningStart, ReasoningDelta, etc.)
                         emitter.emit(packet)

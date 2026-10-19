@@ -133,7 +133,7 @@ Java (`java`, `javac`) and PlantUML are preinstalled — render diagrams locally
 Write the `.puml` source with the `files` argument, then validate it without rendering: `plantuml -checkonly diagram.puml` \
 (exit code 0 means the syntax is valid; a nonzero exit prints the error and nothing is rendered). \
 Render to SVG with `plantuml -tsvg diagram.puml` or to PNG with `plantuml -tpng diagram.puml`; the output file lands next to the source, so it is exported to the chat like any file you create. \
-Embed the rendered file in your reply with its exact `file_link`. \
+Embed the rendered file in your reply by copying its `markdown` snippet verbatim. \
 Use SVG for flowcharts and architecture diagrams (crisp at any zoom) and PNG when the target needs a raster image.
 """.strip()
 
@@ -152,8 +152,8 @@ The sandbox has pip, uv, and poetry. Install with `pip install <package>` (or `u
 You have numpy, scipy, pandas, matplotlib, Pillow, OpenCV, librosa, soundfile, requests, httpx, and openpyxl preinstalled.
 {plantuml_guidance}
 Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
-Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
-Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
+Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and a ready-to-use `markdown` snippet, and are shared with the user. \
+To share a generated file, copy its `markdown` snippet verbatim into your reply. Never write the placeholder word `file_link` in place of the URL.
 {network_guidance}
 {download_guidance}
 Write chart titles, axis labels, legends, and other text rendered into images in the language you reply in. \
@@ -167,8 +167,8 @@ PYTHON_TOOL_LEGACY_GUIDANCE = """
 ## run_python
 Use the `run_python` tool to execute Python code in an isolated sandbox. The tool will respond with the output of the execution or time out after {timeout_seconds:.0f} seconds.
 Any files uploaded to the chat will automatically be available in the execution environment's current directory. \
-The current directory in the file system can be used to save and persist user files. Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and shared with the user. \
-Image files are displayed in chat; to show one, copy its exact `file_link` URL from the execution result into markdown image syntax. Never write the placeholder word `file_link` in place of the URL.
+The current directory in the file system can be used to save and persist user files. Files written to the current directory — created by your code or downloaded from the web — are returned with a `file_link` and a ready-to-use `markdown` snippet, and are shared with the user. \
+To share a generated file, copy its `markdown` snippet verbatim into your reply. Never write the placeholder word `file_link` in place of the URL.
 {files_guidance}
 {network_guidance}
 {download_guidance}

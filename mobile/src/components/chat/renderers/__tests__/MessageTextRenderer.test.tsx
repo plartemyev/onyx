@@ -60,6 +60,36 @@ describe("MessageTextRenderer", () => {
     expect(mockMarkdownProps?.isStreaming).toBe(false);
   });
 
+  it("replaces accumulated content with message_final when present", () => {
+    // The backend emits message_final with the exact persisted text (e.g.
+    // placeholder file links rewritten); it must win over the joined deltas.
+    const finalPackets = [
+      makePacket({
+        type: "message_start",
+        id: "m",
+        content: "File: [f](file_link)",
+        final_documents: null,
+      }),
+      makePacket({
+        type: "message_final",
+        content: "File: [f](/api/chat/file/abc)",
+      }),
+    ];
+    render(
+      <MessageTextRenderer
+        packets={finalPackets}
+        state={{ agent: null }}
+        onComplete={() => {}}
+        renderType={RenderType.FULL}
+        animate={false}
+        stopPacketSeen={true}
+      >
+        {renderResults}
+      </MessageTextRenderer>,
+    );
+    expect(mockMarkdownProps?.content).toBe("File: [f](/api/chat/file/abc)");
+  });
+
   it("emits a single render-prop result with no icon or status", () => {
     let captured: RendererOutput | null = null;
     render(

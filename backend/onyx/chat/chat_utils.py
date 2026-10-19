@@ -68,7 +68,7 @@ from onyx.prompts.tool_prompts import TOOL_CALL_FAILURE_PROMPT
 from onyx.server.query_and_chat.chat_utils import mime_type_to_chat_file_type
 from onyx.server.query_and_chat.models import ChatSessionCreationRequest
 from onyx.server.query_and_chat.streaming_models import CitationInfo
-from onyx.tools.models import ChatFile, ToolCallKickoff
+from onyx.tools.models import ChatFile, PythonExecutionFile, ToolCallKickoff
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
 from onyx.utils.timing import log_function_time
@@ -623,6 +623,53 @@ def dedupe_generated_files_latest_by_filename(
             ordered_filenames.append(filename)
         latest_by_filename[filename] = file_id
     return [(filename, latest_by_filename[filename]) for filename in ordered_filenames]
+
+
+# Link target models copy verbatim from the tool notices when they fail to
+# substitute the real URL, e.g. ![chart.png](file_link). Models also dress the
+# placeholder up as a URL (](https://file_link/)); match those variants too.
+_PLACEHOLDER_FILE_LINK = "file_link"
+_PLACEHOLDER_LINK_PATTERN = re.compile(
+    r"(!?\[[^\]]*\])\(\s*(?:https?://)?file_link/?\s*\)"
+)
+
+
+def rewrite_placeholder_file_links(
+    message_text: str,
+    generated_files: list[PythonExecutionFile],
+) -> str:
+    """Resolve `](file_link)` placeholder links to real generated-file URLs.
+
+    Models sometimes copy the placeholder from the tool notices verbatim
+    (e.g. `![chart.png](file_link)`), optionally dressed up as a URL
+    (`](https://file_link/)`). A bracket name maps to the newest save
+    of that filename; with a single generated file any placeholder resolves
+    to it. Unresolvable placeholders stay unchanged.
+
+    Shared by the streaming path (emitting the final message packet) and the
+    persistence path (save_chat_turn) so both agree on the saved text.
+    """
+    if _PLACEHOLDER_FILE_LINK not in message_text or not generated_files:
+        return message_text
+
+    links_by_filename: dict[str, str] = {}
+    for gen_file in generated_files:
+        if gen_file.file_link:
+            links_by_filename[gen_file.filename] = gen_file.file_link
+
+    def _resolve(match: re.Match[str]) -> str:
+        bracket = match.group(1)
+        inner = bracket.lstrip("!").strip()
+        name = inner[1:-1] if inner.startswith("[") and inner.endswith("]") else ""
+        link = links_by_filename.get(name)
+        if not link and name not in links_by_filename and len(generated_files) == 1:
+            # One generated file: any placeholder resolves to it.
+            link = generated_files[0].file_link
+        if not link:
+            return match.group(0)
+        return f"{bracket}({link})"
+
+    return _PLACEHOLDER_LINK_PATTERN.sub(_resolve, message_text)
 
 
 def file_descriptors_from_generated_files(
