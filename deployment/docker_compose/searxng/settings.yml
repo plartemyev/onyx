@@ -182,23 +182,23 @@ engines:
   # Disable here if that latency is not acceptable; the solver itself is
   # harmless for engines that never challenge.
   - name: google
-    # DISABLED 2026-10-01 (evening): (a) every jar is hard-flagged -- the
-    # homepage itself lands on /sorry, so submissions never navigate and
-    # each attempt just burns 100s of engine budget; jars need days of
-    # mixed-traffic aging before a re-test is meaningful. (b) Google's
-    # pages are the fleet's main live exposure to the Playwright BiDi
-    # console-entry driver crash (see container/patch-bidi-console.py) --
-    # every google page is heavy JS emitting console entries. Re-enable
-    # here (and google images below) after the jars have aged.
-    disabled: true
+    # RE-ENABLED 2026-10-19: (a) the jars have had 18 days of rest (the
+    # 2026-10-01 hard-flag verdict gets its re-test); (b) the Playwright
+    # BiDi console-entry driver crash google pages kept triggering is
+    # fixed in the fork (container/patch-bidi-console.py, commit 4187d25).
+    # If the homepage lands on /sorry straight away again, the lane keeps
+    # solving in the background (12 slides x 1 vote) and banks the
+    # clearance for later requests -- watch the logs and re-disable if
+    # every attempt still burns the 100s budget without ever navigating.
+    disabled: false
     # Normal search returns in ~20-40s on a warm lane. If google challenges
     # the lane, the request fails at this budget while the lane keeps
     # solving in the background and earns clearance for later requests
     # (Onyx's client read timeout is 450s; the budget must stay below it).
     timeout: 100.0
   - name: google images
-    # disabled together with google (see above)
-    disabled: true
+    # re-enabled together with google (see above)
+    disabled: false
   - name: bing
     disabled: false
     # 2x the worst warm-lane search observed (~35s incl. render + settle),
