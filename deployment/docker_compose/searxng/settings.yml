@@ -114,16 +114,14 @@ outgoing:
     # Bounds how long a lane can be held by a challenge that never clears:
     # ~2x the slowest solve observed to succeed (~12min).
     session_budget: 1500
-    # 3 samples per round at rising temperature (capped low, see
-    # captcha_vision), per-tile strict-majority quorum: the model
-    # localizes the right region reliably but flickers on a tile or two
-    # between samples. 3 = 2 direct + 1 inverted vote, quorum of 2: the
-    # direct side alone reaches it, so a negation-blind inverted vote
-    # cannot deadlock the round into an empty skip (the 6-vote 3-3 tie
-    # observed 2026-10-01). ~35s per sample, so a round costs ~2min --
-    # the search request may time out while the lane keeps solving, but
-    # the lane keeps the clearance cookies once it succeeds.
-    votes: 3
+    # 1 sample per round: the first answer decides, no inverted
+    # cross-check, no quorum. The 2026-10-19 smoke test was 3/3 unanimous
+    # on Qwen3.6-35B, and a round now costs ~30s instead of ~2min -- the
+    # search request may still time out while the lane keeps solving, but
+    # the lane keeps the clearance cookies once it succeeds. Revert to 3
+    # (2 direct + 1 inverted, quorum 2) if the model starts flickering on
+    # tiles between rounds.
+    votes: 1
   # Global per-provider send pacing (searx/network/pacing.py): requests to
   # the same upstream host are spaced a random 1-5s apart, whatever engine
   # or search sent them; different providers never block each other. max_wait
