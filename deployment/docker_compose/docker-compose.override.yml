@@ -9,17 +9,24 @@ services:
     # search provider settings points at http://searxng:8080): pacing now
     # lives inside the fork, so the old searxng-pacer proxy is gone.
     #
-    # EXPERIMENT (feat/distro-firefox-fleet): the fleet runs distro Firefox
-    # (Arch package, driven over WebDriver BiDi via Playwright's
-    # "moz-firefox" channel) instead of distro Chromium.
-    image: searxng-browser:firefox-exp
+    # The feat/distro-firefox-fleet experiment (distro Firefox over
+    # WebDriver BiDi) succeeded and is merged into feat/browser-masquerade;
+    # this build context is the local checkout of that consolidated branch.
+    #
+    # WHICH BROWSER THE FLEET RUNS is one variable:
+    #   SEARXNG_BROWSER_KIND=chromium docker compose build searxng
+    #   SEARXNG_BROWSER_KIND=chromium docker compose up -d searxng
+    # (firefox is the default). It picks the image tag, the build arg and
+    # the lane-profile volume, so each kind keeps its own trained cookie
+    # jars -- browser profiles are not interchangeable across kinds. The
+    # runtime also reads outgoing.browser_kind in searxng/settings.yml
+    # (falls back to whichever distro binary the image actually has).
+    image: searxng-browser:${SEARXNG_BROWSER_KIND:-firefox}
     build:
-      # EXPERIMENT: build from the local checkout of the Firefox-port
-      # branch. To go back to the Chromium fleet: restore
-      # image: searxng-browser:dev and the git context
-      # https://github.com/plartemyev/searxng.git#feat/browser-masquerade
       context: /home/nameless/searxng
       dockerfile: container/browser.dockerfile
+      args:
+        - SEARXNG_BROWSER_KIND=${SEARXNG_BROWSER_KIND:-firefox}
     # Same command as the image ENTRYPOINT plus granian's backpressure cap:
     # with ~7 engines per search, a 16-search Onyx burst used to spawn 100+
     # WSGI threads that all queued on the 6 browser lanes and timed out
@@ -85,13 +92,12 @@ services:
       # ip_locale.json) survives container recreations: restarts then reuse
       # the resolved identity instead of re-querying the geoip services.
       - searxng-cache:/var/cache/searxng
-      # Persistent per-lane Firefox cookie jars (outgoing.browser_profile_dir
+      # Persistent per-lane browser cookie jars (outgoing.browser_profile_dir
       # in searxng/settings.yml): one profile per lane, fully isolated, so
       # earned clearances and engine cookies survive container recreations.
-      # EXPERIMENT: a dedicated volume -- Firefox profiles are not Chromium
-      # profiles, and the Chromium fleet's trained jars stay intact on
-      # searxng-browser-lanes for an instant revert.
-      - searxng-browser-lanes-ff:/var/lib/searxng/lanes
+      # The volume follows SEARXNG_BROWSER_KIND (firefox -> -firefox,
+      # chromium -> -chromium): profiles are not interchangeable.
+      - searxng-browser-lanes-${SEARXNG_BROWSER_KIND:-firefox}:/var/lib/searxng/lanes
 
   # Deep Research / long-run chat tuning for slow local inference (48h budget).
   # Merged into the api_server service from docker-compose.yml by compose.
@@ -297,8 +303,11 @@ services:
 volumes:
   # Holds /var/cache/searxng for the searxng service (geo-locale cache).
   searxng-cache:
-  # EXPERIMENT (Firefox fleet): holds /var/lib/searxng/lanes for the
-  # searxng service -- one persistent Firefox profile per lane (cookies,
-  # storage, clearances). The Chromium fleet's volume
-  # (searxng-browser-lanes) is kept untouched for the revert.
-  searxng-browser-lanes-ff:
+  # Lane-profile volumes, one per browser kind (see the searxng service):
+  # - searxng-browser-lanes-firefox: the Firefox fleet's jars (migrated
+  #   from the experiment volume searxng-browser-lanes-ff, kept as backup).
+  # - searxng-browser-lanes-chromium: the Chromium fleet's jars (starts
+  #   fresh when that kind is selected; the pre-experiment volume
+  #   searxng-browser-lanes is kept as an untouched archive).
+  searxng-browser-lanes-firefox:
+  searxng-browser-lanes-chromium:

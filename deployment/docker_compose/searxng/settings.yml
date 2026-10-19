@@ -55,6 +55,13 @@ general:
 # per-provider pacing waits and the human-input fallback.
 outgoing:
   using_browser: true
+  # Which browser the fleet masquerades as: "firefox" (default) or
+  # "chromium". Must agree with the image's SEARXNG_BROWSER_KIND
+  # (docker-compose.override.yml builds one image per kind); if the
+  # configured binary is missing the pool falls back to the other distro
+  # browser with a warning. Each kind rides its own lane-profile volume
+  # (browser profiles are not interchangeable).
+  browser_kind: firefox
   # Each lane runs its own browser on its own Xvfb display (one pointer
   # per lane), so parallel human sessions cannot steal each other's
   # clicks. 6 lanes = 6 browser processes: keep an eye on container RAM.
