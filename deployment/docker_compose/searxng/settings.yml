@@ -98,10 +98,16 @@ outgoing:
   # layer. The vision call is observation only; clicks stay real X input.
   captcha_vision:
     enabled: true
-    endpoint: 'http://172.17.172.35:11434'
+    endpoint: 'http://172.29.153.35:8011'
+    # Bearer token arrives via the CAPTCHA_VISION_API_KEY container env
+    # (docker-compose.override.yml interpolates it from the gitignored .env);
+    # this file is git-tracked and must not hold the secret.
     api_key: ''
-    model: 'ornith-1.5:9b'
-    context_size: 20192
+    model: 'Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf'
+    # 0 = no num_ctx hint is sent and the backend serves with its own default
+    # context ("auto"). The literal string "auto" would crash the int() parse
+    # in captcha_vision.py.
+    context_size: 0
     timeout: 360
     max_rounds: 12
     # Wall-clock cap for one whole solve attempt (all rounds and votes).

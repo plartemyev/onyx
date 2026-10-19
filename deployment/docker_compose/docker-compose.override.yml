@@ -73,6 +73,9 @@ services:
       - SEARXNG_BASE_URL=http://searxng:8080/
       # instance secret, from the gitignored .env (see settings.yml)
       - SEARXNG_SECRET=${SEARXNG_SECRET}
+      # vision captcha solver Bearer token, from the gitignored .env;
+      # overrides outgoing.captcha_vision.api_key inside the container
+      - CAPTCHA_VISION_API_KEY=${CAPTCHA_VISION_API_KEY}
       # Operational INFO lines (pool up, human search flow, crawl routing)
       # stay visible in production mode; DEBUG wire noise stays off.
       - SEARXNG_LOG_LEVEL=INFO
@@ -104,7 +107,7 @@ services:
       # Fallback for thinking-capable local models the capability registry
       # cannot classify. Primary source is the engine itself: Ollama's
       # /api/show reports per-model capabilities (cached in-process).
-      - DR_THINKING_MODEL_OVERRIDES=ornith-1.5:9b
+      # - DR_THINKING_MODEL_OVERRIDES=ornith-1.5:9b
       # Keep the stream buffer replayable across disconnects for the whole run (48h)
       - CHAT_STREAM_BUFFER_TTL_S=172800
       # Slow inference: allow long gaps between streamed chunks
@@ -222,7 +225,7 @@ services:
       # DR temperature experiment dropped (see api_server block); sub-agent
       # caps remain.
       - DR_SUBAGENT_CONTEXT_TOKENS=24000
-      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=2500
+      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=5000
       - MAX_CHUNKS_FED_TO_CHAT=50
       - CODE_INTERPRETER_SESSIONS_ENABLED=true
       - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
@@ -234,7 +237,7 @@ services:
       # and above the slowest legitimate search/crawl chain (see api_server).
       - TOOL_EXECUTION_TIMEOUT_SECONDS=1200
       # Whole-turn wall clock (see api_server above).
-      - CHAT_TURN_BUDGET_SECONDS=3600
+      - CHAT_TURN_BUDGET_SECONDS=8200
       # Deep Research wall clocks (see api_server above) for scheduled runs.
       - DR_FORCE_REPORT_S=172800
       - DR_RESEARCH_AGENT_TIMEOUT_S=2700
