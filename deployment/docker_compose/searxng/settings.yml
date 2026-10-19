@@ -118,6 +118,11 @@ outgoing:
     # in captcha_vision.py.
     context_size: 0
     timeout: 360
+    # SSE streaming: deltas keep flowing during long generations and the
+    # transport assembles them transparently (llama.cpp and Ollama both
+    # speak OpenAI-shaped SSE; thinking rides reasoning_content resp.
+    # reasoning and is only used when content comes back empty).
+    stream: true
     max_rounds: 12
     # Wall-clock cap for one whole solve attempt (all rounds and votes).
     # Bounds how long a lane can be held by a challenge that never clears:
