@@ -36,6 +36,15 @@ search:
     - html
     # Required by Onyx; requests use format=json.
     - json
+  # Per-jar flags make engine-wide suspensions counterproductive: one
+  # lane's jar eating a hard /sorry would otherwise bench every lane --
+  # including jars holding a banked challenge clearance -- for a day.
+  # A short cooldown lets the next request ride another jar and gives the
+  # flagged jar rest instead.
+  suspended_times:
+    SearxEngineCaptcha: 300
+    SearxEngineAccessDenied: 300
+    SearxEngineTooManyRequests: 300
 # General debug logging (httpx wire lines, huge engine URLs). Off for duty;
 # the per-component trace switch below is the fine-grained knob.
 general:
