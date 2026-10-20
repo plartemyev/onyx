@@ -120,6 +120,10 @@ interface PolicySliderProps {
   marks: string[];
   activeMark: number;
   onChange: (value: number) => void;
+  /** Numeric readout rendered at the label line's end (e.g. "0.7"). Only
+   *  for sliders whose value is a number worth showing; stop-based sliders
+   *  are labeled by their marks instead. */
+  valueLabel?: string;
 }
 
 /** Mock spec: 32px left inset, 8px right, 16px label line, 28px slider.
@@ -133,6 +137,7 @@ function PolicySlider({
   marks,
   activeMark,
   onChange,
+  valueLabel,
 }: PolicySliderProps) {
   return (
     <Section
@@ -142,7 +147,14 @@ function PolicySlider({
       gap={0}
       className="ms-8 me-2"
     >
-      <Section alignItems="start" width="auto" height="auto" className="mx-0.5">
+      <Section
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="between"
+        width="auto"
+        height="auto"
+        className="mx-0.5"
+      >
         <Text
           font="secondary-action"
           color="text-03"
@@ -150,6 +162,15 @@ function PolicySlider({
         >
           {label}
         </Text>
+        {valueLabel !== undefined && (
+          <Text
+            font="figure-small-value"
+            color="text-02"
+            wordWrap="whitespace-nowrap"
+          >
+            {valueLabel}
+          </Text>
+        )}
       </Section>
       <Section alignItems="stretch" height="auto" padding={0.5}>
         <PaneSlider
@@ -321,6 +342,7 @@ export function ModelSettingsPopover({
             />
             <Section
               alignItems="stretch"
+              width="auto"
               height="auto"
               padding={0.5}
               className="ms-8 me-2"
@@ -362,6 +384,7 @@ export function ModelSettingsPopover({
               flexDirection="row"
               alignItems="center"
               justifyContent="between"
+              width="auto"
               height="auto"
               padding={0.5}
               className="ms-8 me-2"
@@ -437,6 +460,7 @@ export function ModelSettingsPopover({
                 step={0.1}
                 marks={temperatureMarks}
                 activeMark={temperatureMark}
+                valueLabel={(temperatureDisabled ? 1 : temperature).toFixed(1)}
                 onChange={(v) => onChange({ temperature_default: v })}
               />
             </Section>

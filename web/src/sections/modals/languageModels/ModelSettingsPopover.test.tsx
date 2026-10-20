@@ -158,6 +158,17 @@ describe("ModelSettingsPopover temperature", () => {
     expect(temperatureWrapper()).not.toBeNull();
   });
 
+  it("shows the numeric temperature next to the label", async () => {
+    render(
+      <PopoverHarness
+        initialMaxInputTokens={null}
+        modelOverrides={{ temperature_default: 0.7 }}
+      />
+    );
+    await openPopover();
+    expect(screen.getByText("0.7")).toBeInTheDocument();
+  });
+
   it("stays live for a non-reasoning model and parks at zero", async () => {
     render(
       <PopoverHarness
