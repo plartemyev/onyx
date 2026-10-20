@@ -218,8 +218,15 @@ engines:
     # (Onyx's client read timeout is 450s; the budget must stay below it).
     timeout: 100.0
   - name: google images
-    # re-enabled together with google (see above)
+    # re-enabled together with google (see above). 2026-10-20: switched from
+    # the discontinued WML image endpoint (zero results since google pulled
+    # the layout) to the desktop image grid -- same masqueraded human flow
+    # as google web, starting from /imghp so the typed query lands in the
+    # images vertical; challenge clears along the way are the solver's.
+    # A challenged image search waits on the same reCAPTCHA flow as google
+    # web: give it the same budget instead of the 60s default.
     disabled: false
+    timeout: 100.0
   - name: bing
     disabled: false
     # 2x the worst warm-lane search observed (~35s incl. render + settle),
