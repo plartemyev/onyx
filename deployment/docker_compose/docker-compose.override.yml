@@ -247,9 +247,11 @@ services:
       - WEB_CONTENT_MD_LINKS=full
       # Wikipedia Vector-2022 chrome the element cleanup cannot see
       # (dropdown language menus, search boxes, print/category footers,
-      # navbox reference tables, section "[edit]" links). Applies to web
-      # content extraction and connector indexing alike.
-      - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection
+      # navbox reference tables, section "[edit]" links) and Material
+      # Design icon-font spans that leak ligature words into text
+      # ("*message*170*add_box*10"). Applies to web content extraction
+      # and connector indexing alike.
+      - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons,material-icons
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
   # processing). Match api_server's slow-inference tolerance plus the
@@ -302,7 +304,7 @@ services:
       - WEB_CONTENT_MAX_CHARS_ACROSS_URLS=180000
       - WEB_CONTENT_FORMAT=markdown
       - WEB_CONTENT_MD_LINKS=full
-      - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection
+      - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons
 
   # Persistent-session code interpreter: forked service (0.5.0) built from this
   # repo plus an Arch-based research executor image (pip/uv/poetry, ffmpeg,

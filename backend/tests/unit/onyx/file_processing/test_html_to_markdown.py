@@ -223,6 +223,61 @@ def test_alt_falls_back_to_anchor_title() -> None:
     assert "![lone cat](https://upload.wikimedia.org/lone.jpg)" in md
 
 
+def test_page_level_href_dedupe() -> None:
+    page = (
+        "<html><head><title>Dedupe</title></head><body>"
+        '<h2><a href="https://example.com/t/1">Topic one</a></h2>'
+        '<a href="https://example.com/t/1"></a>'
+        '<a href="https://example.com/t/1">Topic one again</a>'
+        '<a href="https://example.com/t/2">Topic two</a>'
+        # Text-less anchor first: it does not claim the destination, so
+        # the informative link that follows survives (author-name case).
+        '<a href="https://example.com/u/1"></a>'
+        '<a href="https://example.com/u/1">Author</a>'
+        "</body></html>"
+    )
+    md = web_page_to_markdown(page).cleaned_text
+    # First informative occurrence keeps the link; later labeled
+    # duplicates and empty duplicates of a claimed destination drop.
+    assert "[Topic one](https://example.com/t/1)" in md
+    assert md.count("](https://example.com/t/1)") == 1
+    assert "Topic one again" not in md
+    assert "[Topic two](https://example.com/t/2)" in md
+    # The unclaimed overlay URL stays available for digging AND the
+    # informative link keeps its name.
+    assert "[](https://example.com/u/1)" in md
+    assert "[Author](https://example.com/u/1)" in md
+
+
+def test_image_src_dedupe() -> None:
+    page = (
+        "<html><head><title>Imgs</title></head><body>"
+        '<img src="https://cdn.example.com/hero.png" alt="hero">'
+        '<img src="https://cdn.example.com/hero.png" alt="hero again">'
+        '<img src="https://cdn.example.com/other.png" alt="other">'
+        "</body></html>"
+    )
+    md = web_page_to_markdown(page).cleaned_text
+    assert "![hero](https://cdn.example.com/hero.png)" in md
+    assert "![other](https://cdn.example.com/other.png)" in md
+    assert md.count("hero.png") == 1
+
+
+def test_avatar_anchor_does_not_claim() -> None:
+    # An image-only anchor (avatar link) must not claim the destination:
+    # the informative named link that follows keeps its name.
+    page = (
+        "<html><head><title>Avatar</title></head><body>"
+        '<a href="https://example.com/u/7">'
+        '<img src="https://cdn.example.com/avatar.jpg" alt="avatar"></a>'
+        '<a href="https://example.com/u/7">Querist</a>'
+        "</body></html>"
+    )
+    md = web_page_to_markdown(page).cleaned_text
+    assert "[![avatar](https://cdn.example.com/avatar.jpg)]" in md
+    assert "[Querist](https://example.com/u/7)" in md
+
+
 def test_code_language_from_pre_class() -> None:
     page = (
         "<html><head><title>Code</title></head><body>"

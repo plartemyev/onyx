@@ -11,7 +11,11 @@ is reconstructed to a fetchable address: relative references resolve
 against the page URL, tracking parameters (utm_*) are stripped,
 scheme-relative URLs are anchored to https, parentheses and spaces are
 percent-encoded, and anything that cannot become an http(s) URL degrades
-to plain text (links) or is dropped (images).
+to plain text (links) or is dropped (images). Destinations are deduped
+per page: the first informative occurrence stays a link and later
+repeats drop altogether; text-less anchors never claim a destination —
+they render only while the URL appears nowhere else, so overlay URLs
+stay available for digging.
 """
 
 from __future__ import annotations
@@ -30,6 +34,10 @@ _EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
 # Link hrefs that carry no navigation value for the model: in-page anchors
 # and script URLs render as bare link text even in "full" mode.
 _NO_VALUE_HREF_PREFIXES = ("#", "javascript:")
+
+# Markdown image syntax, used to tell image-only anchors from anchors
+# that carry real text.
+_IMAGE_MARKDOWN = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 
 # Tracking parameters stripped from link and media URLs so the model sees
 # the canonical address (utm_* is the dominant family; matched by prefix,
@@ -111,6 +119,16 @@ class WebContentMarkdownConverter(MarkdownConverter):
         )
         self._link_mode = link_mode
         self._base_url = base_url
+        # Page-level href dedupe: card-style layouts wrap every item in
+        # overlapping anchors (stretched overlays, tag chips, author
+        # links), repeating each destination two or three times. The first
+        # informative occurrence in document order carries the text and
+        # stays a link; later duplicates of the same destination drop
+        # altogether, and text-less anchors never claim a destination.
+        self._seen_hrefs: set[str] = set()
+        # Same rule for media: reaction icons and avatars repeat per
+        # comment/row and the duplicate instances carry zero information.
+        self._seen_srcs: set[str] = set()
 
     @staticmethod
     def _code_language(el: bs4.element.Tag) -> str:
@@ -147,9 +165,24 @@ class WebContentMarkdownConverter(MarkdownConverter):
         # no base) degrades to its text.
         if not href.lower().startswith(("http://", "https://")):
             return text
-        # Inline-style link, mirroring markdownify's inlined link_style.
+        if href in self._seen_hrefs:
+            # Later repeats of the same destination drop altogether.
+            return ""
         title = _attribute_value(el, "title")
         title_suffix = f' "{title}"' if title else ""
+        # An anchor whose text is only image markdown (an avatar link)
+        # carries no name and must not claim the destination either.
+        has_text = bool(_IMAGE_MARKDOWN.sub("", text).strip())
+        if has_text:
+            # Informative anchors claim the destination: this is the
+            # occurrence that names it.
+            self._seen_hrefs.add(href)
+            return f"[{text.strip()}]({href}{title_suffix})"
+        # Text-less anchors (image-only avatars, stretched-card overlays,
+        # icon links) never claim: they render with their content while
+        # the URL appears nowhere else, so overlay URLs stay available
+        # for digging without crowding out the informative link that
+        # follows them.
         return f"[{text.strip()}]({href}{title_suffix})"
 
     def convert_img(
@@ -163,6 +196,9 @@ class WebContentMarkdownConverter(MarkdownConverter):
         # Same http(s) invariant as links; also caps data:-URI bloat.
         if not src.lower().startswith(("http://", "https://")):
             return ""
+        if src in self._seen_srcs:
+            return ""
+        self._seen_srcs.add(src)
         alt = _attribute_value(el, "alt")
         if not alt:
             # Fall back to the title of a wrapping link (the Wikipedia
