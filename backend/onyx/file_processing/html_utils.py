@@ -22,11 +22,120 @@ _ANCHOR_ELEMENT = "a"
 _HREF_ATTRIBUTE = "href"
 _TABLE_ELEMENT = "table"
 
+# Icon-font glyph carriers: the DOM text is the ligature name ("message",
+# "add_box"), which the font renders as a glyph but text extraction reads
+# as content. Class tokens cover the common icon libraries; the generic
+# naming conventions (icon / icon-* / *-icon[s]) catch custom icon fonts.
+_ICON_CLASS_TOKEN_RE = re.compile(
+    r"^(?:material-icons|material-symbols(?:-outlined|-rounded|-sharp)?"
+    r"|glyphicon(?:-[a-z0-9-]+)?|iconfont|icofont(?:-[a-z0-9-]+)?"
+    r"|typcn(?:-[a-z0-9-]+)?|octicon(?:-[a-z0-9-]+)?"
+    r"|lucide(?:-[a-z0-9-]+)?|feather(?:-[a-z0-9-]+)?|tabler-icon"
+    r"|fa(?:s|r|l|b|d|ss|sr|sl|t)?|fa-[a-z0-9-]+"
+    r"|bi(?:-[a-z0-9-]+)?|ion-[a-z0-9-]+|icons?"
+    r"|icon-[a-z0-9-]+|[a-z0-9]+-icons?)$"
+)
+_ICON_GLYPH_TAGS = ("i", "em", "span", "b", "svg", "use")
+# Ligature names are short; a longer body means the class is decoration on
+# real content, not a glyph slot.
+_ICON_GLYPH_MAX_TEXT_CHARS = 40
+
+# Private Use Area codepoints: icon fonts map glyph slots there. They
+# render as tofu or nothing and carry no text value.
+_PUA_CHARS_RE = re.compile("[\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
+
+# Action controls: javascript: anchors and <button> elements trigger UI
+# behavior; their labels ("Reply", "Like", "Share") are chrome in every
+# locale, and the crawler cannot follow them anyway.
+_ACTION_HREF_RE = re.compile(r"^\s*javascript:", re.IGNORECASE)
+
+# Identical short text repeated across a page is UI boilerplate (button
+# labels, action menus), never content. Locale neutral: no word lists,
+# just occurrence counting with shape guards. Numbers are exempt (vote
+# counts repeat legitimately) and so is text inside real links (listing
+# rows repeat tag names as linked content).
+_REPEATED_TEXT_MAX_OCCURRENCES = 10
+_REPEATED_TEXT_MIN_CHARS = 3
+_REPEATED_TEXT_MAX_CHARS = 40
+_REAL_LINK_HREF_RE = re.compile(r"^https?://", re.IGNORECASE)
+
 
 @dataclass
 class ParsedHTML:
     title: str | None
     cleaned_text: str
+
+
+def strip_pua_chars(text: str) -> str:
+    """Drop private-use-area characters (icon-font glyph slots)."""
+    return _PUA_CHARS_RE.sub("", text)
+
+
+def _drop_chrome_tag(tag: bs4.element.Tag) -> None:
+    """Remove a chrome element, leaving a whitespace boundary.
+
+    Adjacent inline text must not fuse once the removed element is gone:
+    dropping the icon between a comment count and a vote count fused
+    "119" and "17" into "11917". The space is harmless in block context
+    (whitespace runs collapse).
+    """
+    tag.replace_with(bs4.element.NavigableString(" "))
+
+
+def _is_icon_glyph(tag: bs4.element.Tag) -> bool:
+    """True for elements whose only text is an icon-font ligature name."""
+    tokens = tag.get("class")
+    if isinstance(tokens, str):
+        tokens = tokens.split()
+    if not tokens or not any(_ICON_CLASS_TOKEN_RE.match(t) for t in tokens):
+        return False
+    if tag.find(_ANCHOR_ELEMENT) is not None:
+        return False
+    return len(tag.get_text(strip=True)) <= _ICON_GLYPH_MAX_TEXT_CHARS
+
+
+def _drop_action_controls(soup: bs4.BeautifulSoup) -> None:
+    """Remove buttons and javascript: anchors with their labels."""
+    for tag in soup.find_all("button"):
+        _drop_chrome_tag(tag)
+    for anchor in soup.find_all(_ANCHOR_ELEMENT, href=_ACTION_HREF_RE):
+        _drop_chrome_tag(anchor)
+
+
+def _drop_repeated_boilerplate(soup: bs4.BeautifulSoup) -> int:
+    """Drop text repeated across the page more than the threshold times.
+
+    Counts leaf text nodes by normalized value. Pure numbers, too-short or
+    too-long strings, and anything inside a real (http/s) link are exempt.
+    Returns the number of occurrences removed.
+    """
+    nodes = [
+        node
+        for node in soup.find_all(string=True)
+        if type(node) is bs4.element.NavigableString
+    ]
+    counts: dict[str, int] = {}
+    for node in nodes:
+        text = re.sub(r"\s+", " ", str(node)).strip()
+        if _REPEATED_TEXT_MIN_CHARS <= len(text) <= _REPEATED_TEXT_MAX_CHARS and any(
+            char.isalpha() for char in text
+        ):
+            counts[text] = counts.get(text, 0) + 1
+    boilerplate = {
+        text for text, count in counts.items() if count > _REPEATED_TEXT_MAX_OCCURRENCES
+    }
+    if not boilerplate:
+        return 0
+    dropped = 0
+    for node in nodes:
+        text = re.sub(r"\s+", " ", str(node)).strip()
+        if text not in boilerplate:
+            continue
+        if node.find_parent(_ANCHOR_ELEMENT, href=_REAL_LINK_HREF_RE) is not None:
+            continue
+        node.replace_with(bs4.element.NavigableString(" "))
+        dropped += 1
+    return dropped
 
 
 def strip_excessive_newlines_and_spaces(document: str) -> str:
@@ -201,18 +310,32 @@ def clean_web_html(
         unwanted_classes.extend(MINTLIFY_UNWANTED)
     for undesired_element in unwanted_classes:
         [
-            tag.extract()
+            _drop_chrome_tag(tag)
             for tag in soup.find_all(
                 class_=lambda x, cls=undesired_element: x and cls in x.split()
             )
         ]
 
     for undesired_tag in WEB_CONNECTOR_IGNORED_ELEMENTS:
-        [tag.extract() for tag in soup.find_all(undesired_tag)]
+        [_drop_chrome_tag(tag) for tag in soup.find_all(undesired_tag)]
 
     if additional_element_types_to_discard:
         for undesired_tag in additional_element_types_to_discard:
-            [tag.extract() for tag in soup.find_all(undesired_tag)]
+            [_drop_chrome_tag(tag) for tag in soup.find_all(undesired_tag)]
+
+    # Icon-font glyph names are DOM text the font renders away; they read
+    # as garbage tokens in extracted text ("*message*119*add_box*17").
+    for tag in soup.find_all(_ICON_GLYPH_TAGS):
+        if _is_icon_glyph(tag):
+            _drop_chrome_tag(tag)
+
+    # Interactive controls ("Reply", "Like", share menus): UI labels in
+    # every locale, and the crawler cannot act on them anyway.
+    _drop_action_controls(soup)
+
+    # Backstop for handler-based controls without hrefs: identical short
+    # text repeated across the page is boilerplate, never content.
+    _drop_repeated_boilerplate(soup)
 
     return soup, title
 
@@ -242,7 +365,8 @@ def web_html_cleanup(
     else:
         page_text = format_document_soup(soup)
 
-    # 200B is ZeroWidthSpace which we don't care for
-    cleaned_text = page_text.replace("\u200b", "")
+    # 200B is ZeroWidthSpace which we don't care for; PUA chars are
+    # icon-font glyph slots with no text value.
+    cleaned_text = strip_pua_chars(page_text.replace("\u200b", ""))
 
     return ParsedHTML(title=title, cleaned_text=cleaned_text)

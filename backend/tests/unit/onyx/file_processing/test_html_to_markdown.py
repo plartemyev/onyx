@@ -39,7 +39,8 @@ def test_full_link_mode() -> None:
     assert "[the doc](https://example.com/doc)" in md
     # Fragment / javascript hrefs carry no navigation value: text only.
     assert "an anchor" in md and "](#anchor)" not in md
-    assert "a script link" in md and "javascript:" not in md
+    # javascript: anchors are action controls: dropped with their text.
+    assert "a script link" not in md and "javascript:" not in md
     assert "| Key | Value |" in md and "| a | 1 |" in md
     assert "```python\ndef f():\n    return 1\n```" in md
     # Media renders inline in the body and script/nav chrome is gone.
@@ -243,9 +244,9 @@ def test_page_level_href_dedupe() -> None:
     assert md.count("](https://example.com/t/1)") == 1
     assert "Topic one again" not in md
     assert "[Topic two](https://example.com/t/2)" in md
-    # The unclaimed overlay URL stays available for digging AND the
-    # informative link keeps its name.
-    assert "[](https://example.com/u/1)" in md
+    # Empty-render anchors are dropped entirely (a bare unexplained URL
+    # is noise) AND the informative link keeps its name.
+    assert "[](https://example.com/u/1)" not in md
     assert "[Author](https://example.com/u/1)" in md
 
 
