@@ -45,6 +45,13 @@ services:
       - --backpressure
       - "28"
       - searx.webapp:app
+    # Published to the LAN: the fork's require_endpoint_secret gate makes
+    # every route but /healthz require BROWSER_CRAWL_SECRET (X-Crawl-Secret
+    # header or basic auth), so the fleet's cookie reputation is not free
+    # for neighbors. Without the gate this publish would have been an
+    # open search-and-crawl proxy for the whole network.
+    ports:
+      - "8080:8080"
     restart: unless-stopped
     # The persona is a Linux desktop Firefox, but the docker NAT forwards
     # packets one hop below this container: the kernel default TTL 64 leaves
@@ -80,6 +87,10 @@ services:
       - SEARXNG_BASE_URL=http://searxng:8080/
       # instance secret, from the gitignored .env (see settings.yml)
       - SEARXNG_SECRET=${SEARXNG_SECRET}
+      # Shared endpoint secret (the search + crawl + UI gate), from the
+      # gitignored .env; overrides outgoing.browser_crawl_secret inside
+      # the container
+      - BROWSER_CRAWL_SECRET=${BROWSER_CRAWL_SECRET}
       # vision captcha solver Bearer token, from the gitignored .env;
       # overrides outgoing.captcha_vision.api_key inside the container
       - CAPTCHA_VISION_API_KEY=${CAPTCHA_VISION_API_KEY}
@@ -203,10 +214,12 @@ services:
       # masqueraded browser pool serves search AND crawl traffic, so every
       # visit comes from the same cookie-trained identities. With this set,
       # the local Chromium pool stays cold (config remains available as a
-      # fallback by unsetting this var).
+      # fallback by unsetting this var). The secret rides in the URL's
+      # userinfo (http clients send it as basic auth): the fork's
+      # require_endpoint_secret gate demands it, and it stays out of git.
       # The egress IP is Thai: the local browser's clock must agree with it
       # (matters for the web connector, which still drives a local browser).
-      - SEARXNG_CRAWL_ENDPOINT=http://searxng:8080/crawl
+      - SEARXNG_CRAWL_ENDPOINT=http://:${BROWSER_CRAWL_SECRET}@searxng:8080/crawl
       # 2x the SearXNG-side worst case per call (timeout_s + 150s) so a
       # slow crawl is never cut off mid-flight by this client.
       - SEARXNG_CRAWL_TIMEOUT_SECONDS=540
@@ -256,7 +269,7 @@ services:
       # Page crawling through the SearXNG /crawl endpoint (see api_server
       # above): the web connector's page fetches and any tool crawls here
       # ride the same masqueraded browser fleet as the searches.
-      - SEARXNG_CRAWL_ENDPOINT=http://searxng:8080/crawl
+      - SEARXNG_CRAWL_ENDPOINT=http://:${BROWSER_CRAWL_SECRET}@searxng:8080/crawl
       # 2x the SearXNG-side worst case per call (see api_server above).
       - SEARXNG_CRAWL_TIMEOUT_SECONDS=540
       # Search chain budget (see api_server above).

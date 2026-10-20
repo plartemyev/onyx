@@ -100,9 +100,18 @@ outgoing:
   browser_debug_trace: true
   # Page crawling endpoint (/crawl): lets Onyx's fetchers drive these same
   # masqueraded lanes for page fetches, so search and crawl traffic comes
-  # from one fleet of cookie-trained identities. Internal docker network
-  # only; optional shared-secret header via browser_crawl_secret.
+  # from one fleet of cookie-trained identities.
   browser_crawl_endpoint: true
+  # Shared endpoint secret: when set, EVERY route but /healthz requires it
+  # (X-Crawl-Secret header or basic auth -- webapp.require_endpoint_secret
+  # in the fork). This is what makes the LAN publish safe: without it the
+  # 8080 port would be an open search-and-crawl proxy burning the fleet's
+  # cookie reputation for the whole network. The value arrives via the
+  # BROWSER_CRAWL_SECRET container env (docker-compose.override.yml
+  # interpolates it from the gitignored .env); this file is git-tracked
+  # and must not hold the secret. Onyx sends it embedded in the searxng
+  # provider URL and SEARXNG_CRAWL_ENDPOINT (userinfo -> basic auth).
+  browser_crawl_secret: ''
   # Body cap for binary crawls; matches Onyx's BINARY_DOWNLOAD_MAX_SIZE_BYTES
   # (the body is buffered in this container's RAM: 6g limit, 6 lanes).
   browser_crawl_max_bytes: 524288000
