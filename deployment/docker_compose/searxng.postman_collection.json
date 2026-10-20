@@ -1,0 +1,395 @@
+{
+  "info": {
+    "name": "SearXNG — Onyx fleet (172.29.153.218)",
+    "_postman_id": "b3f1c2a4-6d9e-4f70-9a1b-2c8d4e6f0a12",
+    "description": "Every endpoint variant Onyx drives on the masqueraded-browser SearXNG fleet, plus the fleet health probe and the secret-gate negative checks.\n\n**Setup (once):** open the collection's Variables tab and paste `BROWSER_CRAWL_SECRET` from `deployment/docker_compose/.env` into `secret`. Every gated request then sends it as HTTP basic auth (empty username) — exactly what Onyx sends by carrying the secret as URL userinfo.\n\n**Expect slow responses:** each search is typed into the provider's UI by a real browser lane (max-stealth), so 20–90 s is normal. Caches (`serp_cache`, 24 h) make repeat queries fast. Every request shares the six lanes with Onyx — don't hammer.\n\nAuth model:\n- gated routes (everything but `/healthz`): basic auth `:{{secret}}` **or** the `X-Crawl-Secret` header\n- `/healthz`: deliberately open (docker healthcheck)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "basic",
+    "basic": [
+      { "key": "username", "value": "", "type": "string" },
+      { "key": "password", "value": "{{secret}}", "type": "string" },
+      { "key": "showPassword", "value": false, "type": "boolean" }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://172.29.153.218:8080",
+      "type": "string"
+    },
+    {
+      "key": "secret",
+      "value": "",
+      "type": "string",
+      "description": "BROWSER_CRAWL_SECRET from ~/onyx/deployment/docker_compose/.env — paste it here once."
+    },
+    {
+      "key": "crawlUrl",
+      "value": "https://example.com",
+      "type": "string",
+      "description": "Any absolute http(s) URL the crawl requests should fetch."
+    },
+    {
+      "key": "crawlTimeout",
+      "value": "30",
+      "type": "string",
+      "description": "Per-crawl budget in seconds (Onyx clamps 5–120)."
+    }
+  ],
+  "item": [
+    {
+      "name": "Search — SearXNGClient (POST /search)",
+      "description": "Onyx's web search tool posts form-encoded payloads; results come back as JSON and are limited client-side. With `enable_image_search` on (this deployment: off), a second images call runs per query.",
+      "item": [
+        {
+          "name": "Web search (q + format)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "q", "value": "siamese cat", "type": "text" },
+                { "key": "format", "value": "json", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/search",
+              "host": ["{{baseUrl}}"],
+              "path": ["search"]
+            },
+            "description": "The exact call of SearXNGClient.search(): form fields q + format=json. Real fleet search — 20–90 s cold, instant from serp_cache for a 24 h."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('results array present', () => Array.isArray(body.results));",
+                  "pm.test('has results', () => body.results.length > 0, 'got ' + body.results.length + ' results; unresponsive: ' + JSON.stringify(body.unresponsive_engines));",
+                  "console.log('results:', body.results.length, '| unresponsive_engines:', JSON.stringify(body.unresponsive_engines))"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Image search (categories=images)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "q", "value": "siamese cat", "type": "text" },
+                { "key": "format", "value": "json", "type": "text" },
+                { "key": "categories", "value": "images", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/search",
+              "host": ["{{baseUrl}}"],
+              "path": ["search"]
+            },
+            "description": "SearXNGClient._search_images(): the desktop Google-images grid through the human flow. Results carry url (source page), img_src (full-res when the tile kept an /imgres link, else the gstatic thumbnail) and resolution."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('has image hits', () => body.results.some(r => r.img_src), 'no result carried img_src');",
+                  "console.log('image hits:', body.results.filter(r => r.img_src).length, '| unresponsive_engines:', JSON.stringify(body.unresponsive_engines))"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Web search with language",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "q", "value": "siamese cat", "type": "text" },
+                { "key": "format", "value": "json", "type": "text" },
+                { "key": "language", "value": "en", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/search",
+              "host": ["{{baseUrl}}"],
+              "path": ["search"]
+            },
+            "description": "Language variant: the client adds `language` when the provider config or the agent's tool call carries one (this deployment's provider config sets none)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('results array present', () => Array.isArray(body.results));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Connection test — SearXNGClient (GET /config)",
+      "item": [
+        {
+          "name": "Provider connection check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["config"]
+            },
+            "description": "SearXNGClient.test_connection(): Onyx treats the provider as healthy when this answers 200 with brand.GIT_URL === https://github.com/searxng/searxng. The admin-UI 'test' button runs this."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('brand.GIT_URL is searxng', () => body.brand && body.brand.GIT_URL === 'https://github.com/searxng/searxng');",
+                  "console.log('version:', body.version, '| browser fleet:', body.brand && body.brand.VERSION_STRING)"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Crawl — OnyxWebCrawler (GET /crawl)",
+      "description": "Onyx's fetchers (open_url, download_file, analyze_image, the web connector) ride the same browser fleet through /crawl. The deployment's SEARXNG_CRAWL_ENDPOINT embeds the secret as URL userinfo, which requests turns into basic auth — so basic auth here is the faithful variant.",
+      "item": [
+        {
+          "name": "Render mode (page HTML)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/crawl?url={{crawlUrl}}&mode=render&timeout={{crawlTimeout}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["crawl"],
+              "query": [
+                { "key": "url", "value": "{{crawlUrl}}" },
+                { "key": "mode", "value": "render" },
+                { "key": "timeout", "value": "{{crawlTimeout}}" }
+              ]
+            },
+            "description": "crawl_via_searxng(): JS-rendered DOM of the page. JSON: final_url, status, challenge, html, lane, affinity, memory. Redirects followed; translate.goog wrappers rewritten to the original page."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('html payload present', () => (body.html || '').length > 0);",
+                  "console.log('final_url:', body.final_url, '| status:', body.status, '| challenge:', body.challenge, '| lane:', body.lane, '| html bytes:', (body.html || '').length)"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bytes mode (downloads)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/crawl?url={{crawlUrl}}&mode=bytes&timeout={{crawlTimeout}}&max_bytes=524288000",
+              "host": ["{{baseUrl}}"],
+              "path": ["crawl"],
+              "query": [
+                { "key": "url", "value": "{{crawlUrl}}" },
+                { "key": "mode", "value": "bytes" },
+                { "key": "timeout", "value": "{{crawlTimeout}}" },
+                { "key": "max_bytes", "value": "524288000", "description": "matches the deployment's 500 MB BINARY_DOWNLOAD_MAX_SIZE_BYTES" }
+              ]
+            },
+            "description": "crawl_via_searxng_bytes(): raw body through the browser's TLS + cookies. The metadata rides the headers: X-Final-URL, X-Crawl-Status, X-Crawl-Challenge, X-Crawl-Lane."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Final-URL present', () => pm.response.headers.has('X-Final-URL'));",
+                  "console.log('X-Final-URL:', pm.response.headers.get('X-Final-URL'), '| X-Crawl-Status:', pm.response.headers.get('X-Crawl-Status'), '| bytes:', pm.response.body.length)"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Render via X-Crawl-Secret header (alt auth)",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              { "key": "X-Crawl-Secret", "value": "{{secret}}", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/crawl?url={{crawlUrl}}&mode=render&timeout={{crawlTimeout}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["crawl"],
+              "query": [
+                { "key": "url", "value": "{{crawlUrl}}" },
+                { "key": "mode", "value": "render" },
+                { "key": "timeout", "value": "{{crawlTimeout}}" }
+              ]
+            },
+            "description": "Not what Onyx sends (it rides basic auth), but the header is the documented variant for curl-style clients: curl -H 'X-Crawl-Secret: ...'"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Fleet health",
+      "item": [
+        {
+          "name": "GET /healthz (no auth — exempt by design)",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": ["{{baseUrl}}"],
+              "path": ["healthz"]
+            },
+            "description": "The docker healthcheck target: deliberately outside the secret gate, returns plain OK."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('body is OK', () => pm.response.text().trim() === 'OK');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Gate checks (negative)",
+      "description": "Confirm the shared-secret gate rejects unauthenticated callers on the LAN-published port.",
+      "item": [
+        {
+          "name": "Search without the secret → 401",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "q", "value": "gate check", "type": "text" },
+                { "key": "format", "value": "json", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/search",
+              "host": ["{{baseUrl}}"],
+              "path": ["search"]
+            },
+            "description": "With no credentials the gate must answer 401 with a WWW-Authenticate basic challenge — and no lane may be spent (rejected before any engine work)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('basic challenge present', () => (pm.response.headers.get('WWW-Authenticate') || '').includes('Basic'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Crawl without the secret → 401",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/crawl?url={{crawlUrl}}&mode=render&timeout={{crawlTimeout}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["crawl"],
+              "query": [
+                { "key": "url", "value": "{{crawlUrl}}" },
+                { "key": "mode", "value": "render" },
+                { "key": "timeout", "value": "{{crawlTimeout}}" }
+              ]
+            },
+            "description": "Same gate, crawl route."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
