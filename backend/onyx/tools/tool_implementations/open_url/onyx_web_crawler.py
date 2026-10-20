@@ -15,11 +15,13 @@ from onyx.configs.app_configs import (
     BINARY_DOWNLOAD_MAX_SIZE_BYTES,
     OPEN_URL_FETCH_MODE,
     OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED,
+    WEB_CONTENT_FORMAT,
+    WEB_CONTENT_MD_LINKS,
     WEB_CRAWLER_USER_AGENT,
 )
+from onyx.file_processing.html_to_markdown import web_page_to_markdown
 from onyx.file_processing.html_utils import (
     ParsedHTML,
-    extract_image_urls,
     web_html_cleanup,
 )
 from onyx.server.security.models import outbound_allow_private_network
@@ -381,10 +383,16 @@ def _parse_html_to_web_content(url: str, html: str) -> WebContent:
     """Run cleanup on raw HTML and shape the result into a WebContent.
 
     Used by both the fast `requests` path and the Playwright fallback, so
-    they emit identical-shape results.
+    they emit identical-shape results. WEB_CONTENT_FORMAT picks the body
+    format: legacy flattened text or GitHub-flavored Markdown.
     """
     try:
-        parsed: ParsedHTML = web_html_cleanup(html)
+        if WEB_CONTENT_FORMAT == "markdown":
+            parsed = web_page_to_markdown(
+                html, base_url=url, link_mode=WEB_CONTENT_MD_LINKS
+            )
+        else:
+            parsed: ParsedHTML = web_html_cleanup(html)
         text_content = parsed.cleaned_text or ""
         title = parsed.title or ""
     except Exception as exc:
@@ -402,7 +410,6 @@ def _parse_html_to_web_content(url: str, html: str) -> WebContent:
         full_content=text_content,
         published_date=None,
         scrape_successful=True,
-        image_urls=extract_image_urls(html, url),
     )
 
 

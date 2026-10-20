@@ -1265,6 +1265,47 @@ if OPEN_URL_FETCH_MODE not in ("auto", "playwright"):
         f"'{OPEN_URL_FETCH_MODE}'"
     )
 
+# Char budget of the cleaned page text one URL may contribute to the LLM
+# context (web search results and open_url page scrapes). Content past the
+# budget is cut and marked "[...truncated]". Also scales the across-URLs
+# budget (MAX_CHARS_ACROSS_URLS) in open_url_tool.
+WEB_CONTENT_MAX_CHARS_PER_URL = int(
+    os.environ.get("WEB_CONTENT_MAX_CHARS_PER_URL") or 15000
+)
+if WEB_CONTENT_MAX_CHARS_PER_URL <= 0:
+    raise ValueError("WEB_CONTENT_MAX_CHARS_PER_URL must be a positive integer")
+
+# Ceiling on the total chars the open_url tool may feed for one batch of
+# URLs. Defaults to 3x the per-URL budget (a model rarely benefits from
+# ten full pages); must stay at or above the per-URL budget.
+WEB_CONTENT_MAX_CHARS_ACROSS_URLS = int(
+    os.environ.get("WEB_CONTENT_MAX_CHARS_ACROSS_URLS")
+    or 3 * WEB_CONTENT_MAX_CHARS_PER_URL
+)
+if WEB_CONTENT_MAX_CHARS_ACROSS_URLS < WEB_CONTENT_MAX_CHARS_PER_URL:
+    raise ValueError(
+        "WEB_CONTENT_MAX_CHARS_ACROSS_URLS must be >= WEB_CONTENT_MAX_CHARS_PER_URL"
+    )
+
+# Body format of model-facing web page content (web search results + open_url
+# scrapes; OnyxWebCrawler only — connector indexing always extracts text).
+# "text": the legacy flattened extraction. "markdown": the cleaned page body
+# as GitHub-flavored Markdown (ATX headings, pipe tables, fenced code,
+# links) in the shape Firecrawl's converter produces.
+WEB_CONTENT_FORMAT = os.environ.get("WEB_CONTENT_FORMAT", "text").strip().lower()
+if WEB_CONTENT_FORMAT not in ("text", "markdown"):
+    raise ValueError(
+        f"WEB_CONTENT_FORMAT must be 'text' or 'markdown', got '{WEB_CONTENT_FORMAT}'"
+    )
+
+# Link rendering for WEB_CONTENT_FORMAT=markdown: "full" keeps [text](url),
+# "bare" keeps only the link text.
+WEB_CONTENT_MD_LINKS = os.environ.get("WEB_CONTENT_MD_LINKS", "full").strip().lower()
+if WEB_CONTENT_MD_LINKS not in ("full", "bare"):
+    raise ValueError(
+        f"WEB_CONTENT_MD_LINKS must be 'full' or 'bare', got '{WEB_CONTENT_MD_LINKS}'"
+    )
+
 # Persistent Chromium profile pools shared across processes. When set, the
 # browser-pool lanes launch with on-disk profiles under
 # `<BROWSER_PROFILE_DIR>/lane-<BROWSER_PROFILE_FIRST_INDEX + N>`

@@ -230,6 +230,26 @@ services:
       # cap, not the proxy's.
       - SEARXNG_CRAWL_MAX_BYTES=524288000
       - WEB_BROWSER_TIMEZONE=Asia/Bangkok
+      # Per-URL char budget of web page text fed to the model (web search
+      # results + open_url scrapes). Raised from the 15000 default: the
+      # cleaned page body carries inline media links, so the useful text
+      # inside the budget is smaller than the raw count.
+      - WEB_CONTENT_MAX_CHARS_PER_URL=60000
+      # Batch ceiling for open_url (default 3x per-URL). 180k chars is
+      # ~50k tokens worst case for one tool call — sized for 200k-context
+      # models; tighten before raising further.
+      - WEB_CONTENT_MAX_CHARS_ACROSS_URLS=180000
+      # Model-facing page bodies as GitHub-flavored Markdown (Firecrawl-
+      # shaped: ATX headings, pipe tables, fenced code, links). Links stay
+      # full [text](url); flip to WEB_CONTENT_MD_LINKS=bare to keep only
+      # the link text (cuts ~40% of chars on link-heavy pages).
+      - WEB_CONTENT_FORMAT=markdown
+      - WEB_CONTENT_MD_LINKS=full
+      # Wikipedia Vector-2022 chrome the element cleanup cannot see
+      # (dropdown language menus, search boxes, print/category footers,
+      # navbox reference tables, section "[edit]" links). Applies to web
+      # content extraction and connector indexing alike.
+      - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
   # processing). Match api_server's slow-inference tolerance plus the
@@ -276,6 +296,13 @@ services:
       - SEARXNG_READ_TIMEOUT_SECONDS=450
       - SEARXNG_CRAWL_MAX_BYTES=524288000
       - WEB_BROWSER_TIMEZONE=Asia/Bangkok
+      # Same web content budgets as api_server: scheduled Craft runs fetch
+      # pages through the same tools.
+      - WEB_CONTENT_MAX_CHARS_PER_URL=60000
+      - WEB_CONTENT_MAX_CHARS_ACROSS_URLS=180000
+      - WEB_CONTENT_FORMAT=markdown
+      - WEB_CONTENT_MD_LINKS=full
+      - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection
 
   # Persistent-session code interpreter: forked service (0.5.0) built from this
   # repo plus an Arch-based research executor image (pip/uv/poetry, ffmpeg,

@@ -3,14 +3,16 @@ from pathlib import Path
 from onyx.tools.tool_implementations.open_url.models import WebContent
 from onyx.tools.tool_implementations.web_search.models import WebSearchResult
 from onyx.tools.tool_implementations.web_search.utils import (
+    MAX_CHARS_PER_URL,
     inference_section_from_internet_page_scrape,
     inference_section_from_internet_search_result,
 )
 
 CONTENT_FILE = Path(__file__).parent / "data" / "tartan.txt"
 
-# inference_section_from_internet_page_scrape will cull the content to 15000 characters
-MAX_NUM_CHARS_WEB_CONTENT = 15000
+# inference_section_from_internet_page_scrape will cull the content to
+# MAX_CHARS_PER_URL characters (WEB_CONTENT_MAX_CHARS_PER_URL env)
+MAX_NUM_CHARS_WEB_CONTENT = MAX_CHARS_PER_URL
 TRUNCATED_CONTENT_SUFFIX = " [...truncated]"
 TRUNCATED_CONTENT_PREFIX = "[...truncated] "
 
@@ -50,7 +52,7 @@ def test_no_snippet_provided() -> None:
         :MAX_NUM_CHARS_WEB_CONTENT
     ]
 
-    # Check that we have the first 15000 characters of the tartan text
+    # Check that we have the first MAX_NUM_CHARS_WEB_CONTENT characters of the tartan text
     assert combined_content_without_suffix == tartan_text[:MAX_NUM_CHARS_WEB_CONTENT]
     assert (
         section.combined_content
@@ -96,7 +98,7 @@ def test_snippet_provided_after_limit() -> None:
     )
 
     no_prefix = section.combined_content[len(TRUNCATED_CONTENT_PREFIX) :]
-    # We should get the last 15000 characters of the tartan text
+    # We should get the last MAX_NUM_CHARS_WEB_CONTENT characters of the tartan text
     index = len(tartan_text) - MAX_NUM_CHARS_WEB_CONTENT
 
     assert no_prefix == tartan_text[index:]
@@ -161,7 +163,7 @@ def test_bad_snippet() -> None:
         :MAX_NUM_CHARS_WEB_CONTENT
     ]
 
-    # Check that we have the first 15000 characters of the tartan text
+    # Check that we have the first MAX_NUM_CHARS_WEB_CONTENT characters of the tartan text
     assert combined_content_without_suffix == tartan_text[:MAX_NUM_CHARS_WEB_CONTENT]
     assert (
         section.combined_content
@@ -234,19 +236,3 @@ def test_inference_section_from_search_result_no_image_urls() -> None:
     section = inference_section_from_internet_search_result(result, rank=0)
 
     assert section.center_chunk.image_urls is None
-
-
-def test_inference_section_from_page_scrape_carries_image_urls() -> None:
-    web_content = WebContent(
-        title="Tartan",
-        link="https://en.wikipedia.org/wiki/Tartan",
-        full_content="Some page text.",
-        scrape_successful=True,
-        image_urls=["https://upload.wikimedia.org/tartan.jpg"],
-    )
-
-    section = inference_section_from_internet_page_scrape(web_content, "")
-
-    assert section.center_chunk.image_urls == [
-        "https://upload.wikimedia.org/tartan.jpg"
-    ]

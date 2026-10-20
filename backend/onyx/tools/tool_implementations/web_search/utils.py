@@ -1,3 +1,4 @@
+from onyx.configs.app_configs import WEB_CONTENT_MAX_CHARS_PER_URL
 from onyx.configs.constants import DocumentSource
 from onyx.context.search.models import InferenceChunk, InferenceSection, SearchDoc
 from onyx.tools.tool_implementations.open_url.models import WebContent
@@ -12,7 +13,7 @@ from onyx.tools.tool_implementations.web_search.models import (
 TRUNCATED_CONTENT_SUFFIX = " [...truncated]"
 TRUNCATED_CONTENT_PREFIX = "[...truncated] "
 
-MAX_CHARS_PER_URL = 15000
+MAX_CHARS_PER_URL = WEB_CONTENT_MAX_CHARS_PER_URL
 
 
 def filter_web_search_results_with_no_title_or_snippet(
@@ -155,7 +156,6 @@ def inference_section_from_internet_page_scrape(
         chunk_context="",
         updated_at=result.published_date,
         image_file_id=None,
-        image_urls=result.image_urls or None,
     )
     return InferenceSection(
         center_chunk=inference_chunk,

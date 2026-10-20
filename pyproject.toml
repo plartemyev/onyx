@@ -23,6 +23,7 @@ dependencies = [
     "voyageai==0.2.3",
     "brotli>=1.2.0",
     "agent-client-protocol>=0.7.1",
+    "markdownify>=1.2.2",
 ]
 
 [dependency-groups]

@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from typing_extensions import override
 
 from onyx.chat.emitter import Emitter
-from onyx.configs.app_configs import DISABLE_VECTOR_DB
+from onyx.configs.app_configs import (
+    DISABLE_VECTOR_DB,
+    WEB_CONTENT_MAX_CHARS_ACROSS_URLS,
+)
 from onyx.context.search.models import (
     IndexFilters,
     InferenceSection,
@@ -48,7 +51,6 @@ from onyx.tools.tool_implementations.web_search.providers import (
     get_default_content_provider,
 )
 from onyx.tools.tool_implementations.web_search.utils import (
-    MAX_CHARS_PER_URL,
     inference_section_from_internet_page_scrape,
 )
 from onyx.utils.logger import setup_logger
@@ -67,7 +69,7 @@ OPEN_URL_TIMEOUT_SECONDS = 2 * 60
 # Sometimes the LLM will ask for a lot of URLs, so we need to limit the total number of characters
 # otherwise this alone will completely flood the context and degrade experience.
 # Note that if a lot of the URLs contain very little content, this results in no truncation.
-MAX_CHARS_ACROSS_URLS = 10 * MAX_CHARS_PER_URL
+MAX_CHARS_ACROSS_URLS = WEB_CONTENT_MAX_CHARS_ACROSS_URLS
 
 # Minimum content length to include a document (avoid tiny snippets)
 # This is for truncation purposes, if a document is small (unless it goes into truncation flow),

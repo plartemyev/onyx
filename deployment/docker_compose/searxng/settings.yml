@@ -71,6 +71,12 @@ outgoing:
   # container recreations, and lanes stay fully isolated from each other.
   # Wipe the volume to reset every lane's identity.
   browser_profile_dir: /var/lib/searxng/lanes
+  # Ceiling (ms) on the network-idle wait before crawl DOM capture.
+  # networkidle returns early when the network goes quiet; lazily hydrated
+  # embeds (Wikipedia's audio player mounts after networkidle) need the
+  # ceiling, not the early exit. Crawls also get a scroll down-and-back
+  # cycle before capture to trigger viewport-gated embeds.
+  browser_crawl_settle_ms: 12000
   # On a persistent bot challenge, drive the provider's search UI with real
   # X input (Bezier mouse with jitter, typing, a natural search-button
   # click) instead of giving up (searx/network/human_input.py).
