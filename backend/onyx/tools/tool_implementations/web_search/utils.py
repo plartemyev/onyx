@@ -22,10 +22,14 @@ def filter_web_search_results_with_no_title_or_snippet(
 
     Some providers can return entries that only include a URL. Downstream uses
     titles/snippets for display and prompting, so we drop those empty entries
-    centrally (rather than duplicating the check in each client).
+    centrally (rather than duplicating the check in each client). A direct
+    image URL counts as content: an image-only hit with no title or snippet
+    is still the image itself.
     """
     filtered: list[WebSearchResult] = [
-        result for result in results if result.title.strip() or result.snippet.strip()
+        result
+        for result in results
+        if result.title.strip() or result.snippet.strip() or result.image_urls
     ]
     return filtered
 

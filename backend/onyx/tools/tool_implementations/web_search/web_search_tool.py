@@ -46,6 +46,7 @@ logger = setup_logger()
 
 QUERIES_FIELD = "queries"
 LANGUAGE_FIELD = "language"
+SEARCH_IMAGES_FIELD = "search_images"
 
 # BCP-47-ish language tag: 2-3 letter base plus optional subtags
 # (e.g. "en", "de", "pt-BR", "zh-Hans-CN").
@@ -64,6 +65,19 @@ def _sanitize_language(raw: Any) -> str | None:
     if not language or len(language) > 35 or not _LANGUAGE_RE.match(language):
         return None
     return language
+
+
+def _sanitize_bool(raw: Any) -> bool:
+    """Coerce an LLM-provided boolean, tolerating common string spellings.
+
+    Anything unrecognized reads as False, so a stray value can never turn
+    into an unintended image search.
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    return False
 
 
 def _sanitize_query(query: str) -> str:
@@ -165,6 +179,35 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
             return provider is not None
 
     def tool_definition(self) -> dict:
+        properties: dict[str, dict] = {
+            QUERIES_FIELD: {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "One or more queries to look up on the web. Must contain only printable characters",
+            },
+            LANGUAGE_FIELD: {
+                "type": "string",
+                "description": (
+                    "Optional language hint for the queries as a BCP-47 tag "
+                    "(e.g. 'en', 'de', 'pt-BR'). Set it to the language the "
+                    "query is written in or the language the best results are "
+                    "likely to be written in; omit it to use the default. "
+                    "All queries in one call share this language, so issue "
+                    "separate calls for queries in different languages."
+                ),
+            },
+        }
+        if self._provider.supports_image_search:
+            properties[SEARCH_IMAGES_FIELD] = {
+                "type": "boolean",
+                "description": (
+                    "Set true to search for images INSTEAD of web pages. The "
+                    "results are then image hits only (each with a direct image "
+                    "URL in its `images` field; download them with run_python to "
+                    "share them), never a mix of web pages and images. Omit or "
+                    "set false for a standard web search."
+                ),
+            }
         return {
             "type": "function",
             "function": {
@@ -175,24 +218,7 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
                 ),
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        QUERIES_FIELD: {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "One or more queries to look up on the web. Must contain only printable characters",
-                        },
-                        LANGUAGE_FIELD: {
-                            "type": "string",
-                            "description": (
-                                "Optional language hint for the queries as a BCP-47 tag "
-                                "(e.g. 'en', 'de', 'pt-BR'). Set it to the language the "
-                                "query is written in or the language the best results are "
-                                "likely to be written in; omit it to use the default. "
-                                "All queries in one call share this language, so issue "
-                                "separate calls for queries in different languages."
-                            ),
-                        },
-                    },
+                    "properties": properties,
                     "required": [QUERIES_FIELD],
                 },
             },
@@ -211,6 +237,7 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
         query: str,
         provider: Any,
         language: str | None = None,
+        search_images: bool = False,
     ) -> tuple[list[WebSearchResult] | None, str | None]:
         """Execute a single search query and return results with error capture.
 
@@ -219,7 +246,10 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
             If failed, results is None and error_message contains the error.
         """
         try:
-            raw_results = list(provider.search(query, language=language))
+            if search_images:
+                raw_results = list(provider.search_images(query, language=language))
+            else:
+                raw_results = list(provider.search(query, language=language))
             filtered_results = filter_web_search_results_with_no_title_or_snippet(
                 raw_results
             )
@@ -258,6 +288,22 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
                 ),
             )
         language = _sanitize_language(llm_kwargs.get(LANGUAGE_FIELD))
+        search_images = _sanitize_bool(llm_kwargs.get(SEARCH_IMAGES_FIELD))
+        if search_images and not self._provider.supports_image_search:
+            # The parameter is only advertised when the provider supports it;
+            # this guards a model that emits it anyway.
+            raise ToolCallException(
+                message=(
+                    f"Image search requested but the configured web search "
+                    f"provider ({self._provider.__class__.__name__}) does not "
+                    f"support it."
+                ),
+                llm_facing_message=(
+                    "Image search is not available with the configured web "
+                    "search provider. Run a standard web search instead and do "
+                    f"not set '{SEARCH_IMAGES_FIELD}' again."
+                ),
+            )
 
         # Emit queries
         self.emitter.emit(
@@ -269,7 +315,10 @@ class WebSearchTool(Tool[WebSearchToolOverrideKwargs]):
 
         # Perform searches in parallel with error capture
         functions_with_args = [
-            (self._safe_execute_single_search, (query, self._provider, language))
+            (
+                self._safe_execute_single_search,
+                (query, self._provider, language, search_images),
+            )
             for query in queries
         ]
         search_results_with_errors: list[

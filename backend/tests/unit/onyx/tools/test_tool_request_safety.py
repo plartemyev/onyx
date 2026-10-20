@@ -45,21 +45,23 @@ def test_searxng_search_has_connect_and_read_timeouts() -> None:
         "onyx.tools.tool_implementations.web_search.clients.searxng_client.requests.post"
     ) as post:
         post.return_value.json.return_value = {"results": []}
+        # Standard search: one request, and it must carry explicit
+        # connect + read timeouts
         assert client.search("query") == []
-        # Both the general search and the image-category search must carry
-        # explicit connect + read timeouts
         assert post.call_args_list == [
             call(
                 "https://example.com/search",
                 data={"q": "query", "format": "json"},
                 timeout=_SEARXNG_TIMEOUT,
             ),
-            call(
-                "https://example.com/search",
-                data={"q": "query", "format": "json", "categories": "images"},
-                timeout=_SEARXNG_TIMEOUT,
-            ),
         ]
+        # The image-only search must carry them too
+        assert client.search_images("query") == []
+        assert post.call_args_list[-1] == call(
+            "https://example.com/search",
+            data={"q": "query", "format": "json", "categories": "images"},
+            timeout=_SEARXNG_TIMEOUT,
+        )
 
 
 def test_searxng_connection_has_connect_and_read_timeouts() -> None:

@@ -38,12 +38,12 @@ def test_build_searxng_image_search_enabled_by_default() -> None:
         config={"searxng_base_url": "http://localhost:8080"},
     )
     assert isinstance(provider, SearXNGClient)
-    assert provider._enable_image_search is True  # noqa: SLF001
+    assert provider.supports_image_search is True
 
 
 @pytest.mark.parametrize("raw_value", ["false", "False", "0", "no", "off", False])
 def test_build_searxng_image_search_disabled(raw_value: str | bool) -> None:
-    """String spellings and real booleans both disable the image fan-out.
+    """String spellings and real booleans both disable the image capability.
 
     The provider config column is JSON, so real booleans reach this code
     too; the dict[str, str] annotation on the builder is a standing TODO.
@@ -60,7 +60,7 @@ def test_build_searxng_image_search_disabled(raw_value: str | bool) -> None:
         ),
     )
     assert isinstance(provider, SearXNGClient)
-    assert provider._enable_image_search is False  # noqa: SLF001
+    assert provider.supports_image_search is False
 
 
 @pytest.mark.parametrize("raw_value", ["true", "1", "yes", True])
@@ -77,7 +77,23 @@ def test_build_searxng_image_search_enabled(raw_value: str | bool) -> None:
         ),
     )
     assert isinstance(provider, SearXNGClient)
-    assert provider._enable_image_search is True  # noqa: SLF001
+    assert provider.supports_image_search is True
+
+
+def test_non_searxng_providers_do_not_support_image_search() -> None:
+    """Only SearXNG implements the image-only search today; the other
+    providers must not advertise the capability to the agent."""
+    for provider_type, api_key in (
+        (WebSearchProviderType.EXA, "test-api-key"),
+        (WebSearchProviderType.BRAVE, "test-api-key"),
+        (WebSearchProviderType.SERPER, "test-api-key"),
+        (WebSearchProviderType.TAVILY, "test-api-key"),
+    ):
+        provider = build_search_provider_from_config(
+            provider_type=provider_type, api_key=api_key, config={}
+        )
+        assert provider is not None
+        assert provider.supports_image_search is False
 
 
 def test_build_searxng_rejects_invalid_bool() -> None:

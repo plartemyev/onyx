@@ -23,11 +23,8 @@ _SEARXNG_TIMEOUT_SECONDS = (
     SEARXNG_READ_TIMEOUT_SECONDS,
 )
 
-# Max image-search results attached per query
+# Max results returned by an image-only search
 _MAX_IMAGE_RESULTS = 5
-# One image result is inserted after this many general results so images
-# survive the downstream per-query result cap (which truncates the tail)
-_IMAGE_INTERLEAVE_INTERVAL = 4
 
 
 def _absolute_http_url(url: str, base_url: str) -> str | None:
@@ -38,30 +35,6 @@ def _absolute_http_url(url: str, base_url: str) -> str | None:
     if not absolute_url.startswith(("http://", "https://")):
         return None
     return absolute_url
-
-
-def _interleave_image_results(
-    general_results: list[WebSearchResult],
-    image_results: list[WebSearchResult],
-) -> list[WebSearchResult]:
-    """Spread image results between general results at a fixed interval.
-
-    Downstream truncates each query's result list to a cap, so appending
-    images at the end would always drop them for queries with many hits.
-    """
-    if not image_results:
-        return general_results
-    combined: list[WebSearchResult] = []
-    image_index = 0
-    for index, result in enumerate(general_results):
-        combined.append(result)
-        if (index + 1) % _IMAGE_INTERLEAVE_INTERVAL == 0 and image_index < len(
-            image_results
-        ):
-            combined.append(image_results[image_index])
-            image_index += 1
-    combined.extend(image_results[image_index:])
-    return combined
 
 
 class SearXNGClient(WebSearchProvider):
@@ -80,12 +53,17 @@ class SearXNGClient(WebSearchProvider):
         # which can localize snippets (and skew engines) unexpectedly.
         # Serves as the default for `search(language=None)` calls.
         self._language = language or None
-        # Image results cost a second full search per query. On instances
+        # Image searches cost a second full search per query. On instances
         # that fetch engines through a browser pool (challenge solving,
         # human-paced requests), that doubles the load the instance must
-        # serve for every query, so it can be turned off in the provider
-        # config.
+        # serve for every query, so image search is a separate, opt-in
+        # request the agent makes explicitly; this flag gates the
+        # capability entirely.
         self._enable_image_search = enable_image_search
+
+    @property
+    def supports_image_search(self) -> bool:
+        return self._enable_image_search
 
     # Paced retries: a challenge-hit search fails on the SearXNG side while
     # the lane keeps solving in the background. Re-querying 20s/40s later
@@ -93,6 +71,7 @@ class SearXNGClient(WebSearchProvider):
     # 1-2s machine burst would just re-lose. Worst total ~3x read timeout.
     @retry_builder(tries=3, delay=20, backoff=2)
     def search(self, query: str, language: str | None = None) -> list[WebSearchResult]:
+        """Standard search: web results only, never image results."""
         payload = {
             "q": query,
             "format": "json",
@@ -125,11 +104,7 @@ class SearXNGClient(WebSearchProvider):
         # SearXNG doesn't support limiting results via API parameters,
         # so we limit client-side after receiving the response
         limited_results = result_list[: self._num_results]
-        general_results = [self._parse_web_result(result) for result in limited_results]
-        if not general_results or not self._enable_image_search:
-            return general_results
-        image_results = self._search_images(query, language)
-        return _interleave_image_results(general_results, image_results)
+        return [self._parse_web_result(result) for result in limited_results]
 
     def _parse_web_result(self, result: dict) -> WebSearchResult:
         """Build a WebSearchResult from a general (web) search hit.
@@ -144,33 +119,43 @@ class SearXNGClient(WebSearchProvider):
             image_urls=[image_url] if image_url else [],
         )
 
-    def _search_images(
+    def search_images(
         self, query: str, language: str | None = None
     ) -> list[WebSearchResult]:
-        """Best-effort image search via the SearXNG images category.
+        """Image-only search: every result carries a direct image URL in
+        `image_urls` and `link` points at the source page. Raises on
+        failure so the paced retry and the tool's error capture apply —
+        in this mode the images request is the whole result."""
+        if not self._enable_image_search:
+            raise ValueError("Image search is disabled for this SearXNG provider.")
+        return self._search_images_with_retries(query, language)
 
-        Returns image hits as WebSearchResults whose `link` is the source page
-        and whose `image_urls` holds the direct image URL. Never raises: a
-        failing image search must not take down the whole web search.
-        """
-        try:
-            payload = {
-                "q": query,
-                "format": "json",
-                "categories": "images",
-            }
-            if language or self._language:
-                payload["language"] = language or self._language
-            response = requests.post(
-                f"{self._searxng_base_url}/search",
-                data=payload,
-                timeout=_SEARXNG_TIMEOUT_SECONDS,
+    @retry_builder(tries=3, delay=20, backoff=2)
+    def _search_images_with_retries(
+        self, query: str, language: str | None = None
+    ) -> list[WebSearchResult]:
+        payload = {
+            "q": query,
+            "format": "json",
+            "categories": "images",
+        }
+        if language or self._language:
+            payload["language"] = language or self._language
+        response = requests.post(
+            f"{self._searxng_base_url}/search",
+            data=payload,
+            timeout=_SEARXNG_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        results = response.json()
+        result_list = results.get("results", [])
+        if not result_list and results.get("unresponsive_engines"):
+            # parity with general search: surface challenge hits so the
+            # paced retry can pick up the lane's banked clearance
+            raise requests.RequestException(
+                "SearXNG image search returned no results; unresponsive engines: "
+                f"{results.get('unresponsive_engines')}"
             )
-            response.raise_for_status()
-            result_list = response.json().get("results", [])
-        except Exception:
-            logger.warning("SearXNG image search failed for query: %s", query)
-            return []
 
         image_results: list[WebSearchResult] = []
         seen_image_urls: set[str] = set()

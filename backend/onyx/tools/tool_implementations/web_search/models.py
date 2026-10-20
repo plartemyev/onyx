@@ -52,16 +52,32 @@ class WebSearchProvider:
         """
         return True
 
+    @property
+    def supports_image_search(self) -> bool:
+        """Whether this provider can serve an image-only search.
+        Override in subclasses that implement `search_images`."""
+        return False
+
     @abstractmethod
     def search(
         self, query: str, language: str | None = None
     ) -> Sequence[WebSearchResult]:
-        """Search the web for `query`.
+        """Run a standard (web results only) search for `query`.
 
         `language` is an optional BCP-47 hint (e.g. "en", "de", "pt-BR") the
         caller can set per query. Providers that support a language knob use
         it; the rest ignore it.
         """
+
+    def search_images(
+        self, query: str, language: str | None = None
+    ) -> Sequence[WebSearchResult]:
+        """Run an image-only search for `query`: every result carries a
+        direct image URL in `image_urls`. No web results are mixed in.
+        Only called when `supports_image_search` is True."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support image search."
+        )
 
     @abstractmethod
     def test_connection(self) -> dict[str, str]:
