@@ -149,10 +149,10 @@ services:
       # time on the local model than the 30s default allows; matches the
       # deployment's LLM_SOCKET_READ_TIMEOUT. On timeout the digest call is
       # abandoned and the deterministic tier-1 digest is used.
-      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=120
+      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=520
       # Load the Ollama model with num_ctx above Onyx's max input tokens so
       # template overhead and generation never push the prompt over context.
-      - OLLAMA_NUM_CTX_HEADROOM=8192
+      - OLLAMA_NUM_CTX_HEADROOM=0
       # DR per-phase temperature experiment dropped: with engine-reported
       # thinking capability, ornith counts as a reasoning model and multi_llm
       # pins reasoning-model temperature to 1 (stock Onyx semantics); the
@@ -160,13 +160,13 @@ services:
       # Bound how large a research sub-agent's prompt may grow (search
       # results accumulate cycle over cycle). Keeps each sub-agent cycle a
       # bounded prefill instead of creeping toward the full context window.
-      - DR_SUBAGENT_CONTEXT_TOKENS=24000
+      - DR_SUBAGENT_CONTEXT_TOKENS=65536
       # Sub-agent reports feed the orchestrator, not people. With the
       # task-proportional concision directive in the sub-agent report prompt,
       # narrow per-entity tasks produce short dense reports; 800 tokens is a
       # hard ceiling (~1.5 minutes of generation on this GPU) and keeps a
       # 20-entity fan-out far inside the orchestrator's context.
-      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=800
+      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=65536
       # 25 -> 50 retrieved chunks fed to the LLM per search
       - MAX_CHUNKS_FED_TO_CHAT=50
       # Tool-calling reimplementation evaluation: dump full request history,
@@ -265,11 +265,11 @@ services:
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
       - MAX_LLM_CYCLES=22
       - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN=0.10
-      - OLLAMA_NUM_CTX_HEADROOM=8192
+      - OLLAMA_NUM_CTX_HEADROOM=0
       # DR temperature experiment dropped (see api_server block); sub-agent
       # caps remain.
-      - DR_SUBAGENT_CONTEXT_TOKENS=24000
-      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=5000
+      - DR_SUBAGENT_CONTEXT_TOKENS=65536
+      - DR_MAX_INTERMEDIATE_REPORT_TOKENS=65536
       - MAX_CHUNKS_FED_TO_CHAT=50
       - CODE_INTERPRETER_SESSIONS_ENABLED=true
       - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
