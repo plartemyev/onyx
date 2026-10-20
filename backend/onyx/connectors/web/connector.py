@@ -13,7 +13,12 @@ from pydantic import BaseModel, TypeAdapter
 from typing_extensions import override
 from urllib3.exceptions import MaxRetryError
 
-from onyx.configs.app_configs import INDEX_BATCH_SIZE, REQUEST_TIMEOUT_SECONDS
+from onyx.configs.app_configs import (
+    INDEX_BATCH_SIZE,
+    REQUEST_TIMEOUT_SECONDS,
+    WEB_CONTENT_FORMAT,
+    WEB_CONTENT_MD_LINKS,
+)
 from onyx.configs.constants import DocumentSource
 from onyx.connectors.exceptions import (
     ConnectorValidationError,
@@ -29,7 +34,8 @@ from onyx.connectors.interfaces import (
     SlimConnector,
 )
 from onyx.connectors.models import Document, HierarchyNode, SlimDocument, TextSection
-from onyx.file_processing.html_utils import web_html_cleanup
+from onyx.file_processing.html_to_markdown import web_page_to_markdown
+from onyx.file_processing.html_utils import ParsedHTML, web_html_cleanup
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.server.security.models import web_connector_ssrf_enforced
 from onyx.server.security.store import get_security_settings
@@ -40,6 +46,8 @@ from onyx.utils.logger import setup_logger
 from onyx.utils.playwright_fetch import (
     DEFAULT_HEADERS,
     DEFAULT_USER_AGENT,  # noqa: F401
+    fetch_rendered_html,
+    searxng_crawl_configured,
     start_playwright,
 )
 from onyx.utils.sitemap import list_pages_for_site
@@ -112,6 +120,11 @@ class ScrapeSessionContext:
 
     def initialize(self) -> None:
         self.stop()
+        # With the SearXNG crawl endpoint configured, every page renders on
+        # the remote masqueraded browser pool (see _do_scrape) and there is
+        # no local browser session to start — or to rebuild after errors.
+        if searxng_crawl_configured():
+            return
         self.playwright, self.playwright_context = start_playwright()
 
     def stop(self) -> None:
@@ -460,16 +473,15 @@ class WebConnector(LoadConnector, SlimConnector):
     ) -> ScrapeResult:
         """Returns a ScrapeResult object with a doc and retry flag.
 
+        Transport: with SEARXNG_CRAWL_ENDPOINT set, every page renders on the
+        SearXNG fork's masqueraded browser pool (fetch_rendered_html) and the
+        local Playwright session stays cold. Without the endpoint, the local
+        session drives each page.
+
         When slim=True, skips scroll, PDF content download, and content extraction.
         The bot-detection render wait (5s) fires on CF/403 responses regardless of slim.
         networkidle is always awaited so JS-rendered links are discovered correctly.
         """
-
-        if session_ctx.playwright is None:
-            raise RuntimeError("scrape_context.playwright is None")
-
-        if session_ctx.playwright_context is None:
-            raise RuntimeError("scrape_context.playwright_context is None")
 
         result = ScrapeResult()
 
@@ -480,8 +492,19 @@ class WebConnector(LoadConnector, SlimConnector):
         # under their canonical (final) URL.
         storage_url = _rewrite_url(initial_url, session_ctx.url_rewrites)
 
-        # Handle cookies for the URL
-        _handle_cookies(session_ctx.playwright_context, initial_url)
+        use_searxng = searxng_crawl_configured()
+
+        if not use_searxng:
+            if session_ctx.playwright is None:
+                raise RuntimeError("scrape_context.playwright is None")
+
+            if session_ctx.playwright_context is None:
+                raise RuntimeError("scrape_context.playwright_context is None")
+
+            # Handle cookies for the URL. Consent cookies and connector-level
+            # OAuth headers only reach a local context; the SearXNG lanes
+            # carry their own cookie jars.
+            _handle_cookies(session_ctx.playwright_context, initial_url)
 
         # First do a HEAD request to check content type without downloading the entire content
         head_response = requests.head(
@@ -527,6 +550,13 @@ class WebConnector(LoadConnector, SlimConnector):
 
             return result
 
+        if use_searxng:
+            return self._scrape_via_searxng(
+                index, initial_url, storage_url, session_ctx, slim, result
+            )
+
+        # The guard above ruled out a missing local session on this transport.
+        assert session_ctx.playwright_context is not None
         page = session_ctx.playwright_context.new_page()
         try:
             # Use "commit" instead of "domcontentloaded" to avoid hanging on bot-detection pages
@@ -639,7 +669,7 @@ class WebConnector(LoadConnector, SlimConnector):
                 return result
 
             # after this point, we don't need the caller to retry
-            parsed_html = web_html_cleanup(soup, self.mintlify_cleanup)
+            parsed_html = self._parse_web_page(soup, initial_url)
 
             """For websites containing iframes that need to be scraped,
             the code below can extract text from within these iframes.
@@ -663,28 +693,137 @@ class WebConnector(LoadConnector, SlimConnector):
 
             # Sometimes pages with #! will serve duplicate content
             # There are also just other ways this can happen
-            hashed_text = hash((parsed_html.title, parsed_html.cleaned_text))
-            if hashed_text in session_ctx.content_hashes:
-                logger.info(
-                    "%s: Skipping duplicate title + content for %s", index, initial_url
-                )
-                return result
-
-            session_ctx.content_hashes.add(hashed_text)
-
-            # doc_updated_at is intentionally left unset — see the comment in the PDF
-            # branch above. The HTTP Last-Modified header is an unreliable change
-            # signal for web content, so we rely on the content hash for dedup.
-            result.doc = Document(
-                id=storage_url,
-                sections=[TextSection(link=storage_url, text=parsed_html.cleaned_text)],
-                source=DocumentSource.WEB,
-                semantic_identifier=parsed_html.title or storage_url,
-                metadata={},
+            return self._doc_from_parsed_html(
+                index, initial_url, storage_url, session_ctx, parsed_html, result
             )
         finally:
             page.close()
 
+        return result
+
+    def _scrape_via_searxng(
+        self,
+        index: int,
+        initial_url: str,
+        storage_url: str,
+        session_ctx: ScrapeSessionContext,
+        slim: bool,
+        result: ScrapeResult,
+    ) -> ScrapeResult:
+        """Render one page on the SearXNG fork's masqueraded browser pool.
+
+        fetch_rendered_html owns SSRF validation, Google-Translate
+        unwrapping, redirect following, the challenge grace period and one
+        paced retry; a None return means the crawl failed after all that.
+        There is no local page object: scrolling is the remote side's
+        down-and-back cycle, and the iframe rescue does not apply (the
+        returned DOM is already hydrated).
+        """
+        rendered = fetch_rendered_html(initial_url)
+        if rendered is None:
+            session_ctx.last_error = (
+                f"Failed to render '{initial_url}' via the SearXNG crawl endpoint"
+            )
+            logger.warning(session_ctx.last_error)
+            result.retry = True
+            return result
+
+        # Redirect handling mirrors the local path: the document persists
+        # under its canonical (final) URL, after re-checking SSRF on the
+        # real target the remote side landed on.
+        final_url = rendered.final_url or initial_url
+        if final_url != initial_url:
+            protected_url_check(final_url)
+            if final_url in session_ctx.visited_links:
+                logger.info(
+                    "%s: %s redirected to %s - already indexed",
+                    index,
+                    initial_url,
+                    final_url,
+                )
+                return result
+
+            logger.info("%s: %s redirected to %s", index, initial_url, final_url)
+            initial_url = final_url
+            storage_url = _rewrite_url(initial_url, session_ctx.url_rewrites)
+            session_ctx.visited_links.add(initial_url)
+
+        status = rendered.status
+        if status is not None and str(status)[0] in ("4", "5"):
+            session_ctx.last_error = (
+                f"Skipped indexing {initial_url} due to HTTP {status} response"
+            )
+            logger.info(session_ctx.last_error)
+            result.retry = True
+            return result
+
+        soup = BeautifulSoup(rendered.html, "html.parser")
+
+        if self.recursive:
+            internal_links = get_internal_links(session_ctx.base_url, initial_url, soup)
+            for link in internal_links:
+                if link not in session_ctx.visited_links:
+                    session_ctx.to_visit.append(link)
+
+        if slim:
+            result.doc = Document(
+                id=storage_url,
+                sections=[],
+                source=DocumentSource.WEB,
+                semantic_identifier=storage_url,
+                metadata={},
+            )
+            return result
+
+        parsed_html = self._parse_web_page(rendered.html, initial_url)
+        return self._doc_from_parsed_html(
+            index, initial_url, storage_url, session_ctx, parsed_html, result
+        )
+
+    def _parse_web_page(
+        self, page_content: str | BeautifulSoup, base_url: str
+    ) -> ParsedHTML:
+        """WEB_CONTENT_FORMAT picks the body format: the legacy bs4
+        flattening, or GitHub-flavored markdown whose hyperlinks and media
+        URLs stay in the indexed text (WEB_CONTENT_MD_LINKS picks the link
+        form), matching what the open_url crawler feeds the model. Relative
+        links resolve against the post-redirect page URL. The
+        mintlify_cleanup flag only applies to the legacy text path; the
+        markdown path always runs the default cleanup.
+        """
+        if WEB_CONTENT_FORMAT == "markdown":
+            return web_page_to_markdown(
+                page_content, base_url=base_url, link_mode=WEB_CONTENT_MD_LINKS
+            )
+        return web_html_cleanup(page_content, self.mintlify_cleanup)
+
+    @staticmethod
+    def _doc_from_parsed_html(
+        index: int,
+        url: str,
+        storage_url: str,
+        session_ctx: ScrapeSessionContext,
+        parsed_html: ParsedHTML,
+        result: ScrapeResult,
+    ) -> ScrapeResult:
+        """Content-hash dedup, then the Document for one scraped page."""
+        hashed_text = hash((parsed_html.title, parsed_html.cleaned_text))
+        if hashed_text in session_ctx.content_hashes:
+            logger.info("%s: Skipping duplicate title + content for %s", index, url)
+            return result
+
+        session_ctx.content_hashes.add(hashed_text)
+
+        # doc_updated_at is intentionally left unset — see the comment in the PDF
+        # branch above. The HTTP Last-Modified header is an unreliable change
+        # signal for web content, so we rely on the content hash for dedup.
+        result.doc = Document(
+            id=storage_url,
+            sections=[TextSection(link=storage_url, text=parsed_html.cleaned_text)],
+            source=DocumentSource.WEB,
+            semantic_identifier=parsed_html.title or storage_url,
+            metadata={},
+        )
         return result
 
     def load_from_state(self, slim: bool = False) -> GenerateDocumentsOutput:

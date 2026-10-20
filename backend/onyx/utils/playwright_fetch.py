@@ -611,6 +611,13 @@ _SEARXNG_CRAWL_ATTEMPTS = 2
 _SEARXNG_CRAWL_RETRY_WAIT_S = (12.0, 25.0)
 
 
+def searxng_crawl_configured() -> bool:
+    """True when browser-backed fetches should ride the SearXNG /crawl
+    endpoint instead of a local browser. Single point of truth for callers
+    that skip local-browser setup entirely when the endpoint is set."""
+    return bool(SEARXNG_CRAWL_ENDPOINT)
+
+
 def _crawl_retry_wait() -> float:
     return random.uniform(*_SEARXNG_CRAWL_RETRY_WAIT_S)
 
@@ -895,7 +902,7 @@ def fetch_content_bytes(
         )
         return None
 
-    if SEARXNG_CRAWL_ENDPOINT:
+    if searxng_crawl_configured():
         return _crawl_via_searxng_bytes(
             url, navigation_timeout_ms=navigation_timeout_ms
         )
@@ -1016,7 +1023,7 @@ def fetch_rendered_html(
         )
         return None
 
-    if SEARXNG_CRAWL_ENDPOINT:
+    if searxng_crawl_configured():
         return _crawl_via_searxng_render(
             url, navigation_timeout_ms=navigation_timeout_ms
         )

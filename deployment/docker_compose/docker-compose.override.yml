@@ -218,7 +218,8 @@ services:
       # userinfo (http clients send it as basic auth): the fork's
       # require_endpoint_secret gate demands it, and it stays out of git.
       # The egress IP is Thai: the local browser's clock must agree with it
-      # (matters for the web connector, which still drives a local browser).
+      # (matters for the web connector when it falls back to a local
+      # browser; with the crawl endpoint set it renders remotely instead).
       - SEARXNG_CRAWL_ENDPOINT=http://:${BROWSER_CRAWL_SECRET}@searxng:8080/crawl
       # 2x the SearXNG-side worst case per call (timeout_s + 150s) so a
       # slow crawl is never cut off mid-flight by this client.
@@ -242,7 +243,9 @@ services:
       # Model-facing page bodies as GitHub-flavored Markdown (Firecrawl-
       # shaped: ATX headings, pipe tables, fenced code, links). Links stay
       # full [text](url); flip to WEB_CONTENT_MD_LINKS=bare to keep only
-      # the link text (cuts ~40% of chars on link-heavy pages).
+      # the link text (cuts ~40% of chars on link-heavy pages). Honored by
+      # web content extraction AND web connector indexing alike: connector
+      # documents keep hyperlinks and media URLs in the indexed text.
       - WEB_CONTENT_FORMAT=markdown
       - WEB_CONTENT_MD_LINKS=full
       # Wikipedia Vector-2022 chrome the element cleanup cannot see
