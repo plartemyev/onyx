@@ -384,6 +384,8 @@ def _run_loop(
         model_name="text-only-model",
         temperature=0,
         max_input_tokens=100000,
+        context_window=100_000,
+        max_output_tokens=16_000,
     )
     batches = iter(tool_batches)
 
@@ -416,15 +418,6 @@ def _run_loop(
         patch("onyx.chat.llm_loop.get_default_base_system_prompt", return_value=""),
         patch("onyx.chat.llm_loop.select_reminder_text", return_value=""),
         patch("onyx.chat.llm_loop.model_supports_image_input", return_value=False),
-        patch(
-            "onyx.chat.token_budget.get_model_map",
-            return_value={
-                "openai/text-only-model": {
-                    "max_input_tokens": 100000,
-                    "max_output_tokens": 16000,
-                }
-            },
-        ),
         patch(
             "onyx.chat.llm_loop.run_llm_step",
             side_effect=[(r, False) for r in step_results],

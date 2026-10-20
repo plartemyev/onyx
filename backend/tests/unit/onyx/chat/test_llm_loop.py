@@ -1094,6 +1094,8 @@ class TestNonVisionImageBudgeting:
             model_name="text-only-model",
             temperature=0,
             max_input_tokens=configured_input_limit,
+            context_window=24_000,
+            max_output_tokens=16_000,
         )
         older_user = create_message("Old input", MessageType.USER, 20000)
         older_answer = create_message("Old answer", MessageType.ASSISTANT, 5)
@@ -1107,15 +1109,6 @@ class TestNonVisionImageBudgeting:
             patch("onyx.chat.llm_loop.get_default_base_system_prompt", return_value=""),
             patch("onyx.chat.llm_loop.select_reminder_text", return_value=""),
             patch("onyx.chat.llm_loop.model_supports_image_input", return_value=False),
-            patch(
-                "onyx.chat.token_budget.get_model_map",
-                return_value={
-                    "openai/text-only-model": {
-                        "max_input_tokens": 24000,
-                        "max_output_tokens": 16000,
-                    }
-                },
-            ),
             patch(
                 "onyx.chat.llm_loop.run_llm_step",
                 return_value=(

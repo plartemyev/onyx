@@ -20,12 +20,12 @@ from onyx.db.llm import (
 from onyx.db.models import LLMProvider as LLMProviderModel
 from onyx.db.models import Persona, SearchSettings, User
 from onyx.llm.constants import LlmProviderNames
+from onyx.llm.context_resolution import resolve_model_context
 from onyx.llm.interfaces import LLM, LlmRequestPolicy
 from onyx.llm.models import ReasoningEffort, UserChatDefaults
 from onyx.llm.multi_llm import LitellmLLM
 from onyx.llm.override_models import LLMOverride
 from onyx.llm.utils import (
-    get_max_input_tokens_from_llm_provider,
     model_supports_image_input,
 )
 from onyx.llm.well_known_providers.constants import (
@@ -364,12 +364,11 @@ def llm_from_provider(
         provider=llm_provider.provider,
         configured_max_input_tokens=configured_max_input_tokens,
     )
-    max_input_tokens = (
-        configured_max_input_tokens
-        or get_max_input_tokens_from_llm_provider(
-            llm_provider=llm_provider, model_name=model_name
-        )
+    context = resolve_model_context(
+        llm_provider=llm_provider,
+        model_name=model_name,
     )
+    max_input_tokens = context.input_budget
     # Session override wins, else the admin's model default, else the user's
     # own default, else GEN_AI_TEMPERATURE.
     if temperature is None and model_configuration:
@@ -391,6 +390,8 @@ def llm_from_provider(
         temperature=temperature,
         additional_headers=additional_headers,
         max_input_tokens=max_input_tokens,
+        context_window=context.window,
+        max_output_tokens=context.max_output_tokens,
         model_kwargs=model_kwargs,
         policy_headers=policy.headers if policy else None,
         policy_model_kwargs=policy.model_kwargs if policy else None,
@@ -478,6 +479,8 @@ def get_llm(
     reasoning_effort_default: ReasoningEffort | None = None,
     reasoning_effort_user_default: ReasoningEffort | None = None,
     reasoning_effort_max: ReasoningEffort | None = None,
+    context_window: int | None = None,
+    max_output_tokens: int | None = None,
 ) -> LLM:
     # Temperature stays None here on purpose: LitellmLLM applies the
     # GEN_AI_TEMPERATURE fallback itself, and it needs the None to tell an
@@ -515,6 +518,8 @@ def get_llm(
         extra_headers=extra_headers,
         model_kwargs=merged_model_kwargs,
         max_input_tokens=max_input_tokens,
+        context_window=context_window,
+        max_output_tokens=max_output_tokens,
         reasoning_effort_default=reasoning_effort_default,
         reasoning_effort_user_default=reasoning_effort_user_default,
         reasoning_effort_max=reasoning_effort_max,

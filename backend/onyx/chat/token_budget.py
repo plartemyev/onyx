@@ -3,11 +3,6 @@ from dataclasses import dataclass
 from onyx.configs.model_configs import GEN_AI_INPUT_TOKEN_SAFETY_MARGIN
 from onyx.llm.context_budgets import output_token_reserve
 from onyx.llm.interfaces import LLM
-from onyx.llm.model_capabilities import (
-    find_model_obj,
-    get_model_map,
-    model_identity_names,
-)
 
 
 @dataclass(frozen=True)
@@ -36,30 +31,22 @@ class ChatTokenBudget:
         return min(self.max_output_tokens, available_output_tokens)
 
 
-def _positive_int(value: object) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return None
-
-
 def resolve_chat_token_budget(llm: LLM) -> ChatTokenBudget:
+    """Budget for one chat cycle, from limits resolved once at construction
+    (onyx.llm.context_resolution) and carried on the LLM config.
+
+    Unknown window (config.context_window is None) means no max_tokens is sent
+    and the model server fills its own remainder, as before.
+    """
     config = llm.config
     raw_input_tokens = max(0, config.max_input_tokens)
     input_tokens = max(
         0, int(raw_input_tokens * (1 - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN))
     )
     safety_tokens = raw_input_tokens - input_tokens
-    model_map = get_model_map()
-    for model_name in model_identity_names(config.model_name, config.deployment_name):
-        model_obj = find_model_obj(model_map, config.model_provider, model_name) or {}
-        model_input = _positive_int(model_obj.get("max_input_tokens"))
-        model_output = _positive_int(model_obj.get("max_output_tokens"))
-        if model_input is not None and model_output is not None:
-            return ChatTokenBudget(
-                input_tokens=input_tokens,
-                max_output_tokens=model_output,
-                context_tokens=_positive_int(model_obj.get("max_context_tokens"))
-                or model_input,
-                safety_tokens=safety_tokens,
-            )
-    return ChatTokenBudget(input_tokens, None, None, safety_tokens)
+    return ChatTokenBudget(
+        input_tokens=input_tokens,
+        max_output_tokens=config.max_output_tokens,
+        context_tokens=config.context_window,
+        safety_tokens=safety_tokens,
+    )

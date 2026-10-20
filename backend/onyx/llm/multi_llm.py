@@ -495,6 +495,8 @@ class LitellmLLM(LLM):
         reasoning_effort_default: ReasoningEffort | None = None,
         reasoning_effort_user_default: ReasoningEffort | None = None,
         reasoning_effort_max: ReasoningEffort | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
     ):
         # Timeout in seconds for each socket read operation (i.e., max time between
         # receiving data chunks/tokens). This is NOT a total request timeout - a
@@ -521,6 +523,8 @@ class LitellmLLM(LLM):
         self._reasoning_effort_default = reasoning_effort_default
         self._reasoning_effort_user_default = reasoning_effort_user_default
         self._reasoning_effort_max = reasoning_effort_max
+        self._context_window = context_window
+        self._max_output_tokens = max_output_tokens
 
         self._api_surface = resolve_api_surface(model_provider, custom_config)
 
@@ -1246,6 +1250,8 @@ class LitellmLLM(LLM):
             deployment_name=self._deployment_name,
             custom_config=self._custom_config,
             max_input_tokens=self._max_input_tokens,
+            context_window=self._context_window,
+            max_output_tokens=self._max_output_tokens,
             reasoning_effort_default=self._reasoning_effort_default,
             reasoning_effort_user_default=self._reasoning_effort_user_default,
             reasoning_effort_max=self._reasoning_effort_max,

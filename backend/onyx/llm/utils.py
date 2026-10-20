@@ -20,6 +20,7 @@ from onyx.llm.context_budgets import (
     LLM_PROBE_OUTPUT,
     scale,
 )
+from onyx.llm.context_resolution import resolve_model_context
 from onyx.llm.exceptions import ClassifiedLLMError
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.model_capabilities import (
@@ -618,25 +619,14 @@ def get_max_input_tokens_from_llm_provider(
 ) -> int:
     """Get max input tokens for a model, with fallback chain.
 
-    Fallback order:
-    1. Use max_input_tokens from model_configuration (populated from source APIs
-       like OpenRouter, Ollama, or our Bedrock mapping)
-    2. Look up in litellm.model_cost dictionary
-    3. Fall back to GEN_AI_MODEL_FALLBACK_MAX_TOKENS (32000)
-
-    Most dynamic providers (OpenRouter, Ollama) provide context_length via their
-    APIs. Bedrock doesn't expose this, so we parse from model ID suffix (:200k)
-    or use BEDROCK_MODEL_TOKEN_LIMITS mapping. The 32000 fallback is only hit for
-    unknown models not in any of these sources.
+    Delegates to onyx.llm.context_resolution.resolve_model_context, the single
+    source of truth: DB-stored pin → live model-server probe (TTL cache) →
+    LiteLLM map → GEN_AI_MODEL_FALLBACK_MAX_TOKENS.
     """
-    max_input_tokens = None
-    for model_configuration in llm_provider.model_configurations:
-        if model_configuration.name == model_name:
-            max_input_tokens = model_configuration.max_input_tokens
-    return max_input_tokens or get_max_input_tokens(
-        model_provider=llm_provider.provider,
+    return resolve_model_context(
+        llm_provider=llm_provider,
         model_name=model_name,
-    )
+    ).input_budget
 
 
 def model_supports_image_input(

@@ -56,6 +56,14 @@ GEN_AI_MODEL_VERSION = os.environ.get("GEN_AI_MODEL_VERSION")
 # Override the auto-detection of LLM max context length
 GEN_AI_MAX_TOKENS = int(os.environ.get("GEN_AI_MAX_TOKENS") or 0) or None
 
+# How long (seconds) a context size probed from the model server's own API
+# stays trusted (onyx.llm.context_resolution). Probing re-runs after expiry,
+# so raising/lowering the server's context applies here without a restart.
+# <= 0 disables probing entirely.
+GEN_AI_MODEL_CONTEXT_PROBE_TTL_SECONDS = int(
+    os.environ.get("GEN_AI_MODEL_CONTEXT_PROBE_TTL_SECONDS") or 300
+)
+
 # Tokens kept available for the LLM to generate an answer (+ quotes). Unset:
 # a fraction of the selected model's context window (see
 # onyx.llm.context_budgets.output_token_reserve).

@@ -3,172 +3,102 @@ from unittest.mock import Mock
 import pytest
 
 from onyx.chat.token_budget import ChatTokenBudget, resolve_chat_token_budget
-from onyx.configs.model_configs import GEN_AI_MODEL_FALLBACK_MAX_TOKENS
 from onyx.llm.interfaces import LLMConfig
 
-ModelMap = dict[str, dict[str, object]]
 
-
-@pytest.fixture
-def model_map(monkeypatch: pytest.MonkeyPatch) -> ModelMap:
-    models: ModelMap = {}
-    monkeypatch.setattr("onyx.chat.token_budget.get_model_map", lambda: models)
-    monkeypatch.setattr("onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", 0.05)
-    monkeypatch.setattr(
-        "onyx.llm.context_budgets.GEN_AI_NUM_RESERVED_OUTPUT_TOKENS", 1024
-    )
-    return models
-
-
-@pytest.fixture
-def llm() -> Mock:
+def _llm(
+    max_input_tokens: int,
+    context_window: int | None = None,
+    max_output_tokens: int | None = None,
+) -> Mock:
     return Mock(
         config=LLMConfig(
             model_provider="openai",
             model_name="model",
             temperature=0,
-            max_input_tokens=1_000_000,
+            max_input_tokens=max_input_tokens,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
         )
     )
 
 
 @pytest.mark.parametrize(
-    "limits,input_config,outputs",
+    "max_input_tokens,margin,expected_input,expected_safety",
     [
-        (
-            (922_000, 128_000, 1_050_000),
-            (922_000, 0.05, 875_900, 46_100),
-            {875_900: 128_000, 900_000: 103_900},
-        ),
-        (
-            (200_000, 64_000, None),
-            (200_000, 0.05, 190_000, 10_000),
-            {120_000: 64_000, 180_000: 10_000},
-        ),
-        ((200_000, 64_000, None), (8_000, 0.05, 7_600, 400), {7_600: 64_000}),
-        ((100_000, 10_000, "100000"), (1_000_000, 0, 1_000_000, 0), {98_000: 2_000}),
-        (
-            (100_000, 10_000, 50_000),
-            (1_000_000, 0, 1_000_000, 0),
-            {40_000: 10_000, 48_000: 2_000},
-        ),
-        ((4_000, 4_000, None), (4_000, 0.05, 3_800, 200), {2_000: 1_800}),
+        (100_000, 0.05, 95_000, 5_000),
+        (100_000, 0.10, 90_000, 10_000),
+        (31_345, 0.10, 28_210, 3_135),
+        (1_000_000, 0.0, 1_000_000, 0),
     ],
-    ids=[
-        "separate-limits",
-        "shared-context",
-        "operator-cap",
-        "invalid-context",
-        "smaller-context",
-        "large-output",
-    ],
+    ids=["default-margin", "deploy-margin", "probed-window", "no-margin"],
 )
-def test_model_budget(
-    model_map: ModelMap,
-    llm: Mock,
+def test_input_budget_applies_safety_margin(
     monkeypatch: pytest.MonkeyPatch,
-    limits: tuple[object, object, object],
-    input_config: tuple[int, float, int, int],
-    outputs: dict[int, int],
+    max_input_tokens: int,
+    margin: float,
+    expected_input: int,
+    expected_safety: int,
 ) -> None:
-    model_map["openai/model"] = {
-        "max_input_tokens": limits[0],
-        "max_output_tokens": limits[1],
-        "max_context_tokens": limits[2],
-    }
-    input_cap, margin, expected_input, expected_safety = input_config
-    llm.config.max_input_tokens = input_cap
     monkeypatch.setattr(
         "onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", margin
     )
-    budget = resolve_chat_token_budget(llm)
+    budget = resolve_chat_token_budget(_llm(max_input_tokens))
     assert (budget.input_tokens, budget.safety_tokens) == (
         expected_input,
         expected_safety,
     )
-    for input_tokens, output_tokens in outputs.items():
-        assert budget.output_allowance(input_tokens) == output_tokens
 
 
-@pytest.mark.parametrize(
-    "metadata",
-    [
-        None,
-        {"max_input_tokens": 128_000},
-        {"max_output_tokens": 16_000},
-        {"max_input_tokens": True, "max_output_tokens": 16_000},
-        {"max_input_tokens": 128_000, "max_output_tokens": False},
-        {"max_tokens": 128_000, "max_output_tokens": 16_000},
-    ],
-)
-def test_missing_or_invalid_limits_keep_legacy_fallback(
-    model_map: ModelMap,
-    llm: Mock,
-    metadata: dict[str, object] | None,
-) -> None:
-    if metadata is not None:
-        model_map["openai/model"] = metadata
-    llm.config.max_input_tokens = GEN_AI_MODEL_FALLBACK_MAX_TOKENS
-    budget = resolve_chat_token_budget(llm)
-    assert budget == ChatTokenBudget(30_400, None, None, 1_600)
-    assert budget.output_allowance(1) is None
-
-
-def test_deployment_alias(model_map: ModelMap, llm: Mock) -> None:
-    llm.config.model_provider = "azure"
-    llm.config.deployment_name = "alias"
-    model_map["azure/alias"] = {
-        "max_input_tokens": 128_000,
-        "max_output_tokens": 16_000,
-    }
-    assert resolve_chat_token_budget(llm) == ChatTokenBudget(
-        950_000, 16_000, 128_000, 50_000
-    )
-
-
-def test_provider_precedes_bare_model(
-    model_map: ModelMap,
-    llm: Mock,
+def test_resolved_context_drives_output_allowance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", 0)
-    llm.config.model_provider = "azure"
-    llm.config.model_name = "openai/model"
-    model_map.update(
-        {
-            "azure/model": {"max_input_tokens": 100_000, "max_output_tokens": 10_000},
-            "model": {"max_input_tokens": 200_000, "max_output_tokens": 20_000},
-        }
+    monkeypatch.setattr("onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", 0.05)
+    monkeypatch.setattr(
+        "onyx.llm.context_budgets.GEN_AI_NUM_RESERVED_OUTPUT_TOKENS", 1024
     )
-    assert resolve_chat_token_budget(llm) == ChatTokenBudget(
-        1_000_000, 10_000, 100_000, 0
-    )
+    budget = resolve_chat_token_budget(_llm(100_000, 128_000, 16_000))
+    assert budget == ChatTokenBudget(95_000, 16_000, 128_000, 5_000)
+    # min(max_output, context - safety - estimated_input)
+    assert budget.output_allowance(95_000) == 16_000
+    assert budget.output_allowance(120_000) == 3_000
+    # Below the output reserve the answer would be useless — no cap instead.
+    assert budget.output_allowance(121_977) is None
 
 
-def test_partial_metadata_uses_complete_alias(
-    model_map: ModelMap,
-    llm: Mock,
+def test_probed_window_caps_output_without_explicit_max_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", 0)
-    llm.config.deployment_name = "alias"
-    llm.config.max_input_tokens = 100_000
-    model_map.update(
-        {
-            "openai/model": {"max_input_tokens": 100_000},
-            "openai/alias": {"max_input_tokens": 200_000, "max_output_tokens": 20_000},
-        }
+    # resolve_model_context returns max_output_tokens=window for probed
+    # self-hosted models: fill the remainder, like n_predict=-1 but with a
+    # clean stop.
+    monkeypatch.setattr("onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", 0.10)
+    monkeypatch.setattr(
+        "onyx.llm.context_budgets.GEN_AI_NUM_RESERVED_OUTPUT_TOKENS", None
     )
-    assert resolve_chat_token_budget(llm) == ChatTokenBudget(
-        100_000, 20_000, 200_000, 0
-    )
+    budget = resolve_chat_token_budget(_llm(16_049, 16_384, 16_384))
+    assert budget == ChatTokenBudget(14_444, 16_384, 16_384, 1_605)
+    assert budget.output_allowance(0) == 14_779
+
+
+def test_unknown_window_keeps_legacy_no_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("onyx.chat.token_budget.GEN_AI_INPUT_TOKEN_SAFETY_MARGIN", 0.05)
+    budget = resolve_chat_token_budget(_llm(100_000))
+    assert budget == ChatTokenBudget(95_000, None, None, 5_000)
+    assert budget.output_allowance(0) is None
 
 
 @pytest.mark.parametrize("estimated_input_tokens", [95, 100, 200])
-@pytest.mark.usefixtures("model_map")
-def test_exhausted_context_keeps_legacy_fallback(
+def test_exhausted_context_yields_no_allowance(
     estimated_input_tokens: int,
 ) -> None:
     assert (
         ChatTokenBudget(95, 10, 100, 5).output_allowance(estimated_input_tokens) is None
     )
+
+
+def test_negative_estimated_input_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        ChatTokenBudget(95, 10, 100, 5).output_allowance(-1)

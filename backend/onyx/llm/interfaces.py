@@ -40,6 +40,10 @@ class LLMConfig(BaseModel):
     deployment_name: str | None = None
     custom_config: dict[str, str] | None = None
     max_input_tokens: int
+    # Resolved once at construction by onyx.llm.context_resolution; None means
+    # the total context is unknown and no max_tokens is sent to the provider.
+    context_window: int | None = None
+    max_output_tokens: int | None = None
     # Here rather than in the chat loop, so every invoke path gets it.
     reasoning_effort_default: ReasoningEffort | None = None
     reasoning_effort_user_default: ReasoningEffort | None = None

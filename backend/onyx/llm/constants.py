@@ -193,6 +193,16 @@ SOURCE_API_CONTEXT_LIMIT_PROVIDERS: frozenset[str] = DYNAMIC_LLM_PROVIDERS | fro
     }
 )
 
+# Self-hosted OpenAI-compatible engines (llama.cpp, vLLM) whose live context
+# size can change on a server restart. When no admin pin is stored, Onyx probes
+# their API for the real window (onyx.llm.context_resolution) instead of
+# trusting static model maps.
+CONTEXT_PROBE_PROVIDERS: frozenset[str] = frozenset(
+    {
+        LlmProviderNames.OPENAI_COMPATIBLE,
+    }
+)
+
 # Model family name mappings for display name generation
 # Used by Bedrock display name generator
 BEDROCK_MODEL_NAME_MAPPINGS: dict[str, str] = {

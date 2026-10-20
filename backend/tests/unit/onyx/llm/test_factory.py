@@ -9,6 +9,7 @@ from onyx.chat.incognito import (
 )
 from onyx.db.enums import IncognitoRecordMode
 from onyx.llm.constants import LlmProviderNames
+from onyx.llm.context_resolution import ModelContext
 from onyx.llm.factory import (
     _build_provider_extra_headers,
     get_default_llm,
@@ -144,8 +145,13 @@ def test_llm_from_provider_omits_ollama_num_ctx_when_model_context_unknown() -> 
 
     with (
         patch(
-            "onyx.llm.factory.get_max_input_tokens_from_llm_provider",
-            return_value=32000,
+            "onyx.llm.factory.resolve_model_context",
+            return_value=ModelContext(
+                input_budget=32000,
+                window=None,
+                max_output_tokens=None,
+                source="fallback",
+            ),
         ),
         patch("onyx.llm.factory.get_llm") as mock_get_llm,
     ):
