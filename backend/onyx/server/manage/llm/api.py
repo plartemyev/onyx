@@ -52,8 +52,8 @@ from onyx.llm.constants import (
 from onyx.llm.factory import (
     get_default_llm,
     get_llm,
-    get_max_input_tokens_from_llm_provider,
 )
+from onyx.llm.utils import get_max_input_tokens_from_llm_provider
 from onyx.llm.model_capabilities import (
     get_bedrock_token_limit,
     litellm_thinks_model_supports_image_input,
