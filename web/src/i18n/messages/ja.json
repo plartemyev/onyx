@@ -5409,6 +5409,11 @@
               "tooltip": "最大入力トークン数。Ollama モデルでは num_ctx として送信されます。空のままにするとプロバイダーのデフォルトが使用されます。"
             }
           },
+          "imageInput": {
+            "title": "画像入力",
+            "caption": "モデルが画像を受け付ける場合はオンにしてください。画像機能で視覚対応モデルとして扱われます。",
+            "toggleLabel": "画像を入力できる"
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "デフォルト"

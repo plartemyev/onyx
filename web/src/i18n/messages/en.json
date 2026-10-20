@@ -5409,6 +5409,11 @@
               "tooltip": "Maximum input tokens. For Ollama models this is sent as num_ctx. Leave empty to use the provider default."
             }
           },
+          "imageInput": {
+            "title": "Image Input",
+            "caption": "Turn on when the model accepts images, so image features treat it as vision-capable.",
+            "toggleLabel": "Accepts images"
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Default"

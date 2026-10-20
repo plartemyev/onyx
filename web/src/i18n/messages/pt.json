@@ -5409,6 +5409,11 @@
               "tooltip": "Tokens máximos de entrada. Para modelos do Ollama, o valor é enviado como num_ctx. Deixe vazio para usar o padrão do provedor."
             }
           },
+          "imageInput": {
+            "title": "Entrada de imagem",
+            "caption": "Ative quando o modelo aceitar imagens, para que os recursos de imagem o tratem como modelo com capacidade de visão.",
+            "toggleLabel": "Aceita imagens"
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Padrão"

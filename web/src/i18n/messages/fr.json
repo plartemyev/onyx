@@ -5409,6 +5409,11 @@
               "tooltip": "Nombre maximal de jetons d'entrée. Pour les modèles Ollama, cette valeur est envoyée sous forme de num_ctx. Laissez vide pour utiliser la valeur par défaut du fournisseur."
             }
           },
+          "imageInput": {
+            "title": "Entrée d'images",
+            "caption": "Activez cette option lorsque le modèle accepte les images, afin que les fonctions d'image le traitent comme capable de les traiter.",
+            "toggleLabel": "Accepte les images"
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Par défaut"

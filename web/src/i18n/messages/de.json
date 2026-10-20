@@ -5409,6 +5409,11 @@
               "tooltip": "Maximale Eingabe-Tokens. Bei Ollama-Modellen wird dieser Wert als num_ctx gesendet. Leer lassen, um den Anbieter-Standard zu verwenden."
             }
           },
+          "imageInput": {
+            "title": "Bildeingabe",
+            "caption": "Aktivieren Sie dies, wenn das Modell Bilder akzeptiert, damit Bildfunktionen es als bildfähig behandeln.",
+            "toggleLabel": "Akzeptiert Bilder"
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "Standard"

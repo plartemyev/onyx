@@ -170,3 +170,31 @@ describe("ModelSettingsPopover temperature", () => {
     expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "0");
   });
 });
+
+describe("ModelSettingsPopover image input", () => {
+  it("patches supports_image_input on toggle", async () => {
+    const onChange = jest.fn();
+    render(<PopoverHarness initialMaxInputTokens={null} onChange={onChange} />);
+    const user = await openPopover();
+    await user.click(screen.getByRole("switch", { name: "Image Input" }));
+    expect(onChange).toHaveBeenLastCalledWith({ supports_image_input: true });
+    expect(screen.getByRole("switch", { name: "Image Input" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+  });
+
+  it("reflects a stored vision capability as on", async () => {
+    render(
+      <PopoverHarness
+        initialMaxInputTokens={null}
+        modelOverrides={{ supports_image_input: true }}
+      />
+    );
+    await openPopover();
+    expect(screen.getByRole("switch", { name: "Image Input" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+  });
+});

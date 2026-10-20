@@ -5409,6 +5409,11 @@
               "tooltip": "최대 입력 토큰 수입니다. Ollama 모델의 경우 num_ctx로 전송됩니다. 비워 두면 공급자 기본값이 사용됩니다."
             }
           },
+          "imageInput": {
+            "title": "이미지 입력",
+            "caption": "모델이 이미지를 받을 수 있으면 켜세요. 이미지 기능이 이 모델을 비전 지원 모델로 처리합니다.",
+            "toggleLabel": "이미지 허용"
+          },
           "reasoningLevel": {
             "defaultSlider": {
               "label": "기본값"

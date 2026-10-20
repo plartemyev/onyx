@@ -2,8 +2,21 @@
 
 import { useState } from "react";
 import { useTranslations } from "next-intl";
-import { Button, InputTypeIn, Popover, Text, Tooltip } from "@opal/components";
-import { SvgBarChart, SvgCode, SvgSliders, SvgThermometer } from "@opal/icons";
+import {
+  Button,
+  InputSwitch,
+  InputTypeIn,
+  Popover,
+  Text,
+  Tooltip,
+} from "@opal/components";
+import {
+  SvgBarChart,
+  SvgCode,
+  SvgImage,
+  SvgSliders,
+  SvgThermometer,
+} from "@opal/icons";
 import { ContentAction, Section } from "@opal/layouts";
 import { Disabled } from "@opal/core";
 import type { IconFunctionComponent } from "@opal/types";
@@ -30,6 +43,7 @@ export type ModelSettingsPatch = Partial<
   Pick<
     ModelConfiguration,
     | "max_input_tokens"
+    | "supports_image_input"
     | "reasoning_effort_max"
     | "reasoning_effort_default"
     | "temperature_default"
@@ -330,6 +344,38 @@ export function ModelSettingsPopover({
                   }
                 />
               </Tooltip>
+            </Section>
+          </Section>
+
+          <Section
+            alignItems="stretch"
+            height="auto"
+            gap={0.375}
+            className="mb-1.5"
+          >
+            <SectionHeader
+              icon={SvgImage}
+              title={t("modelSettings.imageInput.title")}
+              caption={t("modelSettings.imageInput.caption")}
+            />
+            <Section
+              flexDirection="row"
+              alignItems="center"
+              justifyContent="between"
+              height="auto"
+              padding={0.5}
+              className="ms-8 me-2"
+            >
+              <Text font="secondary-body" color="text-02">
+                {t("modelSettings.imageInput.toggleLabel")}
+              </Text>
+              <InputSwitch
+                checked={model.supports_image_input}
+                onCheckedChange={(checked: boolean) =>
+                  onChange({ supports_image_input: checked })
+                }
+                aria-label={t("modelSettings.imageInput.title")}
+              />
             </Section>
           </Section>
 
