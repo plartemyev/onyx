@@ -208,6 +208,20 @@ _REFUSAL_FINISH_REASONS = {
 }
 
 
+# A cycle that returns neither an answer nor tool calls usually means the
+# model ended the stream right after its reasoning (seen with local
+# reasoning models served via llama.cpp: finish_reason=stop while the
+# answer the model "planned" exists only inside the reasoning text). One
+# continuation nudge recovers the turn instead of failing it.
+EMPTY_STEP_MAX_RETRIES = 1
+EMPTY_STEP_CONTINUATION_PROMPT = (
+    "Your previous response ended after your reasoning without a tool call "
+    "or a final answer. Continue the task: call the next tool you were "
+    "about to call, or write the final answer to the user if the work is "
+    "done."
+)
+
+
 def _build_empty_llm_response_error(
     llm: LLM,
     llm_step_result: LlmStepResult,
@@ -1360,6 +1374,8 @@ def run_llm_loop(
             workspace_state_note = fetch_workspace_state_note(chat_session_id)
         turn_started_monotonic = time.monotonic()
         context_overflow_retries = 0
+        empty_step_retries = 0
+        retry_after_empty_step = False
         for llm_cycle_count in range(MAX_LLM_CYCLES):
             if check_is_connected is not None and not check_is_connected():
                 logger.info(
@@ -1511,6 +1527,16 @@ def run_llm_loop(
                 or always_cite_documents,
                 include_file_reminder=code_interpreter_file_generated,
             )
+            if retry_after_empty_step:
+                # The nudge rides the per-cycle reminder message, so the
+                # retried cycle sees it right where the model reads its
+                # instructions; no history mutation needed.
+                reminder_message_text = (
+                    f"{EMPTY_STEP_CONTINUATION_PROMPT}\n\n{reminder_message_text}"
+                    if reminder_message_text
+                    else EMPTY_STEP_CONTINUATION_PROMPT
+                )
+
             if llm_cycle_count == 0 and workspace_state_note:
                 reminder_message_text = (
                     f"{workspace_state_note}\n\n{reminder_message_text}"
@@ -1666,6 +1692,28 @@ def run_llm_loop(
                     len(llm_step_result.tool_calls),
                 )
                 llm_step_result = llm_step_result.model_copy(update={"tool_calls": []})
+
+            # A cycle with neither an answer nor tool calls: nudge once and
+            # retry instead of failing a turn that may have run for many
+            # minutes. On the forced final cycle (no next cycle exists) or
+            # once the nudge itself comes back empty, break to the
+            # empty-response error below.
+            if not llm_step_result.answer and not llm_step_result.tool_calls:
+                if forced_final_answer or empty_step_retries >= EMPTY_STEP_MAX_RETRIES:
+                    break
+                empty_step_retries += 1
+                retry_after_empty_step = True
+                logger.warning(
+                    "Cycle %d returned no answer and no tool calls "
+                    "(reasoning_chars=%d); nudging the model to continue "
+                    "(attempt %d/%d)",
+                    llm_cycle_count,
+                    len(llm_step_result.reasoning or ""),
+                    empty_step_retries,
+                    EMPTY_STEP_MAX_RETRIES,
+                )
+                continue
+            retry_after_empty_step = False
 
             # Save citation mapping after each LLM step for incremental state updates
             state_container.set_citation_mapping(citation_processor.citation_to_doc)
