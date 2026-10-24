@@ -2160,8 +2160,8 @@ class TestCycleHistoryTokenBudget:
             create_tool_response("tc_1", "result", 30),
         ]
         # Tail = 60 history tokens + 10 fixed prompt tokens = 70.
-        # Headroom = 930; per-cycle share = 155; reserve = min(5*100, 5*155) = 500.
-        assert self._budget(history) == 1000 - 500
+        # Headroom = 930; per-cycle share = 77; reserve = min(5*100, 5*77) = 385.
+        assert self._budget(history) == 1000 - 385
 
     def test_budget_grows_monotonically_across_cycles(self) -> None:
         history = [

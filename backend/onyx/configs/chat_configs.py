@@ -19,7 +19,7 @@ MAX_CHUNKS_FED_TO_CHAT = int(os.environ.get("MAX_CHUNKS_FED_TO_CHAT") or 25)
 # tool-heavy MCPs that legitimately need more turns. Very high values are
 # warned about (not clamped): the per-cycle history reserve divides the
 # context headroom by this number, so extreme values erode it.
-MAX_LLM_CYCLES: int = int(os.environ.get("MAX_LLM_CYCLES") or 6)
+MAX_LLM_CYCLES: int = int(os.environ.get("MAX_LLM_CYCLES") or 12)
 _MAX_LLM_CYCLES_WARN_THRESHOLD = 50
 if MAX_LLM_CYCLES > _MAX_LLM_CYCLES_WARN_THRESHOLD:
     logging.getLogger(__name__).warning(
@@ -32,7 +32,7 @@ if MAX_LLM_CYCLES > _MAX_LLM_CYCLES_WARN_THRESHOLD:
 # exceeded, the loop jumps to the forced-final-answer cycle so the user gets a
 # partial answer instead of an unbounded crawl. Must stay above the per-tool
 # budget below so at least one forced answer cycle is reachable.
-CHAT_TURN_BUDGET_SECONDS: int = int(os.environ.get("CHAT_TURN_BUDGET_SECONDS") or 1800)
+CHAT_TURN_BUDGET_SECONDS: int = int(os.environ.get("CHAT_TURN_BUDGET_SECONDS") or 3600)
 
 # Wall-clock budget for one tool call (applied to the batch of parallel tool
 # calls). Must sit ABOVE the code-interpreter executor's per-execution timeout
