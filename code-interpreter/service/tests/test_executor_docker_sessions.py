@@ -224,3 +224,67 @@ class TestSessionLifecycle:
                 timeout_ms=5_000,
                 max_output_bytes=1_000,
             )
+
+
+@pytest.mark.integration
+class TestCheckHealth:
+    """Health must fail loudly when the executor network is misconfigured.
+
+    Sessions and ephemeral runs both pass PYTHON_EXECUTOR_DOCKER_NETWORK to
+    `docker run --network`; a missing network name previously only surfaced as
+    a per-request 500 ("network ... not found") on the first chat that ran
+    code. check_health is wired to /health, which the compose healthcheck
+    reads, so a missing network must show up there.
+    """
+
+    @staticmethod
+    def _existing_image() -> str:
+        """Any local image, so the image check passes and the network checks run."""
+        result = subprocess.run(
+            ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        images = [line for line in result.stdout.splitlines() if line and "<none>" not in line]
+        if not images:
+            pytest.skip("no local images to exercise the health checks with")
+        return images[0]
+
+    @staticmethod
+    def _existing_network() -> str:
+        """`bridge` exists on every Docker host, but take whatever is listed."""
+        result = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        networks = result.stdout.splitlines()
+        if not networks:
+            pytest.skip("no docker networks to exercise the health checks with")
+        return networks[0]
+
+    def test_ok_when_image_and_network_exist(
+        self, executor: DockerExecutor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(executor, "image", self._existing_image())
+        monkeypatch.setattr(
+            "app.services.executor_docker.PYTHON_EXECUTOR_DOCKER_NETWORK",
+            self._existing_network(),
+        )
+        assert executor.check_health().status == "ok"
+
+    def test_missing_network_reported(
+        self, executor: DockerExecutor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(executor, "image", self._existing_image())
+        monkeypatch.setattr(
+            "app.services.executor_docker.PYTHON_EXECUTOR_DOCKER_NETWORK",
+            "onyx_no_such_network",
+        )
+        result = executor.check_health()
+        assert result.status == "error"
+        assert "onyx_no_such_network" in (result.message or "")

@@ -118,6 +118,27 @@ class DockerExecutor(BaseExecutor):
                 message=f"Executor image {image_with_tag} not available locally",
             )
 
+        # Check the executor network exists. Sessions and ephemeral runs pass it
+        # to `docker run --network`, and the daemon rejects containers with
+        # "network ... not found" at spawn time — an easy misconfiguration to
+        # miss until the first chat that runs code. "none" is isolation, not a
+        # network name, and needs nothing to exist.
+        if PYTHON_EXECUTOR_DOCKER_NETWORK != "none":
+            net_result = subprocess.run(
+                [self.docker_binary, "network", "inspect", PYTHON_EXECUTOR_DOCKER_NETWORK],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            if net_result.returncode != 0:
+                return HealthCheck(
+                    status="error",
+                    message=(
+                        f"Executor network {PYTHON_EXECUTOR_DOCKER_NETWORK} does not exist"
+                        " (PYTHON_EXECUTOR_DOCKER_NETWORK)"
+                    ),
+                )
+
         return HealthCheck(status="ok")
 
     def _resolve_docker_binary(self) -> str:
