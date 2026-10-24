@@ -74,8 +74,15 @@ export async function attachToRunningRun(
   // the stop button (which fences the session server-side) and enqueues
   // follow-ups instead of starting a second concurrent run.
   useChatSessionStore.getState().updateChatState(sessionId, "streaming");
-  // The reserved row's placeholder text would render above the live timeline.
+  // The reserved row is persisted with the terminated-response text, and
+  // get-chat-session synthesizes completed-looking packets from it (message
+  // text + OverallStop). Drop both: while the run is live the timeline must
+  // come only from the buffer replay, which arrives on the next packet —
+  // until then the empty timeline shows the streaming shimmer instead of a
+  // fake "terminated" answer.
   node.message = "";
+  node.packets = [];
+  node.packetCount = 0;
   const accumulated: Packet[] = [];
   let lastFlush = 0;
   let trailingFlush: ReturnType<typeof setTimeout> | null = null;
