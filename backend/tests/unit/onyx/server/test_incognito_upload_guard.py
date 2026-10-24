@@ -50,7 +50,7 @@ def _upload(
         patch(f"{MODULE}.incognito_allowed_for_user", return_value=allowed),
         patch(f"{CONTEXT_MODULE}.get_redis_client", return_value=redis_client),
         patch(
-            f"{MODULE}.upload_files_to_user_files_with_indexing",
+            f"{MODULE}.upload_files_to_user_files",
             side_effect=ConnectionError("indexing hand-off failed")
             if upload_fails
             else None,

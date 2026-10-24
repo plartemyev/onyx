@@ -184,7 +184,7 @@ export default function useChatController({
   const searchParams = useSearchParams();
   const { refreshChatSessions, addPendingChatSession } = useChatSessions();
   const { pinnedAgents, togglePinnedAgent } = usePinnedAgents();
-  const { fetchProjects, setCurrentMessageFiles, beginUpload } =
+  const { fetchProjects, setCurrentMessageFiles, beginUpload, trackUploads } =
     useProjectsContext();
   const { incognitoEnabledRef, incognitoSessionId } = useIncognito();
 
@@ -729,6 +729,15 @@ export default function useChatController({
         ...projectFilesToFileDescriptors(currentMessageFiles),
         ...(!regenerationRequest ? (messageToResend?.files ?? []) : []),
       ];
+
+      // Deferred chat attachments start processing with this send. Register
+      // them with the status poll so their chips update live until the
+      // processing reaches a terminal state.
+      trackUploads(
+        effectiveFileDescriptors
+          .map((fd) => fd.user_file_id)
+          .filter((id): id is string => Boolean(id))
+      );
 
       updateChatStateAction(frozenSessionId, "loading");
       setLatestMessageRenderComplete(frozenSessionId, false);

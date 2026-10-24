@@ -6,6 +6,7 @@ from tests.integration.common_utils.http_client import client
 from tests.integration.common_utils.managers.chat import ChatSessionManager
 from tests.integration.common_utils.managers.file import FileManager
 from tests.integration.common_utils.managers.llm_provider import LLMProviderManager
+from tests.integration.common_utils.managers.project import ProjectManager
 from tests.integration.common_utils.test_file_utils import (
     create_test_image,
     create_test_text_file,
@@ -102,15 +103,21 @@ def _upload_raw(
     filename: str,
     content: bytes,
     user: DATestUser,
+    project_id: int | None = None,
 ) -> dict[str, Any]:
     """Upload a file and return the full JSON response (user_files + rejected_files)."""
     mime_type, _ = mimetypes.guess_type(filename)
     headers = user.headers.copy()
     headers.pop("Content-Type", None)
 
+    form_fields: dict[str, Any] = {}
+    if project_id is not None:
+        form_fields["project_id"] = str(project_id)
+
     response = client.post(
         f"{API_SERVER_URL}/user/projects/file/upload",
         files=[("files", (filename, content, mime_type or "application/octet-stream"))],
+        data=form_fields,
         headers=headers,
     )
     response.raise_for_status()
@@ -120,12 +127,20 @@ def _upload_raw(
 def test_csv_over_token_threshold_uploaded_not_indexed(
     admin_user: DATestUser,
 ) -> None:
-    """CSV exceeding token threshold is uploaded (accepted) but skips indexing."""
+    """CSV exceeding token threshold is uploaded (accepted) but skips indexing.
+
+    Project uploads keep full validation at upload time, so the over-threshold
+    spreadsheet is accepted with the SKIPPED (never indexed) status."""
+    project = ProjectManager.create(
+        name="threshold-csv-project", user_performing_action=admin_user
+    )
     _set_token_threshold(admin_user, threshold_k=1)
     try:
         # ~2000 tokens with default tokenizer, well over 1K threshold
         content = ("x " * 100 + "\n") * 20
-        result = _upload_raw("large.csv", content.encode(), admin_user)
+        result = _upload_raw(
+            "large.csv", content.encode(), admin_user, project_id=project.id
+        )
 
         assert len(result["user_files"]) == 1, "CSV should be accepted"
         assert len(result["rejected_files"]) == 0, "CSV should not be rejected"
@@ -139,34 +154,59 @@ def test_csv_over_token_threshold_uploaded_not_indexed(
         _set_token_threshold(admin_user, threshold_k=200)
 
 
-def test_csv_under_token_threshold_uploaded_and_indexed(
+def test_chat_upload_is_deferred_not_processed(
     admin_user: DATestUser,
 ) -> None:
-    """CSV under token threshold is uploaded and queued for indexing."""
-    _set_token_threshold(admin_user, threshold_k=200)
-    try:
-        content = "col1,col2\na,b\n"
-        result = _upload_raw("small.csv", content.encode(), admin_user)
+    """Chat attachments are stored as UPLOADED: no validation, no processing.
 
-        assert len(result["user_files"]) == 1, "CSV should be accepted"
-        assert len(result["rejected_files"]) == 0, "CSV should not be rejected"
-        assert result["user_files"][0]["status"] == "PROCESSING", (
-            "CSV under threshold should be PROCESSING (queued for indexing)"
-        )
-    finally:
-        _set_token_threshold(admin_user, threshold_k=200)
+    A CSV under the threshold would previously be queued for indexing at
+    upload; it must now stay UPLOADED until a sent message references it."""
+    _set_token_threshold(admin_user, threshold_k=200)
+    content = "col1,col2\na,b\n"
+    result = _upload_raw("small.csv", content.encode(), admin_user)
+
+    assert len(result["user_files"]) == 1, "CSV should be accepted"
+    assert len(result["rejected_files"]) == 0, "CSV should not be rejected"
+    assert result["user_files"][0]["status"] == "UPLOADED", (
+        "Chat attachment should be UPLOADED (processing deferred to send)"
+    )
+
+
+def test_chat_upload_accepts_files_without_extractable_text(
+    admin_user: DATestUser,
+) -> None:
+    """Files with no text extraction (e.g. binaries) are accepted, not rejected.
+
+    The agent can process them in the code sandbox; background processing
+    completes them without indexing."""
+    content = b"PK\x03\x04not-really-a-zip-but-binary"
+    result = _upload_raw("archive.zip", content, admin_user)
+
+    assert len(result["user_files"]) == 1, "Binary file should be accepted"
+    assert len(result["rejected_files"]) == 0, "Binary file should not be rejected"
+    assert result["user_files"][0]["status"] == "UPLOADED", (
+        "Binary file should be UPLOADED (deferred, sandbox-accessible)"
+    )
 
 
 def test_txt_over_token_threshold_rejected(
     admin_user: DATestUser,
 ) -> None:
-    """Non-exempt file exceeding token threshold is rejected entirely."""
+    """Non-exempt project-file upload exceeding token threshold is rejected.
+
+    Only project uploads validate at upload time; chat attachments defer all
+    validation to the background worker."""
+    project = ProjectManager.create(
+        name="threshold-txt-project", user_performing_action=admin_user
+    )
     _set_token_threshold(admin_user, threshold_k=1)
     try:
         # ~2000 tokens, well over 1K threshold. Unlike CSV, .txt is not
         # exempt from the threshold so the file should be rejected.
         content = ("x " * 100 + "\n") * 20
-        result = _upload_raw("big.txt", content.encode(), admin_user)
+        result = _upload_raw(
+            "big.txt", content.encode(), admin_user, project_id=project.id
+        )
 
         assert len(result["user_files"]) == 0, "File should not be accepted"
         assert len(result["rejected_files"]) == 1, "File should be rejected"

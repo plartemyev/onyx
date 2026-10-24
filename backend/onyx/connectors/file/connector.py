@@ -5,8 +5,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import IO, Any
 
-from onyx.configs.app_configs import INDEX_BATCH_SIZE
+from onyx.configs.app_configs import INDEX_BATCH_SIZE, MAX_EMBEDDED_IMAGES_PER_FILE
 from onyx.configs.constants import DocumentSource, FileOrigin
+from onyx.configs.llm_configs import get_image_extraction_and_analysis_enabled
 from onyx.connectors.cross_connector_utils.miscellaneous_utils import (
     process_onyx_metadata,
 )
@@ -22,9 +23,14 @@ from onyx.connectors.models import (
     TabularSection,
     TextSection,
 )
-from onyx.file_processing.extract_file_text import extract_text_and_images, get_file_ext
+from onyx.file_processing.extract_file_text import (
+    count_docx_embedded_images,
+    extract_text_and_images,
+    get_file_ext,
+)
 from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.file_processing.image_utils import store_image_and_create_section
+from onyx.file_processing.pdf_image_utils import count_pdf_embedded_images
 from onyx.file_store.file_store import get_default_file_store
 from onyx.file_store.staging import RawFileCallback
 from onyx.utils.logger import setup_logger
@@ -100,6 +106,29 @@ def _process_file(
             "Skipping file '%s' with unrecognized extension '%s'", file_name, extension
         )
         return []
+
+    # Guard the worker against image-heavy documents: a file with thousands of
+    # embedded images is decoded with PIL and sent to the vision LLM per image,
+    # which can OOM the processing worker. Chat uploads no longer count images
+    # at upload time, so the cap is enforced here, right before extraction
+    # decodes anything. With image extraction off, no image is ever decoded,
+    # so the cap (and the cost of counting) do not apply.
+    if extension in (".pdf", ".docx") and get_image_extraction_and_analysis_enabled():
+        # The counting helpers restore the stream position.
+        embedded_image_count = (
+            count_pdf_embedded_images(file, MAX_EMBEDDED_IMAGES_PER_FILE + 1)
+            if extension == ".pdf"
+            else count_docx_embedded_images(file, MAX_EMBEDDED_IMAGES_PER_FILE + 1)
+        )
+        if embedded_image_count > MAX_EMBEDDED_IMAGES_PER_FILE:
+            logger.warning(
+                "Skipping file '%s': too many embedded images (more than %d). "
+                "Try splitting it into smaller files.",
+                file_name,
+                MAX_EMBEDDED_IMAGES_PER_FILE,
+            )
+            return []
+        file.seek(0)
 
     # If a zip is uploaded with a metadata file, we can process it here
     onyx_metadata, custom_tags = process_onyx_metadata(metadata)

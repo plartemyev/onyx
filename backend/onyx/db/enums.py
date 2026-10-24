@@ -292,6 +292,9 @@ class EmbeddingPrecision(str, PyEnum):
 
 
 class UserFileStatus(str, PyEnum):
+    # Blob stored but processing deliberately not started. Chat attachments
+    # land here; processing begins when a sent message references the file.
+    UPLOADED = "UPLOADED"
     PROCESSING = "PROCESSING"
     INDEXING = "INDEXING"
     COMPLETED = "COMPLETED"

@@ -57,7 +57,10 @@ export interface UserFileDeleteResult {
 
 export enum UserFileStatus {
   UPLOADING = "UPLOADING", //UI only
+  // Blob stored; processing starts when a sent message references the file.
+  UPLOADED = "UPLOADED",
   PROCESSING = "PROCESSING",
+  INDEXING = "INDEXING",
   COMPLETED = "COMPLETED",
   SKIPPED = "SKIPPED",
   FAILED = "FAILED",

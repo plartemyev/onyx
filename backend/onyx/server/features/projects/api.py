@@ -33,7 +33,7 @@ from onyx.db.persona import get_personas_by_ids
 from onyx.db.projects import (
     check_project_ownership,
     get_project_token_count,
-    upload_files_to_user_files_with_indexing,
+    upload_files_to_user_files,
 )
 from onyx.error_handling.error_codes import OnyxErrorCode
 from onyx.error_handling.exceptions import OnyxError
@@ -210,7 +210,7 @@ def upload_user_files(
                 parsed_temp_id_map = None
 
         # Use our consolidated function that handles indexing properly
-        categorized_files_result = upload_files_to_user_files_with_indexing(
+        categorized_files_result = upload_files_to_user_files(
             files=files,
             project_id=project_id,
             user=user,

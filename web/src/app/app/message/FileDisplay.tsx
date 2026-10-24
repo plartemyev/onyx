@@ -11,6 +11,16 @@ import SpreadsheetContent from "@/components/tools/SpreadsheetContent";
 import PreviewModal from "@/sections/modals/PreviewModal";
 import { MinimalOnyxDocument } from "@/lib/search/interfaces";
 import ExpandableContentWrapper from "@/components/tools/ExpandableContentWrapper";
+import { useProjectsContextOptional } from "@/lib/projects/providers";
+import { UserFileStatus } from "@/lib/projects/types";
+
+// Statuses in which the file's background processing (extraction, indexing,
+// captioning) has not finished — the chip shows a live pending state.
+const PENDING_FILE_STATUSES = new Set([
+  UserFileStatus.UPLOADED,
+  UserFileStatus.PROCESSING,
+  UserFileStatus.INDEXING,
+]);
 
 interface FileContainerProps {
   children: ReactNode;
@@ -48,6 +58,18 @@ export default function FileDisplay({
   const [previewingFile, setPreviewingFile] = useState<FileDescriptor | null>(
     null
   );
+  // Live processing status for files uploaded in this browser session (fed by
+  // the ProjectsProvider status poll). Files from history before a reload
+  // have no entry and render statically. Optional: FileDisplay also mounts in
+  // the Craft flow, outside the provider.
+  const projectsContext = useProjectsContextOptional();
+  const userFileStatusById = projectsContext?.userFileStatusById ?? {};
+  const isProcessing = (file: FileDescriptor): boolean => {
+    const userFileId = file.user_file_id;
+    if (!userFileId) return false;
+    const status = userFileStatusById[userFileId];
+    return status !== undefined && PENDING_FILE_STATUSES.has(status);
+  };
   const textFiles = files.filter(
     (file) =>
       resolveChatFileType(file) === ChatFileType.PLAIN_TEXT ||
@@ -86,6 +108,7 @@ export default function FileDisplay({
               key={file.id}
               fileName={file.name || file.id}
               open={() => setPreviewingFile(file)}
+              processing={isProcessing(file)}
             />
           ))}
         </FileContainer>
@@ -136,6 +159,7 @@ export default function FileDisplay({
                 key={file.id}
                 open={() => setClose(true)}
                 fileName={file.name || file.id}
+                processing={isProcessing(file)}
               />
             )
           )}

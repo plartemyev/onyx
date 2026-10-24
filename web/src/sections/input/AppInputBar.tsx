@@ -358,8 +358,9 @@ const AppInputBar = React.memo(
       );
     }, [currentMessageFiles]);
 
-    // A file isn't queryable until indexing completes, so gate send on it.
-    const hasIndexingFiles = currentIndexingFiles.length > 0;
+    // Processing/indexing of attached files is deferred until send and no
+    // longer gates submitting — only the in-flight HTTP upload does (the
+    // message cannot reference files the server has not stored yet).
 
     // Convert ProjectFile to MinimalOnyxDocument format for viewing
     const handleFileClick = useCallback(
@@ -774,11 +775,10 @@ const AppInputBar = React.memo(
                 !isVoicePlaybackControllable &&
                 !message) ||
               hasUploadingFiles ||
-              hasIndexingFiles ||
               isClassifying
             }
             tooltip={
-              hasUploadingFiles || hasIndexingFiles
+              hasUploadingFiles
                 ? t("appInputBar.sendButton.processingFilesTooltip")
                 : undefined
             }

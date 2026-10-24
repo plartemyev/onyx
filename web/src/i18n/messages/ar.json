@@ -9544,7 +9544,7 @@
           "speakingPlaceholder": "Onyx يتحدث..."
         },
         "sendButton": {
-          "processingFilesTooltip": "في انتظار انتهاء معالجة الملفات المرفقة"
+          "processingFilesTooltip": "في انتظار انتهاء تحميل الملف"
         },
         "tabReadingButton": {
           "readLabel": "قراءة هذا التبويب",
@@ -10875,6 +10875,9 @@
     "attachment": {
       "document": {
         "label": "مستند"
+      },
+      "processing": {
+        "description": "معالجة..."
       },
       "expandButton": {
         "ariaLabel": "توسيع المستند"

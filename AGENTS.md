@@ -15,6 +15,13 @@ This file provides guidance to AI agents when working with code in this reposito
   `TestPassword123!` (the admin user created by the playwright global setup — see
   `web/tests/e2e/constants.ts`). If it doesn't exist yet, register it via the signup page; the first user
   registered automatically becomes admin. The app can be accessed at `http://localhost:3000`.
+  NOTE: on this deployment that user does not exist and signup is invite-only — use the local test user below.
+- Local test user (non-admin, Basic group) for manual/live API and UI verification: credentials live in the
+  gitignored `.vscode/.env` (`TEST_USER_EMAIL`, `TEST_USER_PASSWORD`, `TEST_USER_ID`). Never copy these
+  credentials into tracked files. The workspace is invite-only, so `POST /api/auth/register` is rejected;
+  re-create the user with the app's own helpers: run a Python snippet inside `onyx-api_server-1` that calls
+  `PasswordHelper().hash(password)` + `assign_user_to_default_groups__no_commit(...)` (mirror
+  `backend/tests/external_dependency_unit/conftest.py`), then verify via `POST /api/auth/login`.
 - You should assume that all Onyx services are running. To verify, you can check the `backend/log` directory to
   make sure we see logs coming out from the relevant service.
 - To connect to the Postgres database, use:

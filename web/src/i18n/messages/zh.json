@@ -9544,7 +9544,7 @@
           "speakingPlaceholder": "Onyx 正在朗读..."
         },
         "sendButton": {
-          "processingFilesTooltip": "正在等待附件处理完成"
+          "processingFilesTooltip": "等待文件上传完成"
         },
         "tabReadingButton": {
           "readLabel": "读取此标签页",
@@ -10875,6 +10875,9 @@
     "attachment": {
       "document": {
         "label": "文档"
+      },
+      "processing": {
+        "description": "处理中..."
       },
       "expandButton": {
         "ariaLabel": "展开文档"

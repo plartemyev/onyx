@@ -9548,7 +9548,7 @@
           "speakingPlaceholder": "Onyx parle..."
         },
         "sendButton": {
-          "processingFilesTooltip": "En attente de la fin du traitement des fichiers joints"
+          "processingFilesTooltip": "En attente de la fin du téléversement du fichier"
         },
         "tabReadingButton": {
           "readLabel": "Lire cet onglet",
@@ -10879,6 +10879,9 @@
     "attachment": {
       "document": {
         "label": "Document"
+      },
+      "processing": {
+        "description": "Traitement..."
       },
       "expandButton": {
         "ariaLabel": "Agrandir le document"

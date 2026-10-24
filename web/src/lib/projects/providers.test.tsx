@@ -7,6 +7,7 @@ import type { ProjectFile } from "@/lib/projects/types";
 
 const mockUploadFiles = jest.fn();
 const mockGetRecentFiles = jest.fn();
+const mockGetUserFileStatuses = jest.fn();
 const mockToastWarning = jest.fn();
 
 jest.mock("next/navigation", () => ({
@@ -61,7 +62,8 @@ jest.mock("@/lib/projects/svc", () => {
     renameProject: jest.fn(),
     deleteProject: jest.fn(),
     deleteUserFile: jest.fn(),
-    getUserFileStatuses: jest.fn().mockResolvedValue([]),
+    getUserFileStatuses: (...args: unknown[]) =>
+      mockGetUserFileStatuses(...args),
     unlinkFileFromProject: jest.fn(),
     linkFileToProject: jest.fn(),
   };
@@ -77,6 +79,7 @@ describe("ProjectsContext beginUpload size precheck", () => {
   beforeEach(() => {
     mockUploadFiles.mockReset();
     mockGetRecentFiles.mockReset();
+    mockGetUserFileStatuses.mockReset();
     mockToastWarning.mockReset();
 
     mockUploadFiles.mockResolvedValue({
@@ -84,6 +87,7 @@ describe("ProjectsContext beginUpload size precheck", () => {
       rejected_files: [],
     });
     mockGetRecentFiles.mockResolvedValue([]);
+    mockGetUserFileStatuses.mockResolvedValue([]);
   });
 
   it("only sends valid files to the upload API when oversized files are present", async () => {
@@ -195,5 +199,77 @@ describe("ProjectsContext beginUpload size precheck", () => {
     // to strip the file from user_file_ids; otherwise the submit button stays
     // disabled forever waiting on a phantom "uploading" file.
     expect(onFailure).toHaveBeenCalledWith([tempId]);
+  });
+});
+
+describe("ProjectsContext deferred upload tracking", () => {
+  beforeEach(() => {
+    mockUploadFiles.mockReset();
+    mockGetRecentFiles.mockReset();
+    mockGetUserFileStatuses.mockReset();
+    mockToastWarning.mockReset();
+
+    mockUploadFiles.mockResolvedValue({
+      user_files: [],
+      rejected_files: [],
+    });
+    mockGetRecentFiles.mockResolvedValue([]);
+    mockGetUserFileStatuses.mockResolvedValue([]);
+  });
+
+  it("does not poll for UPLOADED chat attachments until they are tracked", async () => {
+    mockUploadFiles.mockResolvedValue({
+      user_files: [
+        {
+          id: "uf-1",
+          temp_id: "t-1",
+          status: "UPLOADED",
+          name: "a.txt",
+          file_id: "f-1",
+          chat_file_type: "plain_text",
+        },
+      ],
+      rejected_files: [],
+    });
+
+    const { result } = renderHook(() => useProjectsContext(), { wrapper });
+
+    const file = new File(["content"], "a.txt", { type: "text/plain" });
+    await act(async () => {
+      await result.current.beginUpload([file], null);
+    });
+    // Flush any pending effects/microtasks.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Deferred files don't change until a sent message references them —
+    // polling them would never terminate.
+    expect(mockGetUserFileStatuses).not.toHaveBeenCalled();
+  });
+
+  it("polls files registered via trackUploads and publishes their statuses", async () => {
+    mockGetUserFileStatuses.mockResolvedValue([
+      {
+        id: "uf-1",
+        status: "PROCESSING",
+        name: "a.txt",
+        file_id: "f-1",
+        chat_file_type: "plain_text",
+      },
+    ]);
+
+    const { result } = renderHook(() => useProjectsContext(), { wrapper });
+
+    await act(async () => {
+      result.current.trackUploads(["uf-1"]);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockGetUserFileStatuses).toHaveBeenCalledWith(["uf-1"]);
+    // Message chips (FileDisplay) read this map for live post-send status.
+    expect(result.current.userFileStatusById["uf-1"]).toBe("PROCESSING");
   });
 });

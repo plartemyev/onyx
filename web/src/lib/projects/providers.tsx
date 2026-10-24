@@ -123,6 +123,12 @@ interface ProjectsContextType {
   linkFileToProject?: (projectId: number, file: ProjectFile) => void;
   lastFailedFiles: ProjectFile[];
   clearLastFailedFiles: () => void;
+  /** Latest known status per user-file id, fed by the status poll. Message
+   * chips read this to show live processing state after send. */
+  userFileStatusById: Record<string, UserFileStatus>;
+  /** Register file ids with the status poll (e.g. deferred chat attachments
+   * being sent — their processing starts with the send). */
+  trackUploads: (fileIds: string[]) => void;
 }
 
 const ProjectsContext = createContext<ProjectsContextType | undefined>(
@@ -164,6 +170,9 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   const [trackedUploadIds, setTrackedUploadIds] = useState<Set<string>>(
     new Set()
   );
+  const [userFileStatusById, setUserFileStatusById] = useState<
+    Record<string, UserFileStatus>
+  >({});
   const [allRecentFiles, setAllRecentFiles] = useState<ProjectFile[]>([]);
   const [allCurrentProjectFiles, setAllCurrentProjectFiles] = useState<
     ProjectFile[]
@@ -470,7 +479,18 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
           if (uploadedFiles.length > 0) {
             setTrackedUploadIds((prev) => {
               const next = new Set(prev);
-              for (const f of uploadedFiles) next.add(f.id);
+              for (const f of uploadedFiles) {
+                // Deferred chat attachments (UPLOADED) don't change until a
+                // sent message references them — polling them would never
+                // terminate. They register with the poll at send time via
+                // trackUploads.
+                if (
+                  f.status === UserFileStatus.PROCESSING ||
+                  f.status === UserFileStatus.INDEXING
+                ) {
+                  next.add(f.id);
+                }
+              }
               return next;
             });
           }
@@ -626,6 +646,20 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
 
         // Build maps for quick lookup
         const statusById = new Map(statuses.map((f) => [f.id, f]));
+
+        // Publish the latest statuses for message-level chips (FileDisplay),
+        // which read them after the composer has cleared its own copies.
+        setUserFileStatusById((prev) => {
+          const next = { ...prev };
+          let changed = false;
+          for (const f of statuses) {
+            if (next[f.id] !== f.status) {
+              next[f.id] = f.status;
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
 
         // Newly-failed detection uses the last committed snapshot.
         // setLastFailedFiles (it drives the failure toast downstream) must
@@ -806,6 +840,21 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
       refreshRecentFiles,
       lastFailedFiles,
       clearLastFailedFiles: () => setLastFailedFiles([]),
+      userFileStatusById,
+      trackUploads: (fileIds: string[]) => {
+        if (fileIds.length === 0) return;
+        setTrackedUploadIds((prev) => {
+          const next = new Set(prev);
+          let changed = false;
+          for (const id of fileIds) {
+            if (!next.has(id)) {
+              next.add(id);
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      },
       deleteUserFile: async (fileId: string) => {
         const result = await svcDeleteUserFile(fileId);
         // If no associations, backend enqueues deletion and status moves to DELETING; refresh lists
@@ -878,6 +927,7 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
       refreshCurrentProjectDetails,
       refreshRecentFiles,
       lastFailedFiles,
+      userFileStatusById,
     ]
   );
 
@@ -896,4 +946,10 @@ export function useProjectsContext(): ProjectsContextType {
     );
   }
   return ctx;
+}
+
+/** Context accessor for components that render both inside and outside the
+ * ProjectsProvider (e.g. FileDisplay also mounts in the Craft flow). */
+export function useProjectsContextOptional(): ProjectsContextType | undefined {
+  return useContext(ProjectsContext);
 }

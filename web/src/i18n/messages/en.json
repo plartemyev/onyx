@@ -9574,7 +9574,7 @@
           "speakingPlaceholder": "Onyx is speaking..."
         },
         "sendButton": {
-          "processingFilesTooltip": "Waiting for attached file(s) to finish processing"
+          "processingFilesTooltip": "Waiting for file upload to finish"
         },
         "tabReadingButton": {
           "readLabel": "Read this tab",
@@ -10905,6 +10905,9 @@
     "attachment": {
       "document": {
         "label": "Document"
+      },
+      "processing": {
+        "description": "Processing..."
       },
       "expandButton": {
         "ariaLabel": "Expand document"

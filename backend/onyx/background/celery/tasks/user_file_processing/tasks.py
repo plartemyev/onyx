@@ -82,6 +82,7 @@ from onyx.indexing.embedder import DefaultIndexingEmbedder
 from onyx.indexing.indexing_pipeline import run_indexing_pipeline
 from onyx.redis.redis_pool import get_redis_client
 from onyx.redis.tenant_redis_client import TenantRedisClient
+from onyx.server.settings.store import load_settings
 from onyx.utils.variable_functionality import global_version
 
 
@@ -281,43 +282,65 @@ def check_user_file_processing(self: Task, *, tenant_id: str) -> None:
     return None
 
 
-def _process_user_file_without_vector_db(
-    user_file_id: str | UUID,
-    documents: list[Document],
-) -> None:
-    """Process a user file when the vector DB is disabled.
+def _combined_section_text(documents: list[Document]) -> str:
+    """Combine section text from all document sections.
 
-    Extracts raw text and computes a token count, stores the plaintext in
-    the file store, and marks the file as COMPLETED.  Skips embedding and
-    the indexing pipeline entirely.
-
-    Opens its own short DB session only for the final status write, so the
-    caller does not need to hold a session open during the text/token work.
+    Tabular sections are file-backed and materialize their staged CSV on
+    demand.
     """
-    from onyx.llm.factory import get_default_llm, get_llm_tokenizer_encode_func
-
-    user_file_uuid = _as_uuid(user_file_id)
-
-    # Combine section text from all document sections. Tabular sections are
-    # file-backed and materialize their staged CSV on demand.
     text_parts: list[str] = []
     for doc in documents:
         for section in doc.sections:
             text = section.materialize_text()
             if text:
                 text_parts.append(text)
-    combined_text = " ".join(text_parts)
+    return " ".join(text_parts)
 
-    # Compute token count using the user's default LLM tokenizer
+
+def _count_section_tokens(combined_text: str) -> int | None:
+    """Token count using the user's default LLM tokenizer, None on failure."""
+    from onyx.llm.factory import get_default_llm, get_llm_tokenizer_encode_func
+
     try:
-        llm = get_default_llm()
-        encode = get_llm_tokenizer_encode_func(llm)
-        token_count: int | None = len(encode(combined_text))
+        encode = get_llm_tokenizer_encode_func(get_default_llm())
+        return len(encode(combined_text))
     except Exception:
-        task_logger.warning(
-            f"_process_user_file_without_vector_db - Failed to compute token count for {user_file_uuid}, falling back to None"
-        )
-        token_count = None
+        task_logger.warning("Failed to compute token count, falling back to None")
+        return None
+
+
+def _exceeds_indexing_token_threshold(combined_text: str) -> bool:
+    """True when the text is over the admin-configured token threshold.
+
+    Over-threshold files are completed without indexing: their plaintext is
+    cached for inline chat use and the raw bytes stay reachable from the code
+    sandbox, but nothing enters the search index.
+    """
+    threshold_k = load_settings().file_token_count_threshold_k
+    if not threshold_k:
+        return False
+    token_count = _count_section_tokens(combined_text)
+    return token_count is not None and token_count > threshold_k * 1000
+
+
+def _process_user_file_without_vector_db(
+    user_file_id: str | UUID,
+    documents: list[Document],
+) -> None:
+    """Process a user file without the indexing pipeline.
+
+    Extracts raw text and computes a token count, stores the plaintext in
+    the file store, and marks the file as COMPLETED.  Skips embedding and
+    the indexing pipeline entirely.  Also the completion path for files with
+    nothing to index (unsupported/empty content, over-threshold files).
+
+    Opens its own short DB session only for the final status write, so the
+    caller does not need to hold a session open during the text/token work.
+    """
+    user_file_uuid = _as_uuid(user_file_id)
+
+    combined_text = _combined_section_text(documents)
+    token_count = _count_section_tokens(combined_text)
 
     # Persist plaintext for fast FileReaderTool loads (no DB session needed)
     store_user_file_plaintext(
@@ -471,6 +494,17 @@ def _process_user_file_with_indexing(
         raise RuntimeError(f"Indexing pipeline failed for user file {user_file_id}")
 
     _dual_write_new_file_to_secondary(user_file_id, documents, tenant_id)
+
+    # Upload no longer computes token counts (validation is deferred to this
+    # worker); persist them alongside the chunk count now that indexing
+    # succeeded.
+    with get_session_with_current_tenant() as db_session:
+        uf = db_session.get(UserFile, _as_uuid(user_file_id))
+        if uf is not None and uf.status != UserFileStatus.DELETING:
+            uf.token_count = _count_section_tokens(_combined_section_text(documents))
+            uf.chunk_count = index_pipeline_result.total_chunks
+            db_session.add(uf)
+            db_session.commit()
 
 
 def _index_user_file_to_secondary(
@@ -685,9 +719,19 @@ def process_user_file_impl(
                 user_file_id, file_id, file_name, tenant_id
             )
             try:
-                # Incognito uploads get text extraction for chat use but never
-                # enter the search index.
-                if DISABLE_VECTOR_DB or skip_search_index:
+                # Files with nothing to index complete without indexing:
+                # unsupported/empty content (no Documents), files over the
+                # admin token threshold, incognito uploads (text extraction
+                # for chat use but never the search index), and lite
+                # deployments. Their plaintext is cached for inline chat use
+                # and the raw bytes stay reachable from the code sandbox.
+                combined_text = _combined_section_text(documents)
+                if (
+                    DISABLE_VECTOR_DB
+                    or skip_search_index
+                    or not documents
+                    or _exceeds_indexing_token_threshold(combined_text)
+                ):
                     _process_user_file_without_vector_db(
                         user_file_id=user_file_id,
                         documents=documents,

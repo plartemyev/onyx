@@ -9546,7 +9546,7 @@
           "speakingPlaceholder": "Onyx spricht..."
         },
         "sendButton": {
-          "processingFilesTooltip": "Warten, bis die angehängten Dateien verarbeitet sind"
+          "processingFilesTooltip": "Warten auf den Abschluss des Datei-Uploads"
         },
         "tabReadingButton": {
           "readLabel": "Diesen Tab lesen",
@@ -10877,6 +10877,9 @@
     "attachment": {
       "document": {
         "label": "Dokument"
+      },
+      "processing": {
+        "description": "Verarbeitung..."
       },
       "expandButton": {
         "ariaLabel": "Dokument erweitern"

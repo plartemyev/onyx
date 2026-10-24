@@ -99,7 +99,7 @@ from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import HookPoint, record_mode_persists_content
 from onyx.db.memory import get_memories
 from onyx.db.models import ChatMessage, ChatSession, Persona, User, UserFile
-from onyx.db.projects import get_user_files_from_project
+from onyx.db.projects import get_user_files_from_project, trigger_user_file_processing
 from onyx.db.tools import get_tools
 from onyx.deep_research.dr_loop import run_deep_research_llm_loop
 from onyx.error_handling.error_codes import OnyxErrorCode
@@ -740,6 +740,25 @@ def build_chat_turn(
         db_session=db_session,
         project_id=chat_session.project_id,
     )
+
+    # Fire-and-forget: chat-attached files defer processing until the first
+    # message that references them. Kick it off now so indexing/captioning
+    # runs while this answer generates; never block the send on it.
+    try:
+        trigger_user_file_processing(
+            db_session=db_session,
+            user_file_ids=[
+                UUID(fd["user_file_id"])
+                for fd in new_msg_req.file_descriptors
+                if fd.get("user_file_id")
+            ],
+            tenant_id=tenant_id,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to trigger deferred user file processing — the beat "
+            "safety net will pick the files up"
+        )
 
     # Re-create linear history of messages
     chat_history = create_chat_history_chain(

@@ -93,8 +93,10 @@ CONTENT_PENDING_NOTICE = (
 CONTENT_UNAVAILABLE_NOTICE = (
     "[No machine-readable text could be extracted from this file. It is "
     "likely image-only (e.g. a scanned document) or in an unsupported "
-    "format. Its contents are not available to you — do not guess them. If "
-    "needed, ask the user for a text-based copy.]"
+    "format. Its contents are not available to you — do not guess them. If a "
+    "code execution or file-reading tool is available, the raw file is "
+    "accessible to it and you may process it there; otherwise ask the user "
+    "for a text-based copy.]"
 )
 
 
@@ -527,7 +529,11 @@ def load_chat_file(
         except (ValueError, TypeError) as e:
             logger.warning("Failed to look up user file for %s: %s", file_id, e)
     token_count = user_file.token_count if user_file and user_file.token_count else 0
+    # UPLOADED files are deferred chat attachments whose processing starts with
+    # this send; the worker owns the canonical plaintext for them just as it
+    # does for files mid-processing.
     content_pending = user_file is not None and user_file.status in (
+        UserFileStatus.UPLOADED,
         UserFileStatus.PROCESSING,
         UserFileStatus.INDEXING,
     )
@@ -565,6 +571,13 @@ def load_chat_file(
                 file_id,
                 str(e),
             )
+
+    # Deferred (UPLOADED) files have no token count until the worker fills it
+    # in. The injected file block feeds context-window budgeting, so a rough
+    # char-based estimate beats reporting 0 for a file whose text we are about
+    # to inject.
+    if content_text and not token_count:
+        token_count = max(1, len(content_text) // 4)
 
     def _load_content() -> bytes:
         # Chat messages keep file references in their JSONB `files` column, but

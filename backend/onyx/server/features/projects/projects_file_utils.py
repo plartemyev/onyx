@@ -157,8 +157,53 @@ def estimate_image_tokens_for_upload(
             pass
 
 
+def _categorize_deferred(files: list[UploadFile]) -> CategorizedFiles:
+    """Size-cap and media-rule pass for deferred (chat-attachment) uploads.
+
+    No extraction, token counting, or deep validation happens here: files are
+    accepted as-is and processed (or rejected) by the background worker once a
+    sent message references them. Files with no extractable text complete
+    without indexing but stay readable by the code sandbox.
+    """
+    results = CategorizedFiles()
+    settings = load_settings()
+    max_upload_size_mb = settings.user_file_max_upload_size_mb
+    max_upload_size_bytes = (
+        max_upload_size_mb * 1024 * 1024 if max_upload_size_mb else None
+    )
+    for upload in files:
+        filename = get_safe_filename(upload)
+        if max_upload_size_bytes is not None and is_upload_too_large(
+            upload, max_upload_size_bytes
+        ):
+            results.rejected.append(
+                RejectedFile(
+                    filename=filename,
+                    reason=f"Exceeds {max_upload_size_mb} MB file size limit",
+                )
+            )
+            continue
+
+        extension = get_file_ext(filename)
+        # Media files stay fully playable/downloadable in the chat UI and
+        # never reach the worker (text extraction would fail them).
+        if (
+            extension in OnyxFileExtensions.AUDIO_EXTENSIONS
+            or extension in OnyxFileExtensions.VIDEO_EXTENSIONS
+        ):
+            results.acceptable.append(upload)
+            results.acceptable_file_to_token_count[filename] = 0
+            results.skip_indexing.add(filename)
+            continue
+
+        results.acceptable.append(upload)
+    return results
+
+
 def categorize_uploaded_files(
-    files: list[UploadFile], db_session: Session
+    files: list[UploadFile],
+    db_session: Session,
+    defer_validation: bool = False,
 ) -> CategorizedFiles:
     """
     Categorize uploaded files based on text extractability and tokenized length.
@@ -171,7 +216,15 @@ def categorize_uploaded_files(
     - If token length exceeds the admin-configured threshold, reject file.
     - If extension unsupported or text cannot be extracted, reject file.
     - Otherwise marked as acceptable.
+
+    With ``defer_validation`` (chat attachments), only the size cap and the
+    audio/video rule run. Files are accepted without extraction so processing
+    (and any rejection it would produce) happens in the background worker
+    after the file is first referenced by a sent message.
     """
+
+    if defer_validation:
+        return _categorize_deferred(files)
 
     results = CategorizedFiles()
     default_model = fetch_default_llm_model(db_session)
