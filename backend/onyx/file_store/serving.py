@@ -15,11 +15,51 @@ INLINE_SAFE_IMAGE_MIME_TYPES: frozenset[str] = frozenset(
     }
 )
 
-INLINE_SAFE_MIME_TYPES: frozenset[str] = INLINE_SAFE_IMAGE_MIME_TYPES | frozenset(
+# Media types the browser plays natively (<audio>/<video>). The media stack
+# never executes script content, and nosniff keeps mislabeled HTML inert, so
+# serving these inline is safe. Enumerated explicitly rather than prefix-matched
+# to keep the inline surface reviewed.
+INLINE_SAFE_AUDIO_MIME_TYPES: frozenset[str] = frozenset(
     {
-        "application/pdf",
-        "text/plain",
+        "audio/mpeg",
+        "audio/wav",
+        "audio/wave",
+        "audio/x-wav",
+        "audio/vnd.wave",
+        "audio/ogg",
+        "audio/webm",
+        "audio/aac",
+        "audio/mp4",
+        "audio/x-m4a",
+        "audio/m4a",
+        "audio/flac",
+        "audio/x-flac",
+        "audio/opus",
     }
+)
+
+INLINE_SAFE_VIDEO_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "video/mp4",
+        "video/webm",
+        "video/ogg",
+        "video/quicktime",
+        "video/x-matroska",
+        "video/x-msvideo",
+        "video/mpeg",
+    }
+)
+
+INLINE_SAFE_MIME_TYPES: frozenset[str] = (
+    INLINE_SAFE_IMAGE_MIME_TYPES
+    | INLINE_SAFE_AUDIO_MIME_TYPES
+    | INLINE_SAFE_VIDEO_MIME_TYPES
+    | frozenset(
+        {
+            "application/pdf",
+            "text/plain",
+        }
+    )
 )
 
 ATTACHMENT_MEDIA_TYPE: str = "application/octet-stream"
@@ -28,7 +68,7 @@ ATTACHMENT_MEDIA_TYPE: str = "application/octet-stream"
 # cache their responses mix this into the ETag, so bump it whenever the headers
 # or the allowlist change: that is the only way to make clients drop entries
 # cached under the old policy.
-RESPONSE_POLICY_VERSION: str = "v2"
+RESPONSE_POLICY_VERSION: str = "v3"
 
 
 def resolve_inline_disposition(

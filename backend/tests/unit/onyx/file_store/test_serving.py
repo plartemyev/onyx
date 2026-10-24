@@ -41,6 +41,13 @@ def test_active_content_becomes_an_attachment(media_type: str) -> None:
     assert headers["Content-Disposition"] == "attachment"
 
 
+def test_media_types_are_inline_safe() -> None:
+    # Agent-downloaded media (e.g. `audio/x-wav` from a download tool) must be
+    # served as stored so <audio>/<video> elements can play it.
+    assert "audio/x-wav" in INLINE_SAFE_MIME_TYPES
+    assert "video/mp4" in INLINE_SAFE_MIME_TYPES
+
+
 @pytest.mark.parametrize("media_type", ["image/png", "text/html"])
 def test_security_headers_are_always_present(media_type: str) -> None:
     _, headers = resolve_inline_disposition(media_type)

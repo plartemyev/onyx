@@ -5,6 +5,8 @@ import { cn } from "@opal/utils";
 import { ChatFileType, FileDescriptor } from "@/app/app/interfaces";
 import Attachment from "@/refresh-components/Attachment";
 import { InMessageImage } from "@/app/app/components/files/images/InMessageImage";
+import InMessageMedia from "@/app/app/components/files/media/InMessageMedia";
+import { resolveChatFileType } from "@/app/app/components/files/media/utils";
 import SpreadsheetContent from "@/components/tools/SpreadsheetContent";
 import PreviewModal from "@/sections/modals/PreviewModal";
 import { MinimalOnyxDocument } from "@/lib/search/interfaces";
@@ -48,12 +50,19 @@ export default function FileDisplay({
   );
   const textFiles = files.filter(
     (file) =>
-      file.type === ChatFileType.PLAIN_TEXT ||
-      file.type === ChatFileType.DOCUMENT
+      resolveChatFileType(file) === ChatFileType.PLAIN_TEXT ||
+      resolveChatFileType(file) === ChatFileType.DOCUMENT
   );
-  const imageFiles = files.filter((file) => file.type === ChatFileType.IMAGE);
+  const imageFiles = files.filter(
+    (file) => resolveChatFileType(file) === ChatFileType.IMAGE
+  );
   const tabularFiles = files.filter(
-    (file) => file.type === ChatFileType.TABULAR
+    (file) => resolveChatFileType(file) === ChatFileType.TABULAR
+  );
+  const mediaFiles = files.filter(
+    (file) =>
+      resolveChatFileType(file) === ChatFileType.AUDIO ||
+      resolveChatFileType(file) === ChatFileType.VIDEO
   );
 
   const presentingDocument: MinimalOnyxDocument = {
@@ -86,6 +95,23 @@ export default function FileDisplay({
         <FileContainer id="onyx-image" align={align}>
           {imageFiles.map((file) => (
             <InMessageImage key={file.id} fileId={file.id} />
+          ))}
+        </FileContainer>
+      )}
+
+      {mediaFiles.length > 0 && (
+        <FileContainer align={align}>
+          {mediaFiles.map((file) => (
+            <InMessageMedia
+              key={file.id}
+              fileId={file.id}
+              fileName={file.name ?? undefined}
+              kind={
+                resolveChatFileType(file) === ChatFileType.AUDIO
+                  ? "audio"
+                  : "video"
+              }
+            />
           ))}
         </FileContainer>
       )}

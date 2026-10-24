@@ -9497,6 +9497,17 @@
           "label": "查看完整图片"
         }
       },
+      "inMessageMedia": {
+        "audioPlayer": {
+          "label": "{name} 的音频播放器"
+        },
+        "downloadButton": {
+          "tooltip": "下载"
+        },
+        "videoPlayer": {
+          "label": "{name} 的视频播放器"
+        }
+      },
       "inputBarPreviewImage": {
         "image": {
           "alt": "预览"

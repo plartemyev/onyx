@@ -43,6 +43,29 @@ class OnyxMimeTypes:
         "message/rfc822",
         "application/epub+zip",
     }
+    # Popular audio/video types accepted as chat uploads. Stored media keeps
+    # whatever MIME the client declared; these sets classify uploads and gate
+    # the inline-serving allowlist counterparts in file_store/serving.py.
+    AUDIO_MIME_TYPES = {
+        "audio/mpeg",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/ogg",
+        "audio/webm",
+        "audio/aac",
+        "audio/mp4",
+        "audio/x-m4a",
+        "audio/flac",
+        "audio/opus",
+    }
+    VIDEO_MIME_TYPES = {
+        "video/mp4",
+        "video/webm",
+        "video/ogg",
+        "video/quicktime",
+        "video/x-matroska",
+        "video/x-msvideo",
+    }
 
     ALLOWED_MIME_TYPES = IMAGE_MIME_TYPES.union(
         TEXT_MIME_TYPES, DOCUMENT_MIME_TYPES, TABULAR_MIME_TYPES
@@ -93,6 +116,25 @@ class OnyxFileExtensions:
         ".jpg",
         ".jpeg",
         ".webp",
+    }
+    AUDIO_EXTENSIONS = {
+        ".mp3",
+        ".wav",
+        ".ogg",
+        ".m4a",
+        ".aac",
+        ".flac",
+        ".opus",
+        ".weba",
+    }
+    VIDEO_EXTENSIONS = {
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".mkv",
+        ".avi",
+        ".mpg",
+        ".mpeg",
     }
 
     TEXT_AND_DOCUMENT_EXTENSIONS = PLAIN_TEXT_EXTENSIONS.union(DOCUMENT_EXTENSIONS)

@@ -1,6 +1,10 @@
 import { PreviewVariant } from "@/sections/modals/PreviewModal/interfaces";
 import { codeVariant } from "@/sections/modals/PreviewModal/variants/codeVariant";
 import { imageVariant } from "@/sections/modals/PreviewModal/variants/imageVariant";
+import {
+  audioVariant,
+  videoVariant,
+} from "@/sections/modals/PreviewModal/variants/mediaVariant";
 import { pdfVariant } from "@/sections/modals/PreviewModal/variants/pdfVariant";
 import { csvVariant } from "@/sections/modals/PreviewModal/variants/csvVariant";
 import { xlsxVariant } from "@/sections/modals/PreviewModal/variants/xlsxVariant";
@@ -14,6 +18,8 @@ import { docxVariant } from "@/sections/modals/PreviewModal/variants/docxVariant
 const PREVIEW_VARIANTS: PreviewVariant[] = [
   codeVariant,
   imageVariant,
+  audioVariant,
+  videoVariant,
   pdfVariant,
   csvVariant,
   xlsxVariant,

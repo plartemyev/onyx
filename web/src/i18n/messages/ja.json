@@ -9499,6 +9499,17 @@
           "label": "画像全体を表示"
         }
       },
+      "inMessageMedia": {
+        "audioPlayer": {
+          "label": "{name}のオーディオプレーヤー"
+        },
+        "downloadButton": {
+          "tooltip": "ダウンロード"
+        },
+        "videoPlayer": {
+          "label": "{name}のビデオプレーヤー"
+        }
+      },
       "inputBarPreviewImage": {
         "image": {
           "alt": "プレビュー"

@@ -107,7 +107,10 @@
           "microphonePermission": false,
           "cameraPermission": false
         }
-      ]
+      ],
+      "expo-audio",
+      "expo-video",
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true

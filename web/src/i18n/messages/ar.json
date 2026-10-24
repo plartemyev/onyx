@@ -9497,6 +9497,17 @@
           "label": "عرض الصورة الكاملة"
         }
       },
+      "inMessageMedia": {
+        "audioPlayer": {
+          "label": "مشغل صوت لـ {name}"
+        },
+        "downloadButton": {
+          "tooltip": "تنزيل"
+        },
+        "videoPlayer": {
+          "label": "مشغل فيديو لـ {name}"
+        }
+      },
       "inputBarPreviewImage": {
         "image": {
           "alt": "معاينة"

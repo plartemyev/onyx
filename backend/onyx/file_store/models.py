@@ -71,6 +71,10 @@ class ChatFileType(str, Enum):
     PLAIN_TEXT = "plain_text"
     # Tabular data files (CSV, XLSX)
     TABULAR = "tabular"
+    # Audio files (MP3, WAV, ...) — binary, no text extraction
+    AUDIO = "audio"
+    # Video files (MP4, WEBM, ...) — binary, no text extraction
+    VIDEO = "video"
 
     def is_text_file(self) -> bool:
         return self in (

@@ -104,6 +104,16 @@ export default function PreviewModal({
         return;
       }
 
+      if (preResolved.needsRawStream) {
+        // Audio/video: the media element streams the raw URL itself
+        // (preload="metadata"), so the bytes are never pulled into JS.
+        updateFileUrl(rawFileUrl);
+        setMimeType(
+          mime.getType(originalFileName) ?? "application/octet-stream"
+        );
+        return;
+      }
+
       const response = await fetchChatFile(fileIdLocal);
 
       // Re-resolve using the stored MIME from the response headers, which is
@@ -120,6 +130,14 @@ export default function PreviewModal({
         presentingDocument.semantic_identifier,
         resolvedMime
       );
+      if (resolved.needsRawStream) {
+        // Extension didn't identify the media file, but the stored MIME did
+        // (e.g. a renamed .wav). Discard the body — the media element streams
+        // the raw URL itself.
+        await response.body?.cancel();
+        updateFileUrl(rawFileUrl);
+        return;
+      }
       if (resolved.needsParsedContent) {
         // Name alone didn't identify a spreadsheet, but the stored MIME did
         // (e.g. an xlsx with a renamed/missing display name). Discard the raw

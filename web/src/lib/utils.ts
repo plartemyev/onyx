@@ -196,6 +196,76 @@ export function isImageFile(fileName: string | null | undefined): boolean {
 }
 
 /**
+ * Centralized list of audio file extensions (lowercase, no leading dots)
+ */
+export const AUDIO_EXTENSIONS = [
+  "mp3",
+  "wav",
+  "ogg",
+  "oga",
+  "m4a",
+  "aac",
+  "flac",
+  "opus",
+  "weba",
+] as const;
+
+/**
+ * Centralized list of video file extensions (lowercase, no leading dots)
+ */
+export const VIDEO_EXTENSIONS = [
+  "mp4",
+  "webm",
+  "mov",
+  "mkv",
+  "avi",
+  "mpg",
+  "mpeg",
+] as const;
+
+/**
+ * Checks whether a provided extension string corresponds to an audio/video
+ * extension. Accepts values with any casing and without a leading dot.
+ */
+export function isAudioExtension(
+  extension: string | null | undefined
+): boolean {
+  if (!extension) {
+    return false;
+  }
+  const normalized = extension.toLowerCase();
+  return (AUDIO_EXTENSIONS as readonly string[]).includes(normalized);
+}
+
+export function isVideoExtension(
+  extension: string | null | undefined
+): boolean {
+  if (!extension) {
+    return false;
+  }
+  const normalized = extension.toLowerCase();
+  return (VIDEO_EXTENSIONS as readonly string[]).includes(normalized);
+}
+
+/**
+ * Checks if a filename represents an audio file based on its extension.
+ */
+export function isAudioFile(fileName: string | null | undefined): boolean {
+  if (!fileName) return false;
+  const lowerFileName = String(fileName).toLowerCase();
+  return AUDIO_EXTENSIONS.some((ext) => lowerFileName.endsWith(`.${ext}`));
+}
+
+/**
+ * Checks if a filename represents a video file based on its extension.
+ */
+export function isVideoFile(fileName: string | null | undefined): boolean {
+  if (!fileName) return false;
+  const lowerFileName = String(fileName).toLowerCase();
+  return VIDEO_EXTENSIONS.some((ext) => lowerFileName.endsWith(`.${ext}`));
+}
+
+/**
  * Typical code/config file extensions (lowercase, no leading dots)
  */
 export const CODE_EXTENSIONS = [

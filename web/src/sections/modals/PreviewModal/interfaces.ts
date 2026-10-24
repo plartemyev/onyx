@@ -31,6 +31,11 @@ export interface PreviewVariant extends Required<
    * (`?parsed=true`, JSON) into fileContent instead of the raw blob text.
    * Used for binary spreadsheet files. */
   needsParsedContent?: boolean;
+  /** Whether the variant should render from the raw file URL without the
+   * fetcher downloading the bytes at all. Used for audio/video: the media
+   * element streams (and seeks) on its own, and attachments can be tens of MB.
+   */
+  needsRawStream?: boolean;
   /** Whether the variant renders on a code-style background (bg-background-code-01). */
   codeBackground: boolean;
   /** String shown below the title in the modal header. */

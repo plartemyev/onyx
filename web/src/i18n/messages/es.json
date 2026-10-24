@@ -9499,6 +9499,17 @@
           "label": "Ver la imagen completa"
         }
       },
+      "inMessageMedia": {
+        "audioPlayer": {
+          "label": "Reproductor de audio para {name}"
+        },
+        "downloadButton": {
+          "tooltip": "Descargar"
+        },
+        "videoPlayer": {
+          "label": "Reproductor de vídeo para {name}"
+        }
+      },
       "inputBarPreviewImage": {
         "image": {
           "alt": "vista previa"

@@ -4,6 +4,18 @@ import { ChatFileType } from "@/chat/interfaces";
 import type { NormalizedAsset } from "@/api/files/upload";
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "heic", "bmp"];
+const AUDIO_EXTENSIONS = [
+  "mp3",
+  "wav",
+  "ogg",
+  "oga",
+  "m4a",
+  "aac",
+  "flac",
+  "opus",
+  "weba",
+];
+const VIDEO_EXTENSIONS = ["mp4", "webm", "mov", "mkv", "avi", "mpg", "mpeg"];
 
 // Uppercase extension without the dot; "" when there's no usable extension.
 export function extensionOf(name: string): string {
@@ -14,6 +26,14 @@ export function extensionOf(name: string): string {
 
 export function isImageName(name: string): boolean {
   return IMAGE_EXTENSIONS.includes(extensionOf(name).toLowerCase());
+}
+
+export function isAudioName(name: string): boolean {
+  return AUDIO_EXTENSIONS.includes(extensionOf(name).toLowerCase());
+}
+
+export function isVideoName(name: string): boolean {
+  return VIDEO_EXTENSIONS.includes(extensionOf(name).toLowerCase());
 }
 
 // Status casing isn't guaranteed by the payload.

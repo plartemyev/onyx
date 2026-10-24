@@ -221,6 +221,20 @@ def categorize_uploaded_files(
 
             extension = get_file_ext(filename)
 
+            # Media files (audio/video) carry no extractable text. Accept them
+            # with a zero token count and flag them to skip indexing — the
+            # spreadsheet-over-threshold path — so the worker never runs text
+            # extraction on them (it would fail the file). They stay fully
+            # playable/downloadable in the chat UI.
+            if (
+                extension in OnyxFileExtensions.AUDIO_EXTENSIONS
+                or extension in OnyxFileExtensions.VIDEO_EXTENSIONS
+            ):
+                results.acceptable.append(upload)
+                results.acceptable_file_to_token_count[filename] = 0
+                results.skip_indexing.add(filename)
+                continue
+
             # If image, estimate tokens via dedicated method first
             if extension in OnyxFileExtensions.IMAGE_EXTENSIONS:
                 try:

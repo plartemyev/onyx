@@ -2,6 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 
 import {
   fileDescriptorToDisplayFile,
+  mediaKindOf,
   projectFileToFileDescriptor,
   projectFilesToFileDescriptors,
 } from "@/chat/fileDescriptors";
@@ -64,5 +65,41 @@ describe("fileDescriptorToDisplayFile", () => {
     });
     expect(display.name).toBe("File");
     expect(display.id).toBe("blob-x"); // user_file_id ?? id
+  });
+});
+
+describe("mediaKindOf", () => {
+  it("reads explicit AUDIO/VIDEO types", () => {
+    expect(mediaKindOf({ id: "a", type: ChatFileType.AUDIO })).toBe("audio");
+    expect(mediaKindOf({ id: "v", type: ChatFileType.VIDEO })).toBe("video");
+  });
+
+  it("falls back to the filename for legacy plain_text descriptors", () => {
+    // Media attached before AUDIO/VIDEO existed was persisted as PLAIN_TEXT.
+    expect(
+      mediaKindOf({
+        id: "w",
+        type: ChatFileType.PLAIN_TEXT,
+        name: "Teddy_Swims_Lose_Control.wav",
+      }),
+    ).toBe("audio");
+    expect(
+      mediaKindOf({
+        id: "m",
+        type: ChatFileType.PLAIN_TEXT,
+        name: "clip.MP4",
+      }),
+    ).toBe("video");
+  });
+
+  it("returns null for non-media files", () => {
+    expect(
+      mediaKindOf({
+        id: "d",
+        type: ChatFileType.DOCUMENT,
+        name: "report.pdf",
+      }),
+    ).toBeNull();
+    expect(mediaKindOf({ id: "u", type: ChatFileType.PLAIN_TEXT })).toBeNull();
   });
 });

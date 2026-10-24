@@ -3,12 +3,15 @@ import { Fragment, memo, useMemo, useState } from "react";
 import { View } from "react-native";
 
 import { selectSources } from "@/chat/citations";
-import { Message } from "@/chat/interfaces";
+import { Message, type FileDescriptor } from "@/chat/interfaces";
 import { StopReason } from "@/chat/streamingModels";
 import { resolveGroupReasoning } from "@/chat/timeline/reasoningState";
 import { MinimalAgent } from "@/chat/agents";
 import { getErrorTitle } from "@/chat/errorHelpers";
-import { fileDescriptorToDisplayFile } from "@/chat/fileDescriptors";
+import {
+  fileDescriptorToDisplayFile,
+  mediaKindOf,
+} from "@/chat/fileDescriptors";
 import { openSource } from "@/chat/openSource";
 import { AgentTimeline } from "@/components/chat/AgentTimeline";
 import {
@@ -16,6 +19,7 @@ import {
   CitedSourcesSheet,
 } from "@/components/chat/CitedSources";
 import { FileCard } from "@/components/chat/FileCard";
+import { MediaAttachment } from "@/components/chat/MediaAttachment";
 import { RendererComponent } from "@/components/chat/renderers/RendererComponent";
 import type { FullChatState } from "@/components/chat/renderers/registry";
 import { ReasoningTextSheet } from "@/components/chat/timeline/ReasoningTextSheet";
@@ -28,13 +32,42 @@ import { usePacketProcessor } from "@/hooks/timeline/usePacketProcessor";
 // Non-final display groups don't complete the message.
 const NOOP = (): void => {};
 
+// One file on a message: media types get a player, everything else the
+// read-only chip (image thumbnails included).
+function DescriptorFile({ descriptor }: { descriptor: FileDescriptor }) {
+  const kind = mediaKindOf(descriptor);
+  if (kind) {
+    return (
+      <MediaAttachment
+        fileId={descriptor.id}
+        fileName={descriptor.name ?? descriptor.id}
+        kind={kind}
+      />
+    );
+  }
+  return <FileCard file={fileDescriptorToDisplayFile(descriptor)} />;
+}
+
 function UserMessage({ node }: { node: Message }) {
-  const files = node.files.map(fileDescriptorToDisplayFile);
+  const regularFiles = node.files
+    .filter((descriptor) => mediaKindOf(descriptor) == null)
+    .map(fileDescriptorToDisplayFile);
+  const mediaFiles = node.files.filter(
+    (descriptor) => mediaKindOf(descriptor) != null,
+  );
   return (
     <View className="items-end py-6">
-      {files.length > 0 ? (
+      {mediaFiles.length > 0 ? (
+        // Media cards stay full rows (native players need the width), end-aligned like the chips.
+        <View className="mb-8 w-full max-w-[85%] items-end gap-8">
+          {mediaFiles.map((descriptor) => (
+            <DescriptorFile key={descriptor.id} descriptor={descriptor} />
+          ))}
+        </View>
+      ) : null}
+      {regularFiles.length > 0 ? (
         <View className="mb-8 max-w-[85%] flex-row flex-wrap justify-end gap-8">
-          {files.map((file) => (
+          {regularFiles.map((file) => (
             <FileCard key={file.id} file={file} />
           ))}
         </View>
@@ -190,6 +223,15 @@ function AssistantMessage({
           <Text font="secondary-body" color="text-04">
             User has stopped generation
           </Text>
+        </View>
+      ) : null}
+      {node.files.length > 0 ? (
+        // Artifact row: files produced for this answer (web renders the same
+        // row under the message body).
+        <View className="gap-8 px-12">
+          {node.files.map((descriptor) => (
+            <DescriptorFile key={descriptor.id} descriptor={descriptor} />
+          ))}
         </View>
       ) : null}
       {sources && sources.hasSources ? (

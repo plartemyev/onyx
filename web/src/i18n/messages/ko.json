@@ -9497,6 +9497,17 @@
           "label": "전체 이미지 보기"
         }
       },
+      "inMessageMedia": {
+        "audioPlayer": {
+          "label": "{name} 오디오 플레이어"
+        },
+        "downloadButton": {
+          "tooltip": "다운로드"
+        },
+        "videoPlayer": {
+          "label": "{name} 비디오 플레이어"
+        }
+      },
       "inputBarPreviewImage": {
         "image": {
           "alt": "미리보기"

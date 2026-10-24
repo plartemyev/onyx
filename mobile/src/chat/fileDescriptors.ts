@@ -3,7 +3,22 @@
 // projectsFileToFileDescriptor exactly: file_id → id, chat_file_type → type,
 // id → user_file_id.
 import { UserFileStatus, type ProjectFile } from "@/chat/contracts/projects";
-import type { FileDescriptor } from "@/chat/interfaces";
+import { ChatFileType, type FileDescriptor } from "@/chat/interfaces";
+import { isAudioName, isVideoName } from "@/lib/files";
+
+export type MediaKind = "audio" | "video";
+
+// Media kind for a descriptor, falling back to the filename extension for
+// legacy descriptors: media saved before AUDIO/VIDEO existed was persisted as
+// PLAIN_TEXT. Mirrors web's resolveChatFileType.
+export function mediaKindOf(descriptor: FileDescriptor): MediaKind | null {
+  if (descriptor.type === ChatFileType.AUDIO) return "audio";
+  if (descriptor.type === ChatFileType.VIDEO) return "video";
+  const name = descriptor.name ?? "";
+  if (isAudioName(name)) return "audio";
+  if (isVideoName(name)) return "video";
+  return null;
+}
 
 export function projectFileToFileDescriptor(file: ProjectFile): FileDescriptor {
   return {

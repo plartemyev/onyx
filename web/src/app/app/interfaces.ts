@@ -86,6 +86,8 @@ export enum ChatFileType {
   PLAIN_TEXT = "plain_text",
   TABULAR = "tabular",
   USER_KNOWLEDGE = "user_knowledge",
+  AUDIO = "audio",
+  VIDEO = "video",
 }
 
 export const isTextFile = (fileType: ChatFileType) =>
