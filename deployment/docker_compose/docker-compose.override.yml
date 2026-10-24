@@ -129,7 +129,7 @@ services:
       - CHAT_STREAM_BUFFER_TTL_S=172800
       # Slow inference: allow long gaps between streamed chunks
       - DR_REPORT_LLM_TIMEOUT_S=1200
-      - LLM_SOCKET_READ_TIMEOUT=1200
+      - LLM_SOCKET_READ_TIMEOUT=300
       # Regular chat agentic loop: 6 -> 12 tool-call cycles before forced answer
       - MAX_LLM_CYCLES=12
       # Small local models: the serving layer (Ollama) tokenizes the prompt
@@ -261,7 +261,7 @@ services:
   # code-interpreter session settings used by scheduled chat runs.
   background:
     environment:
-      - LLM_SOCKET_READ_TIMEOUT=1200
+      - LLM_SOCKET_READ_TIMEOUT=300
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
       - MAX_LLM_CYCLES=22
       - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN=0.10
