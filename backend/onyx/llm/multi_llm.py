@@ -1167,6 +1167,10 @@ class LitellmLLM(LLM):
                         tools=tools or None,
                         stream=stream,
                         timeout=timeout_override or self._timeout,
+                        # litellm's internal retries (exponential backoff)
+                        # would stack under the pre-first-chunk retry loops in
+                        # invoke()/stream(); those loops own all retries.
+                        num_retries=0,
                         max_tokens=max_tokens,
                         client=client,
                         **opts,
@@ -1327,6 +1331,7 @@ class LitellmLLM(LLM):
         # invisible and safe as long as nothing was consumed yet. Same
         # retryable set and budget as the pre-chunk retry in stream().
         retryable_exceptions = (
+            LLMTimeoutError,
             LiteLLMTimeout,
             LiteLLMAPIConnectionError,
             LiteLLMServiceUnavailableError,
@@ -1418,6 +1423,7 @@ class LitellmLLM(LLM):
         from onyx.llm.model_response import from_litellm_model_response_stream
 
         retryable_exceptions = (
+            LLMTimeoutError,
             LiteLLMTimeout,
             LiteLLMAPIConnectionError,
             LiteLLMServiceUnavailableError,

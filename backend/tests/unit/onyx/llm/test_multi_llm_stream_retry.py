@@ -7,7 +7,7 @@ from litellm.exceptions import Timeout as LiteLLMTimeout
 from onyx.llm.interfaces import LanguageModelInput
 from onyx.llm.model_response import Delta, ModelResponseStream, StreamingChoice
 from onyx.llm.models import UserMessage
-from onyx.llm.multi_llm import LitellmLLM
+from onyx.llm.multi_llm import LitellmLLM, LLMTimeoutError
 
 
 def _make_fake_llm() -> MagicMock:
@@ -88,3 +88,60 @@ def test_stream_does_not_retry_after_first_chunk() -> None:
 
     assert fake_llm._completion.call_count == 1
     mock_logger.warning.assert_not_called()
+
+
+def test_stream_retries_translated_timeout_before_first_chunk() -> None:
+    """_completion() rewrites litellm.Timeout into LLMTimeoutError — that translated
+    type used to bypass the pre-chunk retry set and fail the turn."""
+    fake_llm = _make_fake_llm()
+    translated_chunk = _make_stream_response("hello")
+    attempt_count = 0
+
+    def completion_side_effect(**_kwargs: object) -> list[object]:
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count == 1:
+            raise LLMTimeoutError("timed out")
+        return [object()]
+
+    fake_llm._completion = MagicMock(side_effect=completion_side_effect)
+
+    with (
+        patch("onyx.llm.multi_llm.LLM_FIRST_CHUNK_MAX_RETRIES", 1),
+        patch("onyx.llm.multi_llm.is_true_openai_model", return_value=False),
+        patch(
+            "onyx.llm.model_response.from_litellm_model_response_stream",
+            return_value=translated_chunk,
+        ),
+        patch("onyx.llm.multi_llm.logger"),
+    ):
+        results = list(LitellmLLM.stream(fake_llm, prompt=_make_prompt()))
+
+    assert len(results) == 1
+    assert results[0].choice.delta.content == "hello"
+    assert fake_llm._completion.call_count == 2
+
+
+def test_stream_does_not_retry_translated_timeout_after_first_chunk() -> None:
+    fake_llm = _make_fake_llm()
+    translated_chunk = _make_stream_response("partial")
+
+    def stream_then_timeout() -> Iterator[object]:
+        yield object()
+        raise LLMTimeoutError("timed out")
+
+    fake_llm._completion = MagicMock(return_value=stream_then_timeout())
+
+    with (
+        patch("onyx.llm.multi_llm.LLM_FIRST_CHUNK_MAX_RETRIES", 2),
+        patch("onyx.llm.multi_llm.is_true_openai_model", return_value=False),
+        patch(
+            "onyx.llm.model_response.from_litellm_model_response_stream",
+            return_value=translated_chunk,
+        ),
+        patch("onyx.llm.multi_llm.logger"),
+    ):
+        with pytest.raises(LLMTimeoutError):
+            list(LitellmLLM.stream(fake_llm, prompt=_make_prompt()))
+
+    assert fake_llm._completion.call_count == 1

@@ -52,11 +52,13 @@ DOC_TIME_DECAY = float(
 # Currently only applies to search flow not chat
 CONTEXT_CHUNKS_ABOVE = int(os.environ.get("CONTEXT_CHUNKS_ABOVE") or 1)
 CONTEXT_CHUNKS_BELOW = int(os.environ.get("CONTEXT_CHUNKS_BELOW") or 1)
-# Fairly long but this is to account for edge cases where the LLM pauses for much longer than usual
-# The alternative is to fail the request completely so this is intended to be fairly lenient.
+# Long by design: the model server is a single-slot consumer GPU, so requests
+# legitimately queue behind other generations. This bounds the silent gap
+# between stream packets; anything longer means the slot or the link is stuck,
+# and the pre-first-chunk retry loop takes over.
 LLM_SOCKET_READ_TIMEOUT = int(
-    os.environ.get("LLM_SOCKET_READ_TIMEOUT") or "60"
-)  # 60 seconds
+    os.environ.get("LLM_SOCKET_READ_TIMEOUT") or "300"
+)  # 5 minutes
 # Total per-call timeout for image summarization. Unlike LLM_SOCKET_READ_TIMEOUT
 # (per-packet gap), this bounds the whole call so a keepalive-only stream can't
 # wedge a docprocessing thread. A generous backstop against hangs.
@@ -72,9 +74,11 @@ CONTEXTUAL_RAG_LLM_TIMEOUT = int(
 # the smallest proxy idle timeout in front (ALBs default to 60s).
 CHAT_HEARTBEAT_INTERVAL_S = int(os.environ.get("CHAT_HEARTBEAT_INTERVAL_S") or "15")
 # Extra attempts when a streaming completion errors before its first chunk.
-# Never retried after partial output.
+# Never retried after partial output. Immediate, no backoff: on a single-slot
+# server each attempt just re-queues behind the current generation, so a high
+# count is how the turn outwaits a busy slot.
 LLM_FIRST_CHUNK_MAX_RETRIES = max(
-    0, int(os.environ.get("LLM_FIRST_CHUNK_MAX_RETRIES") or "2")
+    0, int(os.environ.get("LLM_FIRST_CHUNK_MAX_RETRIES") or "13")
 )
 # Socket-read timeout for deep-research report calls — bounds inter-chunk gaps
 # (including a zero-chunk stall), not total generation time.

@@ -275,6 +275,7 @@ def test_multiple_tool_calls(default_multi_llm: LitellmLLM) -> None:
             client=ANY,  # HTTPHandler instance created per-request
             stream_options={"include_usage": True},
             parallel_tool_calls=True,
+            num_retries=0,
             mock_response=MOCK_LLM_RESPONSE,
             allowed_openai_params=["tool_choice"],
         )
@@ -430,6 +431,7 @@ def test_multiple_tool_calls_streaming(default_multi_llm: LitellmLLM) -> None:
             client=ANY,  # HTTPHandler instance created per-stream
             stream_options={"include_usage": True},
             parallel_tool_calls=True,
+            num_retries=0,
             mock_response=MOCK_LLM_RESPONSE,
             allowed_openai_params=["tool_choice"],
         )
