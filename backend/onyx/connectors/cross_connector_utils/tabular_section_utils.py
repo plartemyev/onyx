@@ -5,7 +5,10 @@ from typing import IO
 from pydantic import BaseModel
 
 from onyx.connectors.models import TabularSection
-from onyx.file_processing.extract_file_text import file_io_to_text, stage_xlsx_sheets
+from onyx.file_processing.extract_file_text import (
+    file_io_to_text,
+    stage_spreadsheet_sheets,
+)
 from onyx.file_processing.file_types import OnyxFileExtensions
 from onyx.file_store.staging import RawFileCallback
 from onyx.utils.logger import setup_logger
@@ -57,7 +60,7 @@ def tabular_file_to_sections(
                 link=link or file_name,
                 heading=f"{file_name} :: {sheet.title}",
             )
-            for sheet in stage_xlsx_sheets(
+            for sheet in stage_spreadsheet_sheets(
                 file,
                 stage,
                 file_name=file_name,

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import tempfile
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
@@ -44,6 +45,12 @@ if TYPE_CHECKING:
 logger = setup_logger()
 
 TEXT_SECTION_SEPARATOR = "\n\n"
+
+# Legacy binary Word (.doc) extraction via the antiword subprocess.
+DOC_TEXT_EXTRACTION_TIMEOUT_SECONDS = 60
+# Cap on expanded `number-columns-repeated` cells in ODF tables; larger repeats
+# are trailing-formatting padding and get trimmed downstream anyway.
+MAX_ODS_CELL_REPEAT = 64
 
 _MARKITDOWN_CONVERTER: Optional["MarkItDown"] = None
 
@@ -463,6 +470,299 @@ def read_docx_file(
     return doc.markdown, []
 
 
+def doc_to_text(file: IO[Any], file_name: str = "") -> str:
+    """Extract text from a legacy binary Word (.doc) file.
+
+    Uses the antiword system package (see backend/Dockerfile) in a subprocess —
+    crashes and hangs in the C parser are contained by process isolation and
+    the timeout instead of taking down the worker.
+    """
+    data = file.read()
+    try:
+        result = subprocess.run(
+            ["antiword", "-m", "UTF-8.txt", "-"],
+            input=data,
+            capture_output=True,
+            timeout=DOC_TEXT_EXTRACTION_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "antiword is required to process .doc files but is not installed"
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"antiword timed out after {DOC_TEXT_EXTRACTION_TIMEOUT_SECONDS}s "
+            f"on {file_name or 'doc file'}"
+        ) from e
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"antiword failed on {file_name or 'doc file'} "
+            f"(exit {result.returncode}): {stderr[:500]}"
+        )
+    return result.stdout.decode("utf-8", errors="replace")
+
+
+# Raster signatures carved out of legacy .doc OLE streams; the vision captioning
+# pipeline consumes PNG/JPEG, so vector EMF/WMF blips are not extracted.
+_DOC_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_DOC_JPEG_SIGNATURE = b"\xff\xd8\xff"
+_DOC_PNG_END = b"IEND"
+_DOC_JPEG_END = b"\xff\xd9"
+_DOC_MIN_IMAGE_BYTES = 32
+
+
+def _carve_raster_images(data: bytes) -> Iterator[tuple[bytes, str]]:
+    """Yield PNG/JPEG blobs found anywhere in `data` by signature, deduped."""
+    seen: set[bytes] = set()
+    png_count = 0
+    jpeg_count = 0
+    pos = 0
+    while pos < len(data):
+        png_start = data.find(_DOC_PNG_SIGNATURE, pos)
+        jpeg_start = data.find(_DOC_JPEG_SIGNATURE, pos)
+        if png_start == -1 and jpeg_start == -1:
+            return
+        if png_start != -1 and (jpeg_start == -1 or png_start < jpeg_start):
+            iend = data.find(_DOC_PNG_END, png_start)
+            if iend == -1:
+                pos = png_start + len(_DOC_PNG_SIGNATURE)
+                continue
+            end = min(iend + len(_DOC_PNG_END) + 4, len(data))
+            blob = data[png_start:end]
+            pos = end
+            if len(blob) < _DOC_MIN_IMAGE_BYTES or blob in seen:
+                continue
+            seen.add(blob)
+            png_count += 1
+            yield blob, f"image_{png_count}.png"
+        else:
+            end = data.find(_DOC_JPEG_END, jpeg_start + len(_DOC_JPEG_SIGNATURE))
+            if end == -1:
+                pos = jpeg_start + len(_DOC_JPEG_SIGNATURE)
+                continue
+            end += len(_DOC_JPEG_END)
+            blob = data[jpeg_start:end]
+            pos = end
+            if len(blob) < _DOC_MIN_IMAGE_BYTES or blob in seen:
+                continue
+            seen.add(blob)
+            jpeg_count += 1
+            yield blob, f"image_{jpeg_count}.jpg"
+
+
+def extract_doc_images(doc_bytes: IO[Any]) -> Iterator[tuple[bytes, str]]:
+    """Extract raster images embedded in a legacy binary Word (.doc) file.
+
+    Word stores picture blips inside OLE streams (typically `Data`); unlike
+    docx there is no manifest, so rasters are carved out of every stream by
+    signature and deduped.
+    """
+    import olefile
+
+    try:
+        data = doc_bytes.read()
+        ole = olefile.OleFileIO(BytesIO(data))
+    except Exception:
+        logger.exception("Failed to open .doc OLE structure for image extraction")
+        return
+    try:
+        for stream_path in ole.listdir():
+            try:
+                stream_data = ole.openstream(stream_path).read()
+            except Exception:
+                continue
+            for blob, name in _carve_raster_images(stream_data):
+                yield blob, name
+    except Exception:
+        logger.exception("Failed to extract all doc images")
+    finally:
+        ole.close()
+
+
+def count_doc_embedded_images(file: IO[Any], cap: int) -> int:
+    """Return the number of raster images embedded in a .doc, short-circuiting
+    at cap+1. Mirrors count_docx_embedded_images; always restores the file
+    pointer."""
+
+    try:
+        start_pos = file.tell()
+    except Exception:
+        start_pos = None
+    try:
+        if start_pos is not None:
+            file.seek(0)
+        count = 0
+        for _blob, _name in extract_doc_images(file):
+            count += 1
+            if count > cap:
+                return count
+        return count
+    except Exception:
+        logger.warning("Failed to count embedded images in doc", exc_info=True)
+        return 0
+    finally:
+        if start_pos is not None:
+            file.seek(start_pos)
+
+
+def read_doc_file(
+    file: IO[Any],
+    file_name: str = "",
+    extract_images: bool = False,
+    image_callback: Callable[[bytes, str], None] | None = None,
+) -> tuple[str, Sequence[tuple[bytes, str]]]:
+    """
+    Extract text and optionally images from a legacy binary Word (.doc) file.
+    Return (text_content, list_of_images).
+    """
+    text = doc_to_text(file, file_name=file_name)
+
+    file.seek(0)
+
+    if extract_images:
+        if image_callback is None:
+            return text, list(extract_doc_images(file))
+        try:
+            for img_file_bytes, img_file_name in extract_doc_images(file):
+                image_callback(img_file_bytes, img_file_name)
+        except Exception:
+            logger.exception("Failed to stream doc images")
+    return text, []
+
+
+def _is_odf_raster_entry(name: str) -> bool:
+    """ODF pictures are referenced from the manifest and may sit at any path
+    (LibreOffice writes `Pictures/…`); the document thumbnail preview must not
+    be picked up."""
+    lowered = name.lower()
+    return lowered.startswith("pictures/") or (
+        lowered.endswith((".png", ".jpg", ".jpeg"))
+        and not lowered.startswith(("thumbnails/", "meta/", "styles/"))
+    )
+
+
+def extract_odt_images(odt_bytes: IO[Any]) -> Iterator[tuple[bytes, str]]:
+    """Extract raster images embedded in an OpenDocument Text (.odt) file.
+
+    Only formats the vision captioning pipeline consumes (PNG/JPEG) are
+    yielded.
+    """
+    try:
+        with zipfile.ZipFile(odt_bytes) as z:
+            for name in z.namelist():
+                if _is_odf_raster_entry(name):
+                    yield (z.read(name), name.split("/")[-1])
+    except Exception:
+        logger.exception("Failed to extract all odt images")
+
+
+def count_odt_embedded_images(file: IO[Any], cap: int) -> int:
+    """Return the number of raster images embedded in an .odt, short-circuiting
+    at cap+1. Mirrors count_docx_embedded_images; always restores the file
+    pointer."""
+    try:
+        start_pos = file.tell()
+    except Exception:
+        start_pos = None
+    try:
+        if start_pos is not None:
+            file.seek(0)
+        count = 0
+        with zipfile.ZipFile(file) as z:
+            for name in z.namelist():
+                if _is_odf_raster_entry(name):
+                    count += 1
+                    if count > cap:
+                        return count
+        return count
+    except Exception:
+        logger.warning("Failed to count embedded images in odt", exc_info=True)
+        return 0
+    finally:
+        if start_pos is not None:
+            file.seek(start_pos)
+
+
+def read_odt_file(
+    file: IO[Any],
+    file_name: str = "",
+    extract_images: bool = False,
+    image_callback: Callable[[bytes, str], None] | None = None,
+) -> tuple[str, Sequence[tuple[bytes, str]]]:
+    """
+    Extract text and optionally images from an OpenDocument Text (.odt) file.
+    Paragraphs and headings become lines; tables are rendered as
+    pipe-separated rows so column structure survives indexing.
+    Return (text_content, list_of_images).
+    """
+    from odf import opendocument, teletype
+    from odf import table as odf_table
+    from odf.element import Element
+    from odf.namespaces import TABLENS, TEXTNS
+
+    PARAGRAPH_QNAMES = {(TEXTNS, "p"), (TEXTNS, "h")}
+    TABLE_QNAME = (TABLENS, "table")
+    CELL_QNAMES = {(TABLENS, "table-cell"), (TABLENS, "covered-table-cell")}
+
+    try:
+        document = opendocument.load(file)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to parse ODT file {file_name or 'odt file'}: {e}"
+        ) from e
+
+    paragraphs: list[str] = []
+
+    def render_table(table: Element) -> str:
+        rows: list[str] = []
+        for row in table.getElementsByType(odf_table.TableRow):
+            cells: list[str] = []
+            for cell in row.childNodes:
+                if cell.qname not in CELL_QNAMES:
+                    continue
+                cell_text = teletype.extractText(cell).strip()
+                repeat = int(cell.getAttribute("numbercolumnsrepeated") or 1)
+                # Content cells repeat for column alignment; empty repeats are
+                # usually trailing padding. Cap so a 1024-column repeat can't
+                # blow up the output.
+                cells.extend([cell_text] * min(repeat, MAX_ODS_CELL_REPEAT))
+            rows.append(" | ".join(cells))
+        return "\n".join(rows)
+
+    def walk(node: Element) -> None:
+        for child in node.childNodes:
+            if not isinstance(child, Element):
+                continue
+            if child.qname in PARAGRAPH_QNAMES:
+                text = teletype.extractText(child).strip()
+                if text:
+                    paragraphs.append(text)
+            elif child.qname == TABLE_QNAME:
+                rendered = render_table(child)
+                if rendered:
+                    paragraphs.append(rendered)
+            else:
+                walk(child)
+
+    walk(document.text)
+    text_content = "\n".join(paragraphs)
+
+    file.seek(0)
+
+    if extract_images:
+        if image_callback is None:
+            return text_content, list(extract_odt_images(file))
+        try:
+            for img_file_bytes, img_file_name in extract_odt_images(file):
+                image_callback(img_file_bytes, img_file_name)
+        except Exception:
+            logger.exception("Failed to stream odt images")
+    return text_content, []
+
+
 def extract_pptx_images(pptx_bytes: IO[Any]) -> Iterator[tuple[bytes, str]]:
     """
     Given the bytes of a pptx file, extract all the images.
@@ -710,6 +1010,155 @@ def xlsx_to_text(file: IO[Any], file_name: str = "") -> str:
     )
 
 
+def _xls_rows(sheet: Any, book: Any) -> Iterator[tuple[Any, ...]]:
+    """Yield one tuple of cell values per row, converting Excel date serials
+    (xlrd returns floats for them) to datetime strings, and integral floats to
+    ints, so the CSV matches what the openpyxl path produces."""
+    import xlrd
+
+    for r in range(sheet.nrows):
+        values: list[Any] = []
+        for cell in sheet.row(r):
+            if cell.ctype == xlrd.XL_CELL_DATE:
+                values.append(
+                    xlrd.xldate_as_datetime(cell.value, book.datemode).isoformat()
+                )
+            elif cell.ctype == xlrd.XL_CELL_NUMBER and float(cell.value).is_integer():
+                values.append(int(cell.value))
+            else:
+                values.append(cell.value)
+        yield tuple(values)
+
+
+def xls_sheet_extraction(file: IO[Any], file_name: str = "") -> list[tuple[str, str]]:
+    """Converts each sheet in a legacy binary Excel (.xls) file to a condensed
+    CSV string. Returns (csv_text, sheet_title) per worksheet."""
+    import xlrd
+
+    file_contents = file.read()
+    try:
+        book = xlrd.open_workbook(file_contents=file_contents)
+    except Exception as e:
+        error_str = f"Failed to extract text from {file_name or 'xls file'}: {e}"
+        logger.warning(error_str)
+        return []
+
+    sheets: list[tuple[str, str]] = []
+    for sheet in book.sheets():
+        csv_text = _sheet_to_csv(_xls_rows(sheet, book))
+        sheets.append((csv_text.strip(), sheet.name))
+    return sheets
+
+
+def xls_to_text(file: IO[Any], file_name: str = "") -> str:
+    sheets = xls_sheet_extraction(file, file_name)
+    return TEXT_SECTION_SEPARATOR.join(
+        csv_text for csv_text, _title in sheets if csv_text
+    )
+
+
+def _ods_cell_value(cell: Any) -> Any:
+    """Value of an ODF table cell, mirroring what the openpyxl path yields:
+    numeric/date cells come from their office:value attributes, text cells
+    from their text content."""
+    from odf import teletype
+
+    value_type = cell.getAttribute("valuetype")
+    if value_type in ("float", "percentage", "currency"):
+        raw_value = cell.getAttribute("value")
+        if raw_value is not None:
+            number = float(raw_value)
+            return int(number) if number.is_integer() else number
+    if value_type == "date":
+        date_value = cell.getAttribute("datevalue")
+        if date_value is not None:
+            return date_value
+    return teletype.extractText(cell)
+
+
+def ods_sheet_extraction(file: IO[Any], file_name: str = "") -> list[tuple[str, str]]:
+    """Converts each table in an OpenDocument Spreadsheet (.ods) file to a
+    condensed CSV string. Returns (csv_text, table_name) per table."""
+    from odf import opendocument
+    from odf import table as odf_table
+    from odf.element import Element
+    from odf.namespaces import TABLENS
+
+    CELL_QNAMES = {(TABLENS, "table-cell"), (TABLENS, "covered-table-cell")}
+
+    try:
+        document = opendocument.load(file)
+    except Exception as e:
+        error_str = f"Failed to extract text from {file_name or 'ods file'}: {e}"
+        logger.warning(error_str)
+        return []
+
+    def table_rows(table: Element) -> Iterator[tuple[Any, ...]]:
+        for row in table.getElementsByType(odf_table.TableRow):
+            values: list[Any] = []
+            for cell in row.childNodes:
+                if cell.qname not in CELL_QNAMES:
+                    continue
+                values.extend(
+                    [_ods_cell_value(cell)]
+                    * min(
+                        int(cell.getAttribute("numbercolumnsrepeated") or 1),
+                        MAX_ODS_CELL_REPEAT,
+                    )
+                )
+            yield tuple(values)
+
+    sheets: list[tuple[str, str]] = []
+    for table in document.spreadsheet.getElementsByType(odf_table.Table):
+        title = table.getAttribute("name") or ""
+        csv_text = _sheet_to_csv(table_rows(table))
+        sheets.append((csv_text.strip(), title))
+    return sheets
+
+
+def ods_to_text(file: IO[Any], file_name: str = "") -> str:
+    sheets = ods_sheet_extraction(file, file_name)
+    return TEXT_SECTION_SEPARATOR.join(
+        csv_text for csv_text, _title in sheets if csv_text
+    )
+
+
+def spreadsheet_sheet_extraction(
+    file: IO[Any], file_name: str = ""
+) -> list[tuple[str, str]]:
+    """Extension-dispatching sheet extraction covering every supported
+    spreadsheet format (.xlsx/.xlsm, .xls, .ods). Returns (csv_text,
+    sheet_title) per worksheet."""
+    extension = get_file_ext(file_name)
+    if extension == ".xls":
+        return xls_sheet_extraction(file, file_name)
+    if extension == ".ods":
+        return ods_sheet_extraction(file, file_name)
+    return xlsx_sheet_extraction(file, file_name)
+
+
+def stage_spreadsheet_sheets(
+    file: IO[bytes],
+    stage: Callable[[IO[bytes], str], str],
+    file_name: str = "",
+) -> list[StreamedSheet]:
+    """Extension-dispatching counterpart of stage_xlsx_sheets: stream each
+    worksheet to a staged CSV for the code sandbox. .xlsx/.xlsm use the
+    openpyxl row streaming; .xls/.ods extract first and stage per sheet."""
+    extension = get_file_ext(file_name)
+    if extension not in (".xls", ".ods"):
+        return stage_xlsx_sheets(file, stage, file_name=file_name)
+
+    sheets: list[StreamedSheet] = []
+    for csv_text, title in spreadsheet_sheet_extraction(file, file_name):
+        if not csv_text:
+            continue
+        sheets.append(
+            StreamedSheet(title, stage(BytesIO(csv_text.encode("utf-8")), "text/csv"))
+        )
+    return sheets
+
+
 def eml_to_text(file: IO[Any]) -> str:
     encoding = detect_encoding(file)
     text_file = io.TextIOWrapper(file, encoding=encoding)
@@ -807,11 +1256,15 @@ def extract_file_text_locally(
     """
     extension_to_function: dict[str, Callable[[IO[Any]], str]] = {
         ".pdf": lambda f: pdf_to_text(f, isolate_pdfium=isolate_pdfium),
+        ".doc": lambda f: read_doc_file(f)[0],  # no images
         ".docx": lambda f: read_docx_file(f, file_name)[0],  # no images
+        ".odt": lambda f: read_odt_file(f, file_name)[0],  # no images
         ".pptx": lambda f: pptx_to_text(f, file_name),
         ".xlsx": lambda f: xlsx_to_text(f, file_name),
         # openpyxl reads macro-enabled workbooks like any other.
         ".xlsm": lambda f: xlsx_to_text(f, file_name),
+        ".xls": lambda f: xls_to_text(f, file_name),
+        ".ods": lambda f: ods_to_text(f, file_name),
         ".eml": eml_to_text,
         ".epub": epub_to_text,
         ".html": parse_html_page_basic,
@@ -959,9 +1412,34 @@ def _extract_text_and_images(
                 text_content=text_content, embedded_images=images, metadata={}
             )
 
-        if extension == ".xlsx":
+        if extension == ".doc":
+            text_content, images = read_doc_file(
+                file,
+                file_name,
+                extract_images=extract_images,
+                image_callback=image_callback,
+            )
             return ExtractionResult(
-                text_content=xlsx_to_text(file, file_name=file_name),
+                text_content=text_content, embedded_images=images, metadata={}
+            )
+
+        if extension == ".odt":
+            text_content, images = read_odt_file(
+                file,
+                file_name,
+                extract_images=extract_images,
+                image_callback=image_callback,
+            )
+            return ExtractionResult(
+                text_content=text_content, embedded_images=images, metadata={}
+            )
+
+        if extension in (".xlsx", ".xlsm", ".xls", ".ods"):
+            sheets = spreadsheet_sheet_extraction(file, file_name)
+            return ExtractionResult(
+                text_content=TEXT_SECTION_SEPARATOR.join(
+                    csv_text for csv_text, _title in sheets if csv_text
+                ),
                 embedded_images=[],
                 metadata={},
             )

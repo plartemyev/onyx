@@ -9,10 +9,21 @@ SPREADSHEET_MIME_TYPE = (
 # Stored lowercase; chat MIME classification normalizes to lowercase before
 # membership checks.
 SPREADSHEET_MACRO_MIME_TYPE = "application/vnd.ms-excel.sheet.macroenabled.12"
-SPREADSHEET_MIME_TYPES = {SPREADSHEET_MIME_TYPE, SPREADSHEET_MACRO_MIME_TYPE}
+SPREADSHEET_MIME_TYPES = {
+    SPREADSHEET_MIME_TYPE,
+    SPREADSHEET_MACRO_MIME_TYPE,
+    # Legacy binary Excel (.xls) — parsed by xlrd
+    "application/vnd.ms-excel",
+    # OpenDocument spreadsheet (.ods) — parsed by odfpy
+    "application/vnd.oasis.opendocument.spreadsheet",
+}
 WORD_PROCESSING_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
+# Legacy binary Word (.doc) — text extracted via the antiword system package
+MS_WORD_MIME_TYPE = "application/msword"
+# OpenDocument text (.odt) — parsed by odfpy
+ODT_MIME_TYPE = "application/vnd.oasis.opendocument.text"
 PDF_MIME_TYPE = "application/pdf"
 PLAIN_TEXT_MIME_TYPE = "text/plain"
 
@@ -39,6 +50,8 @@ class OnyxMimeTypes:
     DOCUMENT_MIME_TYPES = {
         PDF_MIME_TYPE,
         WORD_PROCESSING_MIME_TYPE,
+        MS_WORD_MIME_TYPE,
+        ODT_MIME_TYPE,
         PRESENTATION_MIME_TYPE,
         "message/rfc822",
         "application/epub+zip",
@@ -84,6 +97,10 @@ class OnyxFileExtensions:
     SPREADSHEET_EXTENSIONS = {
         ".xlsx",
         ".xlsm",
+        # Legacy binary Excel (.xls) — parsed by xlrd
+        ".xls",
+        # OpenDocument spreadsheet (.ods) — parsed by odfpy
+        ".ods",
     }
     TABULAR_EXTENSIONS = {
         ".csv",
@@ -106,6 +123,10 @@ class OnyxFileExtensions:
     DOCUMENT_EXTENSIONS = {
         ".pdf",
         ".docx",
+        # Legacy binary Word (.doc) — extracted via antiword
+        ".doc",
+        # OpenDocument text (.odt) — parsed by odfpy
+        ".odt",
         ".pptx",
         ".eml",
         ".epub",

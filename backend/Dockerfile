@@ -85,6 +85,7 @@ RUN apt-get update && \
     apt-get install -y \
         zip \
         ca-certificates \
+        antiword \
         libgnutls30 \
         libblkid1 \
         libmount1 \

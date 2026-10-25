@@ -24,7 +24,9 @@ from onyx.connectors.models import (
     TextSection,
 )
 from onyx.file_processing.extract_file_text import (
+    count_doc_embedded_images,
     count_docx_embedded_images,
+    count_odt_embedded_images,
     extract_text_and_images,
     get_file_ext,
 )
@@ -113,11 +115,18 @@ def _process_file(
     # at upload time, so the cap is enforced here, right before extraction
     # decodes anything. With image extraction off, no image is ever decoded,
     # so the cap (and the cost of counting) do not apply.
-    if extension in (".pdf", ".docx") and get_image_extraction_and_analysis_enabled():
+    if (
+        extension in (".pdf", ".docx", ".doc", ".odt")
+        and get_image_extraction_and_analysis_enabled()
+    ):
         # The counting helpers restore the stream position.
         embedded_image_count = (
             count_pdf_embedded_images(file, MAX_EMBEDDED_IMAGES_PER_FILE + 1)
             if extension == ".pdf"
+            else count_doc_embedded_images(file, MAX_EMBEDDED_IMAGES_PER_FILE + 1)
+            if extension == ".doc"
+            else count_odt_embedded_images(file, MAX_EMBEDDED_IMAGES_PER_FILE + 1)
+            if extension == ".odt"
             else count_docx_embedded_images(file, MAX_EMBEDDED_IMAGES_PER_FILE + 1)
         )
         if embedded_image_count > MAX_EMBEDDED_IMAGES_PER_FILE:
