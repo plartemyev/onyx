@@ -757,7 +757,7 @@ def build_chat_turn(
     except Exception:
         logger.exception(
             "Failed to trigger deferred user file processing — the beat "
-            "safety net will pick the files up"
+            "safety net will pick non-incognito files up"
         )
 
     # Re-create linear history of messages

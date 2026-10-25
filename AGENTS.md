@@ -34,10 +34,9 @@ This file provides guidance to AI agents when working with code in this reposito
 - Chat attachments defer processing until send (commit 4f5016f3ca): upload stores the blob with
   `UserFileStatus.UPLOADED`; the first sent message referencing the file flips it to `PROCESSING`
   fire-and-forget (`trigger_user_file_processing` in `onyx/chat/process_message.py`). Sending is never
-  gated on processing. KNOWN GAP: the beat safety net (`check_user_file_processing`) scans `PROCESSING`
-  only and `process_user_file_impl` skips every other status, so a file never referenced by a sent
-  message stays `UPLOADED` forever. The comment in `process_message.py` claiming the beat net picks
-  such files up is wrong.
+  gated on processing. Safety net: `check_user_file_processing` also claims stale `UPLOADED` files
+  (flips them to `PROCESSING`, excludes incognito uploads — those belong to the session sweep), so a
+  file never referenced by a sent message is processed by beat instead of rotting.
 - Legacy office formats (.doc, .xls, .odt, .ods) have first-class upload support since commit e3a0b24
   (antiword / xlrd / odfpy extraction, vision path for embedded images). Deployed and verified live on
   2026-10-25 (`MS_WORD_MIME_TYPE` present, `antiword`/`xlrd`/`odfpy` installed in `onyx-api_server-1`).

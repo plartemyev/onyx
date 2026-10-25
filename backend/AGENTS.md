@@ -42,10 +42,10 @@ all validation and processing. The first sent message that references the file f
 `PROCESSING` via `trigger_user_file_processing` (fire-and-forget; see `onyx/db/projects.py`).
 Project uploads skip this and start processing immediately.
 
-- The beat safety net `check_user_file_processing` enqueues `PROCESSING` files only, and
-  `process_user_file_impl` skips any other status. An `UPLOADED` file that is never referenced by a
-  sent message is never processed. Ignore the comment in `onyx/chat/process_message.py` that claims
-  the beat net recovers those.
+- The beat safety net `check_user_file_processing` covers both `PROCESSING` (lost-task recovery) and
+  `UPLOADED` (claims un-referenced non-incognito uploads via `claim_user_files_for_processing` in
+  `onyx/db/projects.py`, flipping them to `PROCESSING` before enqueue). Incognito uploads are excluded:
+  un-referenced incognito files are ephemeral and belong to the session sweep.
 - Legacy office formats (.doc, .xls, .odt, .ods) are first-class uploads since commit e3a0b24;
   extraction lives in `onyx/file_processing/extract_file_text.py`.
 

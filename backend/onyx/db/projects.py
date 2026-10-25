@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTasks
 
@@ -262,6 +262,51 @@ def trigger_user_file_processing(
             )
 
     return len(deferred_files)
+
+
+def claim_user_files_for_processing(db_session: Session) -> list[UUID]:
+    """Safety net for deferred (UPLOADED) chat attachments.
+
+    Claims UPLOADED non-incognito files by flipping them to PROCESSING — the
+    same transition the send-path trigger makes — and returns the ids of every
+    file that should have a processing task enqueued: the claimed UPLOADED
+    ones plus anything already PROCESSING (lost-task recovery).
+
+    Incognito uploads are never claimed: an un-referenced incognito file is
+    ephemeral and belongs to the session teardown / orphan sweep, not the
+    indexing pipeline.
+
+    The claim's WHERE clause only touches rows still UPLOADED, so racing the
+    send-path trigger is safe: whoever flips first wins, and the resulting
+    duplicate task is a no-op in the worker (status check + per-file lock).
+    """
+    rows = db_session.execute(
+        select(UserFile.id, UserFile.status).where(
+            or_(
+                UserFile.status == UserFileStatus.PROCESSING,
+                and_(
+                    UserFile.status == UserFileStatus.UPLOADED,
+                    UserFile.incognito.is_(False),
+                ),
+            )
+        )
+    ).all()
+
+    claimed_ids: list[UUID] = [
+        uf_id for uf_id, status in rows if status == UserFileStatus.UPLOADED
+    ]
+    if claimed_ids:
+        db_session.execute(
+            update(UserFile)
+            .where(
+                UserFile.id.in_(claimed_ids),
+                UserFile.status == UserFileStatus.UPLOADED,
+            )
+            .values(status=UserFileStatus.PROCESSING)
+        )
+        db_session.commit()
+
+    return [uf_id for uf_id, _ in rows]
 
 
 def check_project_ownership(

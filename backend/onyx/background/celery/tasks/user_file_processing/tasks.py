@@ -50,6 +50,7 @@ from onyx.db.enums import UserFileStatus
 from onyx.db.models import SearchSettings, UserFile
 from onyx.db.port_attempt import port_backfill_has_pending_work
 from onyx.db.port_orphan_candidate import record_port_orphan_candidates_for_user_file
+from onyx.db.projects import claim_user_files_for_processing
 from onyx.db.search_settings import (
     active_secondary_port_target,
     get_active_search_settings,
@@ -180,7 +181,16 @@ def enqueue_user_file_project_sync_task(
     ignore_result=True,
 )
 def check_user_file_processing(self: Task, *, tenant_id: str) -> None:
-    """Scan for user files with PROCESSING status and enqueue per-file tasks.
+    """Scan for user files that need a processing task and enqueue them.
+
+    Covers two statuses:
+
+    - PROCESSING: re-enqueue — recovery for lost/expired tasks.
+    - UPLOADED: deferred chat attachments the send-path trigger never claimed
+      (send failed before the flip, or the trigger raised). They are flipped
+      to PROCESSING first (see ``claim_user_files_for_processing``) so the
+      worker accepts the task. Incognito uploads are excluded — un-referenced
+      incognito files are ephemeral and belong to the session sweep.
 
     Three mechanisms prevent queue runaway:
 
@@ -230,15 +240,9 @@ def check_user_file_processing(self: Task, *, tenant_id: str) -> None:
             return None
 
         with get_session_with_current_tenant() as db_session:
-            user_file_ids = (
-                db_session.execute(
-                    select(UserFile.id).where(
-                        UserFile.status == UserFileStatus.PROCESSING
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            # Claims stale UPLOADED files (flip included) and returns every id
+            # that needs a task: claimed UPLOADED + already-PROCESSING.
+            user_file_ids = claim_user_files_for_processing(db_session)
 
             for user_file_id in user_file_ids:
                 # --- Protection 2: per-file queued guard ---
