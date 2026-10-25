@@ -46,6 +46,14 @@ This file provides guidance to AI agents when working with code in this reposito
   `SqlEngine.init_engine(pool_size=2, max_overflow=2)` (required — bare scripts fail with
   "Engine not initialized") and `delete_user_file_impl(user_file_id=..., tenant_id="public",
   redis_locking=False)`. It removes the file-store blobs, index chunks and the DB row.
+- Deployment rebuilds default to the targeted build. Work in `deployment/docker_compose/` with the
+  stack's three compose files (`-f docker-compose.yml -f docker-compose.override.yml
+  -f docker-compose.craft.yml`). Backend patches: `build api_server` + `up -d` — `api_server` and
+  `background` share the `onyxdotapp/onyx-backend:latest` tag, and the override drops background's
+  inherited `build:` (`!reset null`, + `pull_policy: never` so nothing silently pulls the upstream
+  image under that tag), so the image is built exactly once. `web_server` only for frontend changes;
+  the model servers, searxng and code-interpreter only when their own inputs change. Full builds take
+  ~15 min; targeted ~4-7 min.
 
 ## Project Overview
 

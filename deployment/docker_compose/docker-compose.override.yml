@@ -260,6 +260,14 @@ services:
   # processing). Match api_server's slow-inference tolerance plus the
   # code-interpreter session settings used by scheduled chat runs.
   background:
+    # Shares api_server's image tag; the inherited build: section made a full
+    # `docker compose build` compile the identical backend image twice. !reset
+    # drops it so the tag is produced exactly once (by api_server).
+    # pull_policy never keeps up/pull from silently fetching the upstream
+    # onyxdotapp/onyx-backend image under this tag when the local build is
+    # missing.
+    build: !reset null
+    pull_policy: never
     environment:
       - LLM_SOCKET_READ_TIMEOUT=300
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
