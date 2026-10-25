@@ -55,6 +55,9 @@ Connect your applications with over 50+ indexing based connectors provided out o
 - **📄 Artifacts:** Generate documents, graphics, and other downloadable artifacts.
 - **▶️ Actions & MCP:** Let Onyx agents interact with external applications, comes with flexible Auth options.
 - **💻 Code Execution:** Execute code in a sandbox to analyze data, render graphs, or modify files.
+- **📎 Chat File Attachments:** Attach documents to any chat and send the first message right away —
+  processing and indexing finish in the background while the answer generates.
+  Office documents are supported, including legacy formats (.doc, .xls, .odt, .ods).
 - **🎙️ Voice Mode:** Chat with Onyx via text-to-speech and speech-to-text.
 - **🎨 Image Generation:** Generate images based on user prompts.
 

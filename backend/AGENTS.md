@@ -35,6 +35,20 @@ Onyx uses Celery for asynchronous task processing. Worker apps live in
 | `scheduled_tasks` | Executes user-scheduled (Craft) task runs |
 | `beat` | Scheduler for periodic tasks; uses `DynamicTenantScheduler` for multi-tenant support |
 
+### Chat attachment lifecycle
+
+Chat attachments (uploads without a project) store the blob with `UserFileStatus.UPLOADED` and defer
+all validation and processing. The first sent message that references the file flips it to
+`PROCESSING` via `trigger_user_file_processing` (fire-and-forget; see `onyx/db/projects.py`).
+Project uploads skip this and start processing immediately.
+
+- The beat safety net `check_user_file_processing` enqueues `PROCESSING` files only, and
+  `process_user_file_impl` skips any other status. An `UPLOADED` file that is never referenced by a
+  sent message is never processed. Ignore the comment in `onyx/chat/process_message.py` that claims
+  the beat net recovers those.
+- Legacy office formats (.doc, .xls, .odt, .ods) are first-class uploads since commit e3a0b24;
+  extraction lives in `onyx/file_processing/extract_file_text.py`.
+
 Key facts:
 
 - All workers use thread pools (not processes) — this is why Celery time limits don't work (see below).

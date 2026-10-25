@@ -29,6 +29,24 @@ This file provides guidance to AI agents when working with code in this reposito
   This works on a host checkout and inside the devcontainer. If no `psql` client is available, fall back to
   `docker exec onyx-relational_db-1 psql -U postgres -c "<SQL>"` (no `-it` — agent shells have no TTY).
 - When making calls to the backend, always go through the frontend. E.g. make a call to `http://localhost:3000/api/persona` not `http://localhost:8080/api/persona`
+- `POST /api/auth/login` takes form data (`username` + `password`), not JSON — a JSON body returns 422.
+  Save the session cookie (curl `-c` / `-b`) and reuse it for follow-up calls.
+- Chat attachments defer processing until send (commit 4f5016f3ca): upload stores the blob with
+  `UserFileStatus.UPLOADED`; the first sent message referencing the file flips it to `PROCESSING`
+  fire-and-forget (`trigger_user_file_processing` in `onyx/chat/process_message.py`). Sending is never
+  gated on processing. KNOWN GAP: the beat safety net (`check_user_file_processing`) scans `PROCESSING`
+  only and `process_user_file_impl` skips every other status, so a file never referenced by a sent
+  message stays `UPLOADED` forever. The comment in `process_message.py` claiming the beat net picks
+  such files up is wrong.
+- Legacy office formats (.doc, .xls, .odt, .ods) have first-class upload support since commit e3a0b24
+  (antiword / xlrd / odfpy extraction, vision path for embedded images). Deployed and verified live on
+  2026-10-25 (`MS_WORD_MIME_TYPE` present, `antiword`/`xlrd`/`odfpy` installed in `onyx-api_server-1`).
+- To clean up stuck `UPLOADED` user files (verified 2026-10-25): check references first
+  (`chat_message.files` JSONB + `project__user_file`), then run the app's own deletion inside the
+  container. `docker exec -i onyx-api_server-1 python -` with
+  `SqlEngine.init_engine(pool_size=2, max_overflow=2)` (required — bare scripts fail with
+  "Engine not initialized") and `delete_user_file_impl(user_file_id=..., tenant_id="public",
+  redis_locking=False)`. It removes the file-store blobs, index chunks and the DB row.
 
 ## Project Overview
 
