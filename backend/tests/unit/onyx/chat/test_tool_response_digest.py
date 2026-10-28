@@ -181,6 +181,36 @@ def test_empty_summary_falls_back_to_extractive(
     assert "Result title 1" in digest
 
 
+def test_empty_summary_retried_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tool_response_digest, "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", True
+    )
+    llm = _mock_llm(summary="   ")
+    empty = MagicMock()
+    empty.choice.message.content = "   "
+    good = MagicMock()
+    good.choice.message.content = "Recovered summary on the second call."
+    llm.invoke.side_effect = [empty, good]
+    digest = compute_tool_response_digest(_search_docs_payload(num_results=8), llm=llm)
+    assert digest == "Recovered summary on the second call."
+    assert llm.invoke.call_count == 2
+
+
+def test_empty_summary_retried_twice_still_empty_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tool_response_digest, "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", True
+    )
+    llm = _mock_llm(summary="   ")
+    digest = compute_tool_response_digest(_search_docs_payload(num_results=8), llm=llm)
+    assert digest is not None
+    assert "Result title 1" in digest
+    assert llm.invoke.call_count == tool_response_digest._EMPTY_SUMMARY_ATTEMPTS
+
+
 def test_summary_timeout_falls_back_to_extractive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

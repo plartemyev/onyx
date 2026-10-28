@@ -35,7 +35,12 @@ from onyx.server.query_and_chat.streaming_models import (
     Packet,
 )
 from onyx.tools.interface import Tool
-from onyx.tools.models import OpenURLToolOverrideKwargs, ToolCallException, ToolResponse
+from onyx.tools.models import (
+    OPEN_URL_MAX_URLS,
+    OpenURLToolOverrideKwargs,
+    ToolCallException,
+    ToolResponse,
+)
 from onyx.tools.tool_implementations.open_url.models import (
     FailedFetch,
     WebContentProvider,
@@ -47,6 +52,7 @@ from onyx.tools.tool_implementations.open_url.url_normalization import (
 from onyx.tools.tool_implementations.open_url.utils import (
     filter_web_contents_with_no_title_or_content,
 )
+from onyx.tools.tool_implementations.utils import numbered_title
 from onyx.tools.tool_implementations.web_search.providers import (
     get_default_content_provider,
 )
@@ -92,6 +98,19 @@ WEB_FETCH_DISABLED_REASON = (
     "not fetched: web access is disabled for this conversation and this URL's "
     "content is not in the connected knowledge sources"
 )
+
+
+def _over_limit_note(received: int, max_urls: int) -> str:
+    """LLM-facing reason when a call exceeds the per-call URL cap.
+
+    Mirrors the download tool's skipped-URLs note: state what happened, that
+    nothing was fetched, and how to proceed.
+    """
+    return (
+        f"Error: open_url accepts at most {max_urls} URLs per call, but "
+        f"{received} were requested. Nothing was fetched. Split the URLs into "
+        f"batches of at most {max_urls} and call open_url again."
+    )
 
 
 class IndexedDocumentRequest(BaseModel):
@@ -403,7 +422,7 @@ def _convert_sections_to_llm_string_with_citations(
         # Build result dict without content first to calculate metadata overhead
         result: dict[str, Any] = {
             "document": citation_id,
-            "title": chunk.semantic_identifier,
+            "title": numbered_title(citation_id, chunk.semantic_identifier),
         }
         if updated_at_str is not None:
             result["updated_at"] = updated_at_str
@@ -542,8 +561,15 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "List of URLs to open and read, can be a single URL or multiple URLs. "
-                                "This will return the text content of the page(s)."
+                                f"Up to {OPEN_URL_MAX_URLS} URLs to open and read. "
+                                "Requests with more URLs (or an empty list) are "
+                                "rejected without fetching anything — split larger "
+                                "sets into multiple calls. Returns the text content "
+                                "of each page. For paginated pages (forums, threads), "
+                                "later pages are separate URLs: append /page/N/ or "
+                                "?page=N; when a page shows 'Page 1 of N' ('Страница "
+                                "1 из N'), fetch the last 2 pages for the most "
+                                "recent content."
                             ),
                         },
                     },
@@ -580,14 +606,6 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
         """
         urls = _normalize_string_list(llm_kwargs.get(URLS_FIELD))
 
-        if len(urls) > override_kwargs.max_urls:
-            logger.warning(
-                "OpenURL tool received %s URLs, but the max is %s.",
-                len(urls),
-                override_kwargs.max_urls,
-            )
-            urls = urls[: override_kwargs.max_urls]
-
         if not urls:
             raise ToolCallException(
                 message=f"Missing required '{URLS_FIELD}' parameter in open_url tool call",
@@ -595,6 +613,21 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
                     f"The open_url tool requires a '{URLS_FIELD}' parameter "
                     f"containing an array of URLs. Please provide "
                     f'like: {{"urls": ["https://example.com"]}}'
+                ),
+            )
+
+        if len(urls) > override_kwargs.max_urls:
+            # Reject instead of silently truncating: the model must know its
+            # batch was dropped, or it will cite pages that were never fetched.
+            logger.warning(
+                "OpenURL tool received %s URLs, but the max is %s; rejecting.",
+                len(urls),
+                override_kwargs.max_urls,
+            )
+            return ToolResponse(
+                rich_response=None,
+                llm_facing_response=_over_limit_note(
+                    received=len(urls), max_urls=override_kwargs.max_urls
                 ),
             )
 

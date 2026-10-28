@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from collections.abc import Callable
 from functools import partial
@@ -220,6 +221,47 @@ EMPTY_STEP_CONTINUATION_PROMPT = (
     "about to call, or write the final answer to the user if the work is "
     "done."
 )
+
+# A cycle whose whole answer is a bare announcement of the next action
+# ("Let me actually open these pages and read the content.") with no tool
+# call ends the turn with a stub answer even though tool work remains —
+# small local models do this after long tool phases. One continuation nudge
+# recovers the turn; the narration already streamed to the user and stays
+# as a preamble of the real answer.
+INTENT_ONLY_ANSWER_MAX_RETRIES = 1
+# Long-enough answers are real content even when they open with "Let me...";
+# only short narration-only replies trigger the nudge.
+INTENT_ONLY_ANSWER_MAX_CHARS = 240
+INTENT_ONLY_CONTINUATION_PROMPT = (
+    "Your previous response only announced what you were about to do; it "
+    "did not call a tool and did not answer. Do not re-announce. Either "
+    "call the tool now, or, if the work is done, write the complete final "
+    "answer."
+)
+# Future-action phrasing in the narration languages this deployment's models
+# emit (English and Russian). Case-insensitive.
+_INTENT_ONLY_ANSWER_PATTERN = re.compile(
+    r"\b(?:"
+    r"let me(?! know)|i'?ll|i will|i am going to|allow me|first,? i(?:'ll| will| am)?"
+    r"|now i(?:'ll| will| am)?"
+    r"|давайте|давай|позвольте|сначала я|сейчас я"
+    r"|я\s+(?:открою|найду|поищу|посмотрю|проверю|попробую|сделаю|составлю"
+    r"|подготовлю|напишу|переведу|прочитаю|изучу|соберу|начну)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_intent_only_answer(answer: str) -> bool:
+    """True when a short no-tool-call answer only announces a next action.
+
+    Heuristic: the length gate keeps legitimately short real answers
+    ("Yes.", "Готово.") out; the phrase list catches first-person future
+    narration. False positives cost one extra LLM cycle, not the turn.
+    """
+    if not answer or len(answer) > INTENT_ONLY_ANSWER_MAX_CHARS:
+        return False
+    return bool(_INTENT_ONLY_ANSWER_PATTERN.search(answer))
 
 
 def _build_empty_llm_response_error(
@@ -1376,6 +1418,8 @@ def run_llm_loop(
         context_overflow_retries = 0
         empty_step_retries = 0
         retry_after_empty_step = False
+        intent_only_retries = 0
+        retry_after_intent_only = False
         for llm_cycle_count in range(MAX_LLM_CYCLES):
             if check_is_connected is not None and not check_is_connected():
                 logger.info(
@@ -1527,14 +1571,19 @@ def run_llm_loop(
                 or always_cite_documents,
                 include_file_reminder=code_interpreter_file_generated,
             )
-            if retry_after_empty_step:
+            if retry_after_empty_step or retry_after_intent_only:
                 # The nudge rides the per-cycle reminder message, so the
                 # retried cycle sees it right where the model reads its
                 # instructions; no history mutation needed.
+                continuation_prompt = (
+                    EMPTY_STEP_CONTINUATION_PROMPT
+                    if retry_after_empty_step
+                    else INTENT_ONLY_CONTINUATION_PROMPT
+                )
                 reminder_message_text = (
-                    f"{EMPTY_STEP_CONTINUATION_PROMPT}\n\n{reminder_message_text}"
+                    f"{continuation_prompt}\n\n{reminder_message_text}"
                     if reminder_message_text
-                    else EMPTY_STEP_CONTINUATION_PROMPT
+                    else continuation_prompt
                 )
 
             if llm_cycle_count == 0 and workspace_state_note:
@@ -1714,6 +1763,40 @@ def run_llm_loop(
                 )
                 continue
             retry_after_empty_step = False
+
+            # An intent-only answer (short announcement, no tool call) would
+            # end the turn below with a stub answer after minutes of tool
+            # work. Nudge once and continue while cycles remain — same shape
+            # as the empty-step retry above, plus the narration is replayed
+            # into the history so the nudged model sees what it already said.
+            if (
+                llm_step_result.answer
+                and not llm_step_result.tool_calls
+                and not forced_final_answer
+                and intent_only_retries < INTENT_ONLY_ANSWER_MAX_RETRIES
+                and _is_intent_only_answer(llm_step_result.answer)
+            ):
+                intent_only_retries += 1
+                retry_after_intent_only = True
+                narration = llm_step_result.answer
+                simple_chat_history.append(
+                    ChatMessageSimple(
+                        message=narration,
+                        token_count=token_counter(narration),
+                        message_type=MessageType.ASSISTANT,
+                    )
+                )
+                logger.warning(
+                    "Cycle %d answered with an intent-only announcement "
+                    "(answer_chars=%d); nudging the model to continue "
+                    "(attempt %d/%d)",
+                    llm_cycle_count,
+                    len(llm_step_result.answer),
+                    intent_only_retries,
+                    INTENT_ONLY_ANSWER_MAX_RETRIES,
+                )
+                continue
+            retry_after_intent_only = False
 
             # Save citation mapping after each LLM step for incremental state updates
             state_container.set_citation_mapping(citation_processor.citation_to_doc)

@@ -41,6 +41,7 @@ REQUIRE_CITATION_GUIDANCE = """
 
 CRITICAL: If referencing knowledge from searches, cite relevant statements INLINE using the format [1], [2], [3], etc. to reference the "document" field. \
 Cite only the document that actually supports the statement, and use that document's own number from its "document" field. \
+[N] must be the exact number in the "document" field of the supporting source — never renumber or rank sources in your own order, and never reuse a number for a different document. \
 Never cite a document merely because it appeared in search results — if no document supports a statement, leave it uncited. \
 Do not cite tool results that are not search documents (images, downloaded files, or their annotations). \
 DO NOT provide any links following the citations. Cite inline as opposed to leaving all citations until the very end of the response.
@@ -50,6 +51,7 @@ DO NOT provide any links following the citations. Cite inline as opposed to leav
 # Reminder message if any search tool has been run anytime in the chat turn
 CITATION_REMINDER = """
 Remember to provide inline citations in the format [1], [2], [3], etc. based on the "document" field of the documents.
+Each [N] must match the exact "document" number of the source that supports the statement.
 """.strip()
 
 LAST_CYCLE_CITATION_REMINDER = """
@@ -60,7 +62,8 @@ You are on your last cycle and no longer have any tool calls available. You must
 # Reminder message that replaces the usual reminder if web_search was the last tool call
 OPEN_URL_REMINDER = """
 Remember that after using web_search, you are encouraged to open some pages to get more context unless the query is completely answered by the snippets.
-Open the pages that look the most promising and high quality by calling the open_url tool with an array of URLs. Open as many as you want.
+Open the pages that look the most promising and high quality by calling the open_url tool with an array of URLs. Open at most 6 URLs per call.
+If a fetched page is paginated ("Page 1 of N" / "Страница 1 из N"), fetch later pages by editing the URL (append /page/N/ or ?page=N); for recent content in long threads, fetch the last 2 pages.
 
 If you do have enough to answer, remember to provide INLINE citations using the "document" field in the format [1], [2], [3], etc.
 """.strip()

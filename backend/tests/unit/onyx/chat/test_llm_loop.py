@@ -10,10 +10,12 @@ import pytest
 from onyx.chat.llm_loop import (
     _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK,
     _REFUSAL_FINISH_REASONS,
+    INTENT_ONLY_ANSWER_MAX_CHARS,
     ContextWindowExceededError,
     EmptyLLMResponseError,
     _build_empty_llm_response_error,
     _cycle_history_token_budget,
+    _is_intent_only_answer,
     construct_message_history,
     count_message_replay_tokens,
     run_llm_loop,
@@ -2330,6 +2332,123 @@ class TestRunLlmLoopCycleAlignedHistory:
         }
         assert tool_responses["call_1"] == "tool result"
         assert tool_responses["call_2"] == TOOL_CALL_MERGED_PROMPT
+
+
+class TestIntentOnlyAnswerDetection:
+    def test_english_announcement_detected(self) -> None:
+        assert _is_intent_only_answer(
+            "Let me actually open these pages and read the content."
+        )
+
+    def test_russian_announcement_detected(self) -> None:
+        assert _is_intent_only_answer("Сейчас я открою эти страницы и изучу их.")
+
+    def test_long_answer_with_let_me_not_detected(self) -> None:
+        answer = "Let me explain. " + ("Here is the full analysis you asked for. " * 20)
+        assert len(answer) > INTENT_ONLY_ANSWER_MAX_CHARS
+        assert not _is_intent_only_answer(answer)
+
+    def test_short_real_answer_not_detected(self) -> None:
+        assert not _is_intent_only_answer("Yes.")
+        assert not _is_intent_only_answer("Готово — отчёт выше.")
+        assert not _is_intent_only_answer("")
+
+    def test_closing_let_me_know_after_content_not_detected(self) -> None:
+        # "Let me know" is a legitimate closing, not an announcement — the
+        # pattern excludes it explicitly, even below the length gate.
+        answer = (
+            "The survey shows stable sentiment. "
+            "Full details are in the report above. Let me know if you need "
+            "a deeper breakdown of any region, and I can extend the analysis "
+            "with more sources."
+        )
+        assert not _is_intent_only_answer(answer)
+
+
+class TestIntentOnlyAnswerNudge:
+    """A no-tool-call answer that only announces the next action must not end
+    the turn: the loop nudges once, replays the narration into the history,
+    and the retried cycle continues with tools or the real answer."""
+
+    def _run_loop(
+        self, steps: list[tuple[LlmStepResult, bool]], tools: list[Tool]
+    ) -> Any:
+        """Run run_llm_loop with mocked LLM steps; returns the step mock."""
+        llm = Mock()
+        llm.config = LLMConfig(
+            model_provider="openai",
+            model_name="text-model",
+            temperature=0,
+            max_input_tokens=24000,
+        )
+        with (
+            patch("onyx.chat.llm_loop.trace", return_value=nullcontext()),
+            patch("onyx.llm.litellm_singleton.config.initialize_litellm"),
+            patch(
+                "onyx.chat.llm_loop.get_session_with_current_tenant",
+                return_value=nullcontext(),
+            ),
+            patch("onyx.chat.llm_loop.get_default_base_system_prompt", return_value=""),
+            patch("onyx.chat.llm_loop.select_reminder_text", return_value=""),
+            patch("onyx.chat.llm_loop.run_llm_step", side_effect=steps) as step,
+        ):
+            run_llm_loop(
+                emitter=Mock(),
+                state_container=Mock(
+                    get_answer_tokens=Mock(return_value=""),
+                    get_tool_calls=Mock(return_value=[]),
+                ),
+                simple_chat_history=[
+                    create_message("Find the thing", MessageType.USER, 10)
+                ],
+                tools=tools,
+                custom_agent_prompt=None,
+                context_files=create_context_files(),
+                persona=None,
+                user_memory_context=None,
+                llm=llm,
+                token_counter=lambda s: max(1, len(s) // 4),
+            )
+        return step
+
+    def test_intent_only_answer_gets_continuation_nudge(self) -> None:
+        narration = "Let me actually open these pages and read the content."
+        steps = [
+            (LlmStepResult(reasoning=None, answer=narration, tool_calls=None), False),
+            (
+                LlmStepResult(
+                    reasoning=None,
+                    answer=None,
+                    tool_calls=[_kickoff("call_1", "fake_search")],
+                ),
+                False,
+            ),
+            (
+                LlmStepResult(reasoning=None, answer="Final answer.", tool_calls=None),
+                False,
+            ),
+        ]
+        step = self._run_loop(steps, tools=[_FakeLoopTool("fake_search")])
+
+        # Three LLM cycles: the stub answer did not end the turn.
+        assert len(step.call_args_list) == 3
+
+        # The nudged cycle sees the narration as an assistant message and the
+        # continuation instruction in the reminder position.
+        second_history = step.call_args_list[1].kwargs["history"]
+        narration_messages = [
+            m
+            for m in second_history
+            if m.message_type == MessageType.ASSISTANT and m.message == narration
+        ]
+        assert len(narration_messages) == 1
+        reminders = [
+            m
+            for m in second_history
+            if m.message_type == MessageType.USER_REMINDER
+            and "did not call a tool" in m.message
+        ]
+        assert len(reminders) == 1
 
 
 class TestForcedFinalAnswerCycle:

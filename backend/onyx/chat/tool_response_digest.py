@@ -69,6 +69,13 @@ class _SummaryError(Exception):
     deterministic digest."""
 
 
+class _EmptySummaryError(_SummaryError):
+    """The LLM answered with usable finish but no summary text.
+
+    Small local models do this occasionally on large inputs; a fresh call
+    usually succeeds, so this is the one failure worth retrying."""
+
+
 def _truncate(text: str, max_chars: int) -> str:
     return text if len(text) <= max_chars else text[:max_chars]
 
@@ -145,14 +152,15 @@ def _summary_messages(text: str) -> list[ChatCompletionMessage]:
     ]
 
 
-def _summarize(text: str, llm: LLM) -> str:
-    """Tier 2: one LLM call summarizing the dropped output.
+def _summarize_once(text: str, llm: LLM) -> str:
+    """One LLM call summarizing the dropped output.
 
     Runs in a worker thread under a hard wall-clock cap — a digest must
     never hold the turn hostage; on timeout the request is abandoned (it
     dies at the LLM client's own read timeout). Raises
-    :class:`_SummaryError` on any failure so the caller can fall back to the
-    deterministic digest.
+    :class:`_SummaryError` on any failure (specifically
+    :class:`_EmptySummaryError` when the model returns no text) so the
+    caller can retry or fall back to the deterministic digest.
     """
     messages = _summary_messages(text)
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool-digest")
@@ -186,8 +194,37 @@ def _summarize(text: str, llm: LLM) -> str:
 
     content = response.choice.message.content
     if not content or not content.strip():
-        raise _SummaryError("digest summarization returned an empty summary")
+        raise _EmptySummaryError("digest summarization returned an empty summary")
     return content.strip()
+
+
+# An empty summary is retried with an identical request: small local models
+# occasionally emit nothing for a large input and succeed on the next call.
+# Only the empty case retries — a timed-out call already spent its wall-clock
+# budget, and retrying it could hold the turn hostage for twice the timeout.
+_EMPTY_SUMMARY_ATTEMPTS = 2
+
+
+def _summarize(text: str, llm: LLM) -> str:
+    """Tier 2: the LLM summary of the dropped output, retrying an empty
+    summary once. Raises :class:`_SummaryError` on final failure so the
+    caller can fall back to the deterministic digest.
+    """
+    last_error: _SummaryError | None = None
+    for attempt in range(_EMPTY_SUMMARY_ATTEMPTS):
+        try:
+            return _summarize_once(text, llm)
+        except _EmptySummaryError as e:
+            last_error = e
+            if attempt + 1 < _EMPTY_SUMMARY_ATTEMPTS:
+                logger.warning(
+                    "Tool response digest: empty LLM summary (attempt "
+                    "%d/%d); retrying once",
+                    attempt + 1,
+                    _EMPTY_SUMMARY_ATTEMPTS,
+                )
+    assert last_error is not None
+    raise last_error
 
 
 def compute_tool_response_digest(text: str, llm: LLM | None = None) -> str | None:

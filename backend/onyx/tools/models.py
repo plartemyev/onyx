@@ -166,12 +166,17 @@ class WebSearchToolOverrideKwargs(BaseModel):
     starting_citation_num: int
 
 
+# Matches the SearXNG browser-lane count, so one open_url call fans out with
+# one URL per lane and no call queues behind another on the crawl endpoint.
+OPEN_URL_MAX_URLS = 6
+
+
 class OpenURLToolOverrideKwargs(BaseModel):
     # To know what citation number to start at for constructing the string to the LLM
     starting_citation_num: int
     citation_mapping: dict[str, int]
     url_snippet_map: dict[str, str]
-    max_urls: int = 10
+    max_urls: int = OPEN_URL_MAX_URLS
 
 
 # None indicates that the default value should be used

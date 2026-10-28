@@ -26,6 +26,20 @@ FILE_ASSOCIATED_GUIDANCE = (
 )
 
 
+def numbered_title(citation_id: int, title: str | None) -> str:
+    """Prefix the LLM-facing title with the document's citation number.
+
+    Weak models cite positionally ("my top source is [1]") instead of using
+    the number in the "document" field. Keeping the exact number next to the
+    title — the part of the result the model reads right beside the content
+    it quotes — makes the correct number trivially visible. The prefix also
+    survives digest compaction, which keeps titles but drops bodies.
+    """
+    if title:
+        return f"[document {citation_id}] {title}"
+    return f"[document {citation_id}]"
+
+
 def convert_inference_sections_to_llm_string(
     top_sections: list[InferenceSection],
     citation_start: int = 1,
@@ -81,7 +95,7 @@ def convert_inference_sections_to_llm_string(
         # Build result dictionary in desired order, only including non-None/empty fields
         result = {
             "document": citation_id,
-            "title": chunk.semantic_identifier,
+            "title": numbered_title(citation_id, chunk.semantic_identifier),
         }
         if updated_at_str is not None:
             result["updated_at"] = updated_at_str

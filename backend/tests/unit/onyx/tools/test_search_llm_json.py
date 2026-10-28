@@ -325,5 +325,35 @@ class TestImageUrlsInLLMJson:
         assert "images" not in payload["results"][0]
 
 
+class TestDocumentNumberTitlePrefix:
+    """Titles carry the exact citation number so weak models cite the
+    "document" field value instead of ranking sources positionally."""
+
+    def test_titles_prefixed_with_citation_number(self) -> None:
+        sections = [
+            _make_section(_make_chunk("doc-a", semantic_identifier="Левада: Рейтинги")),
+            _make_section(_make_chunk("doc-b", semantic_identifier="Forum thread")),
+        ]
+
+        llm_string, citation_mapping = convert_inference_sections_to_llm_string(
+            sections
+        )
+        payload = json.loads(llm_string)
+
+        titles = [r["title"] for r in payload["results"]]
+        assert titles == ["[document 1] Левада: Рейтинги", "[document 2] Forum thread"]
+        assert citation_mapping == {1: "doc-a", 2: "doc-b"}
+
+    def test_numbering_respects_citation_start(self) -> None:
+        section = _make_section(_make_chunk("doc-a", semantic_identifier="Thread"))
+
+        llm_string, _ = convert_inference_sections_to_llm_string(
+            [section], citation_start=114
+        )
+        payload = json.loads(llm_string)
+
+        assert payload["results"][0]["title"] == "[document 114] Thread"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-xvs"])
