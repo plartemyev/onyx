@@ -54,6 +54,20 @@ This file provides guidance to AI agents when working with code in this reposito
   image under that tag), so the image is built exactly once. `web_server` only for frontend changes;
   the model servers, searxng and code-interpreter only when their own inputs change. Full builds take
   ~15 min; targeted ~4-7 min.
+- Full deploy checklist for backend-image changes (established 2026-10-28):
+  1. Check no active user sessions before recreating: `chat_message WHERE time_sent > now() -
+     interval '45 minutes'` (empty), no `POST /chat/send-message` / `resume-stream` /
+     `handle_stream_message_objects` in api_server logs for ~20 min, no `user_file` rows in
+     PROCESSING/UPLOADED, no `Task ... received` in background logs for ~10 min.
+  2. Recreate ALL services on the shared image: `up -d api_server background sandbox-proxy`.
+     `background` resolves the image by ID (`pull_policy: never`), so after a rebuild it keeps
+     running the OLD image while `docker ps` still displays the tag — always recreate it.
+  3. Restart nginx: `docker compose ... restart nginx`. Recreated containers get new IPs and nginx
+     holds the stale upstream resolution.
+  4. Verify: `docker inspect <container> --format '{{.Image}}'` equals
+     `docker image inspect onyxdotapp/onyx-backend:latest --format '{{.Id}}'` for all three;
+     frontend and `/api/health` return 200 through nginx; all 8 celery workers answer
+     `celery_app.control.inspect().ping()` inside `onyx-background-1`.
 - SearXNG `/crawl` is single-page only (no pagination following). Onyx-side crawls keep the page's
   visible pagination nav as markdown links (`/topic/X/page/2..6`) plus the "Страница 1 из N" total,
   but IPS drops the last-page link from that nav — the model must construct `.../page/N/` itself
