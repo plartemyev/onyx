@@ -15,7 +15,12 @@ to plain text (links) or is dropped (images). Destinations are deduped
 per page: the first informative occurrence stays a link and later
 repeats drop altogether; text-less anchors never claim a destination —
 they render only while the URL appears nowhere else, so overlay URLs
-stay available for digging. Repeated-sibling card grids (listings) are
+stay available for digging. Pagination controls are the one exception:
+icon-only anchors with rel first/prev/next/last keep their destination
+under a generated label ("page 765"), and <head> <link rel=...>
+metadata supplies a one-line footer for whatever the body dropped —
+both through the same seen-href dedup. Repeated-sibling card grids
+(listings) are
 reassembled into pipe tables from their shared item anatomy, and
 icon-font glyph names plus private-use-area characters never reach the
 text.
@@ -45,6 +50,11 @@ _CONSECUTIVE_RULES = re.compile(r"(?m)^---[ \t]*\n(?:\n*^---[ \t]*\n)+\n?")
 # Link hrefs that carry no navigation value for the model: in-page anchors
 # and script URLs render as bare link text even in "full" mode.
 _NO_VALUE_HREF_PREFIXES = ("#", "javascript:")
+
+# rel tokens that mark a link as pagination metadata (visible nav anchors
+# and <head> <link rel=...> alike). These are machine semantics, not
+# decoration, so they survive rules that drop icon-only chrome.
+_PAGINATION_RELS = frozenset({"first", "prev", "next", "last"})
 
 # Markdown image syntax, used to tell image-only anchors from anchors
 # that carry real text.
@@ -78,6 +88,26 @@ def _attribute_value(node: bs4.element.Tag, name: str) -> str:
     if isinstance(value, list):
         return " ".join(str(token) for token in value)
     return ""
+
+
+def _pagination_anchor_label(el: bs4.element.Tag) -> str | None:
+    """Label for a text-less pagination control, or None when not one.
+
+    Forums render the first/prev/next/last buttons as icon-only anchors
+    (IPS: ``<a rel="last" title="..."><i class="fa fa-..."></i></a>``) —
+    exactly the shape the text-less-anchor rule drops. Their rel and
+    data-page attributes are machine metadata, so such anchors keep their
+    destination under a generated label instead. Anchors with text never
+    reach this helper; they label themselves.
+    """
+    rels = {token.lower() for token in _attribute_value(el, "rel").split()}
+    matched = rels & _PAGINATION_RELS
+    if not matched:
+        return None
+    data_page = _attribute_value(el, "data-page").strip()
+    if data_page:
+        return f"page {data_page}"
+    return min(matched)
 
 
 def _normalize_resource_url(url: str, base_url: str | None = None) -> str:
@@ -141,6 +171,42 @@ class WebContentMarkdownConverter(MarkdownConverter):
         # comment/row and the duplicate instances carry zero information.
         self._seen_srcs: set[str] = set()
 
+    def pagination_link_footer(self, soup: bs4.BeautifulSoup) -> str | None:
+        """One-line footer from ``<head>`` ``<link rel=first|prev|next|last>``.
+
+        SEO pagination metadata most forum engines emit. Shares
+        ``_seen_hrefs`` with the body conversion, so the pipeline dedups in
+        execution order: a destination the body already linked (a numbered
+        page anchor, or a rel anchor kept by the pagination exception) is
+        not repeated, and the footer only supplies what the body lost —
+        e.g. pages whose only nav affordance was an icon-only control.
+        Comparison is fragment-insensitive: forum nav anchors point at
+        ``.../page/2/#comments`` while head metadata points at
+        ``.../page/2/`` — the same page, and the footer must not repeat it.
+        Emitted destinations are claimed so later consumers stay deduped.
+        """
+        entries: list[str] = []
+        seen_roots = {href.split("#", 1)[0] for href in self._seen_hrefs}
+        for link in soup.find_all("link"):
+            rels = {token.lower() for token in _attribute_value(link, "rel").split()}
+            matched = sorted(rels & _PAGINATION_RELS)
+            if not matched:
+                continue
+            href = _normalize_resource_url(
+                _attribute_value(link, "href"), self._base_url
+            )
+            if not href.lower().startswith(("http://", "https://")):
+                continue
+            root = href.split("#", 1)[0]
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
+            self._seen_hrefs.add(href)
+            entries.append(f"[{matched[0]}]({href})")
+        if not entries:
+            return None
+        return "Pagination: " + " · ".join(entries)
+
     @staticmethod
     def _code_language(el: bs4.element.Tag) -> str:
         # Recover the fence language from the common highlight.js / Pygments
@@ -195,8 +261,15 @@ class WebContentMarkdownConverter(MarkdownConverter):
         # for digging without crowding out the informative link that
         # follows them. An anchor rendering nothing at all (its image
         # deduped away, label dropped) is pure URL noise: dropped.
+        # Exception: pagination controls (rel first/prev/next/last) are
+        # machine metadata rendered icon-only — they claim under a
+        # generated label, subject to the same seen-hrefs dedup.
         if not text.strip():
-            return ""
+            pagination_label = _pagination_anchor_label(el)
+            if pagination_label is None:
+                return ""
+            self._seen_hrefs.add(href)
+            return f"[{pagination_label}]({href}{title_suffix})"
         return f"[{text.strip()}]({href}{title_suffix})"
 
     def convert_img(
@@ -691,4 +764,7 @@ def web_page_to_markdown(
     markdown = converter.convert_soup(root)
     markdown = _collapse_rules(markdown)
     markdown = _EXCESS_BLANK_LINES.sub("\n\n", markdown).strip()
+    footer = converter.pagination_link_footer(soup)
+    if footer:
+        markdown = f"{markdown}\n\n{footer}" if markdown else footer
     return ParsedHTML(title=title, cleaned_text=strip_pua_chars(markdown))

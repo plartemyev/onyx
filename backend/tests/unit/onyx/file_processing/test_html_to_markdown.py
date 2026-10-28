@@ -296,3 +296,109 @@ def test_text_path_unchanged() -> None:
     assert parsed.title == "Test Page"
     assert "## Section" not in (parsed.cleaned_text or "")
     assert "the doc" in (parsed.cleaned_text or "")
+
+
+def test_icon_only_pagination_anchor_keeps_destination() -> None:
+    # IPS forums render the last-page button as an icon-only anchor whose
+    # <i> the icon-glyph stripper removes; rel/data-page rescue the URL.
+    page = (
+        "<html><head><title>Thread</title></head><body>"
+        '<ul class="ipsPagination">'
+        '<li><a href="https://example.com/t/1">1</a></li>'
+        '<li class="ipsPagination_last"><a href="https://example.com/t/765" '
+        'rel="last" data-page="765" title="Последняя страница">'
+        '<i class="fa fa-angle-double-right"></i></a></li>'
+        "</ul></body></html>"
+    )
+    parsed = web_page_to_markdown(page, base_url="https://example.com/t/1")
+    text = parsed.cleaned_text or ""
+    assert '[page 765](https://example.com/t/765 "Последняя страница")' in text
+    # The icon glyph name itself must not leak.
+    assert "fa-angle-double-right" not in text
+    assert "angle-double-right" not in text
+
+
+def test_icon_only_anchor_without_rel_still_dropped() -> None:
+    # The pagination exception must not resurrect other icon-link noise.
+    page = (
+        "<html><head><title>Page</title></head><body>"
+        '<a href="https://example.com/u/7" title="User 7">'
+        '<i class="fa fa-user"></i></a>'
+        "</body></html>"
+    )
+    parsed = web_page_to_markdown(page)
+    assert "example.com/u/7" not in (parsed.cleaned_text or "")
+
+
+def test_pagination_dedup_body_anchor_wins_over_footer() -> None:
+    # Pipeline dedup in execution order: the body's numbered anchor claims
+    # page 2, so the head <link rel="next"> must not repeat it; the last
+    # page appears only via the footer because the body dropped it.
+    page = (
+        "<html><head><title>T</title>"
+        '<link rel="next" href="https://example.com/t/2">'
+        '<link rel="last" href="https://example.com/t/9">'
+        "</head><body>"
+        '<ul class="ipsPagination">'
+        '<li><a href="https://example.com/t/1">1</a></li>'
+        '<li><a href="https://example.com/t/2">2</a></li>'
+        "</ul></body></html>"
+    )
+    parsed = web_page_to_markdown(page)
+    text = parsed.cleaned_text or ""
+    # page 2 exactly once (the body anchor, not the footer)
+    assert text.count("example.com/t/2") == 1
+    # page 9 supplied by the footer
+    assert "Pagination: [last](https://example.com/t/9)" in text
+    assert "example.com/t/2)]" not in text.split("Pagination:")[1]
+
+
+def test_pagination_footer_supplies_both_when_body_has_nothing() -> None:
+    page = (
+        "<html><head><title>T</title>"
+        '<link rel="next" href="https://example.com/t/2">'
+        '<link rel="last" href="https://example.com/t/9">'
+        "</head><body><p>Just a post.</p></body></html>"
+    )
+    parsed = web_page_to_markdown(page)
+    text = parsed.cleaned_text or ""
+    assert (
+        "Pagination: [next](https://example.com/t/2) · [last](https://example.com/t/9)"
+        in text
+    )
+
+
+def test_pagination_dedup_ignores_fragments() -> None:
+    # Forum nav anchors carry "#comments" fragments while head metadata
+    # points at the bare page URL — same page, footer must not repeat it.
+    page = (
+        "<html><head><title>T</title>"
+        '<link rel="next" href="https://example.com/t/2/">'
+        "</head><body>"
+        '<ul class="ipsPagination">'
+        '<li><a href="https://example.com/t/2/#comments">2</a></li>'
+        "</ul></body></html>"
+    )
+    parsed = web_page_to_markdown(page)
+    text = parsed.cleaned_text or ""
+    assert "Pagination:" not in text
+    assert text.count("example.com/t/2") == 1
+
+
+def test_text_pagination_anchor_wins_over_icon_copy() -> None:
+    # First informative occurrence claims; a later icon-only copy of the
+    # same destination drops through the seen-hrefs dedup.
+    page = (
+        "<html><head><title>T</title></head><body>"
+        '<ul class="ipsPagination">'
+        '<li><a href="https://example.com/t/765" rel="last">Последняя</a></li>'
+        "</ul>"
+        '<ul class="ipsPagination">'
+        '<li><a href="https://example.com/t/765" rel="last" data-page="765">'
+        '<i class="fa fa-angle-double-right"></i></a></li>'
+        "</ul></body></html>"
+    )
+    parsed = web_page_to_markdown(page)
+    text = parsed.cleaned_text or ""
+    assert "[Последняя](https://example.com/t/765)" in text
+    assert "page 765" not in text
