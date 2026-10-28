@@ -54,6 +54,11 @@ This file provides guidance to AI agents when working with code in this reposito
   image under that tag), so the image is built exactly once. `web_server` only for frontend changes;
   the model servers, searxng and code-interpreter only when their own inputs change. Full builds take
   ~15 min; targeted ~4-7 min.
+- SearXNG `/crawl` is single-page only (no pagination following). Onyx-side crawls keep the page's
+  visible pagination nav as markdown links (`/topic/X/page/2..6`) plus the "Страница 1 из N" total,
+  but IPS drops the last-page link from that nav — the model must construct `.../page/N/` itself
+  (open_url tool instructions and OPEN_URL_REMINDER now teach exactly that; verified on prodota
+  765-page threads, 2026-10-28).
 
 ## Project Overview
 
