@@ -40,6 +40,12 @@ This file provides guidance to AI agents when working with code in this reposito
 - Legacy office formats (.doc, .xls, .odt, .ods) have first-class upload support since commit e3a0b24
   (antiword / xlrd / odfpy extraction, vision path for embedded images). Deployed and verified live on
   2026-10-25 (`MS_WORD_MIME_TYPE` present, `antiword`/`xlrd`/`odfpy` installed in `onyx-api_server-1`).
+- EE without a license (deployed 2026-10-28): `docker-compose.override.yml` sets
+  `ENABLE_PAID_ENTERPRISE_EDITION_FEATURES=true` + `LICENSE_ENFORCEMENT_ENABLED=false` on `api_server`
+  and `background`, so self-hosted tier resolves to ENTERPRISE — admin Usage/Analytics pages, token
+  rate limits etc. work with no license installed. BOTH vars are required: flipping
+  `LICENSE_ENFORCEMENT_ENABLED` to false alone unsets EE entirely (CE main mounts none of the
+  `ee/onyx/server/*` routers → the pages 404). `/api/settings` reports `tier: enterprise`.
 - To clean up stuck `UPLOADED` user files (verified 2026-10-25): check references first
   (`chat_message.files` JSONB + `project__user_file`), then run the app's own deletion inside the
   container. `docker exec -i onyx-api_server-1 python -` with

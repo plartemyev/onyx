@@ -255,6 +255,14 @@ services:
       # ("*message*170*add_box*10"). Applies to web content extraction
       # and connector indexing alike.
       - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons,material-icons
+      # Self-hosted EE without a license: unlocks the admin Usage/Analytics
+      # pages (tier resolves to ENTERPRISE, tier_gate stops 402ing
+      # /analytics/admin/*, /admin/token-rate-limits, ...). BOTH vars are
+      # required: LICENSE_ENFORCEMENT_ENABLED=false alone would turn EE off
+      # entirely (CE main, EE routes 404). Same combo as
+      # docker-compose.search-testing.yml.
+      - ENABLE_PAID_ENTERPRISE_EDITION_FEATURES=true
+      - LICENSE_ENFORCEMENT_ENABLED=false
 
   # Background workers also make LLM calls (scheduled Craft runs, doc
   # processing). Match api_server's slow-inference tolerance plus the
@@ -316,6 +324,10 @@ services:
       - WEB_CONTENT_FORMAT=markdown
       - WEB_CONTENT_MD_LINKS=full
       - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons
+      # Same EE-without-license combo as api_server above: workers resolve
+      # the tier too (tier_gate, EE beat tasks, usage reporting).
+      - ENABLE_PAID_ENTERPRISE_EDITION_FEATURES=true
+      - LICENSE_ENFORCEMENT_ENABLED=false
 
   # Persistent-session code interpreter: forked service (0.5.0) built from this
   # repo plus an Arch-based research executor image (pip/uv/poetry, ffmpeg,
