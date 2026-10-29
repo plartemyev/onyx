@@ -1,6 +1,6 @@
 import json
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -86,7 +86,7 @@ MIN_CONTENT_CHARS = 200
 # gallery page can carry hundreds of `<img>` URLs — logos, icons, tracking
 # pixels — that eat the char budget and the model's context without telling
 # it anything. Keep a small content-bearing subset.
-MAX_IMAGES_PER_RESULT = 8
+MAX_IMAGES_PER_RESULT = 6
 
 # Image URL suffixes that carry page chrome, never page content. Content
 # images are photos/screenshots: jpg/png/webp/avif files of the page itself.
@@ -483,6 +483,7 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
         user: User,
         content_provider: WebContentProvider | None = None,
         web_fetch_disabled: bool = False,
+        token_counter: Callable[[str], int] | None = None,
     ) -> None:
         """Initialize the OpenURLTool.
 
@@ -497,12 +498,15 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             web_fetch_disabled: When True (e.g. the user turned Web Search off
                 for the chat), URLs are only served from indexed documents —
                 the live-crawl path is never used.
+            token_counter: Optional counter for the LLM-facing response, used
+                to surface the response token cost in the UI.
         """
         super().__init__(emitter=emitter)
         self._id = tool_id
         self._document_index = document_index
         self._user = user
         self._web_fetch_disabled = web_fetch_disabled
+        self._token_counter = token_counter
 
         self._provider: WebContentProvider | None
         if content_provider is not None:
@@ -795,13 +799,6 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             inference_sections, is_internet=False
         )
 
-        self.emitter.emit(
-            Packet(
-                placement=placement,
-                obj=OpenUrlDocuments(documents=search_docs),
-            )
-        )
-
         # Note that with this call, some contents may be truncated or dropped so what the LLM sees may not be the entire set
         # That said, it is still the best experience to show all the docs that were fetched, even if the LLM on rare
         # occasions only actually sees a subset.
@@ -811,13 +808,40 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             citation_start=override_kwargs.starting_citation_num,
         )
 
+        # Measure the LLM-facing response so the UI can show its cost
+        response_bytes = len(docs_str.encode("utf-8"))
+        response_tokens = self._count_tokens(docs_str)
+
+        self.emitter.emit(
+            Packet(
+                placement=placement,
+                obj=OpenUrlDocuments(
+                    documents=search_docs,
+                    content_bytes=response_bytes,
+                    token_count=response_tokens,
+                ),
+            )
+        )
+
         return ToolResponse(
             rich_response=SearchDocsResponse(
                 search_docs=search_docs,
                 citation_mapping=citation_mapping,
             ),
             llm_facing_response=docs_str,
+            response_bytes=response_bytes,
+            response_tokens=response_tokens,
         )
+
+    def _count_tokens(self, text: str) -> int | None:
+        """Token count of the LLM-facing response; None when unmeasurable."""
+        if self._token_counter is None:
+            return None
+        try:
+            return self._token_counter(text)
+        except Exception:
+            logger.exception("Failed to count open_url response tokens")
+            return None
 
     def _fallback_link_lookup(
         self,

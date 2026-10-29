@@ -46,6 +46,20 @@ This file provides guidance to AI agents when working with code in this reposito
   rate limits etc. work with no license installed. BOTH vars are required: flipping
   `LICENSE_ENFORCEMENT_ENABLED` to false alone unsets EE entirely (CE main mounts none of the
   `ee/onyx/server/*` routers → the pages 404). `/api/settings` reports `tier: enterprise`.
+- Tool response stats (added 2026-10-28): `open_url` measures its LLM-facing response
+  (bytes + tokens) and streams them in `OpenUrlDocuments` (`content_bytes`/`token_count`),
+  persists them on `tool_call.response_bytes/response_tokens` (migration 690544b34376), and the
+  timeline shows "N KiB · Nk tokens" per step; web-search steps show "N queries · N results";
+  uploaded chat documents stream `chat_file_context` packets at turn -1 (measured in
+  `build_file_context_stats` at send time, persisted on the USER message's `files` JSONB, and
+  replayed via the parent message in `session_loading` — the timeline step shows
+  "Reading documents · N · size · tokens").
+  Token counting goes through `onyx/llm/engine_token_counter.py`: it POSTs the chat LLM's own
+  engine at `{api_base minus /v1}/tokenize` (llama.cpp; requires the provider `api_key` as
+  Bearer — 401 without it, and the endpoint lives at server root, NOT under /v1), memoizing
+  availability per base URL, and falls back to `get_llm_token_counter`. UI scripts used for
+  verification live in `web/tmp/verify_ui.ts` / `web/tmp/poll_dr.ts` /
+  `web/tmp/verify_file_ui.ts` (untracked).
 - To clean up stuck `UPLOADED` user files (verified 2026-10-25): check references first
   (`chat_message.files` JSONB + `project__user_file`), then run the app's own deletion inside the
   container. `docker exec -i onyx-api_server-1 python -` with
@@ -79,6 +93,11 @@ This file provides guidance to AI agents when working with code in this reposito
   but IPS drops the last-page link from that nav — the model must construct `.../page/N/` itself
   (open_url tool instructions and OPEN_URL_REMINDER now teach exactly that; verified on prodota
   765-page threads, 2026-10-28).
+- Context-size env pins removed from the compose override (2026-10-29): everything derives from the
+  live model window now. Sub-agent prompts are bounded only by the model's full input budget
+  (256,776 on the live Qwen3.6-35B); intermediate reports cap at the 1/5 window ratio (51,355),
+  final report at 2/5 (102,710); input safety margin is the 0.05 default. `download_file` accepts
+  6 URLs per call; `open_url` keeps 6 image URLs per scraped page.
 
 ## Project Overview
 
