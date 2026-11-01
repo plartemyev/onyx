@@ -1,3 +1,4 @@
+from onyx.configs.chat_configs import SECONDARY_LLM_MAX_OUTPUT_TOKENS
 from onyx.configs.constants import MessageType
 from onyx.llm.interfaces import LLM
 from onyx.llm.models import ReasoningEffort, UserMessage
@@ -120,7 +121,9 @@ def process_memory_update(
             llm=llm, flow=LLMFlow.MEMORY_UPDATE, input_messages=[prompt_msg]
         ) as span_generation:
             response = llm.invoke(
-                prompt=prompt_msg, reasoning_effort=ReasoningEffort.OFF
+                prompt=prompt_msg,
+                reasoning_effort=ReasoningEffort.OFF,
+                max_tokens=SECONDARY_LLM_MAX_OUTPUT_TOKENS,
             )
             record_llm_response(span_generation, response)
             content = response.choice.message.content

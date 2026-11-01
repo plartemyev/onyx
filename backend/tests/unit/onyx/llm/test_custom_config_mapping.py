@@ -1,3 +1,5 @@
+import pytest
+
 from onyx.llm.constants import LlmProviderNames
 from onyx.llm.custom_config_mapping import (
     get_unsupported_custom_config_keys,
@@ -136,6 +138,59 @@ def test_generic_provider_api_key_applied_when_unset() -> None:
     )
     assert mapping.model_kwargs == {"api_key": "gk"}
     assert mapping.consumed_keys == {"GROQ_API_KEY"}
+
+
+def test_extra_body_maps_to_kwarg() -> None:
+    mapping = map_custom_config_to_model_kwargs(
+        model_provider="openai_compatible",
+        custom_config={
+            "extra_body": '{"chat_template_kwargs": {"enable_thinking": false}}'
+        },
+        api_key=None,
+        api_base=None,
+    )
+    assert mapping.model_kwargs == {
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
+    }
+    assert mapping.consumed_keys == {"extra_body"}
+
+
+def test_extra_body_normalized_key_matches() -> None:
+    mapping = map_custom_config_to_model_kwargs(
+        model_provider="groq",
+        custom_config={"EXTRA-BODY": '{"top_k": 40}'},
+        api_key=None,
+        api_base=None,
+    )
+    assert mapping.model_kwargs == {"extra_body": {"top_k": 40}}
+
+
+def test_extra_body_invalid_json_raises() -> None:
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        map_custom_config_to_model_kwargs(
+            model_provider="groq",
+            custom_config={"extra_body": "{not json"},
+            api_key=None,
+            api_base=None,
+        )
+
+
+def test_extra_body_non_object_raises() -> None:
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        map_custom_config_to_model_kwargs(
+            model_provider="groq",
+            custom_config={"extra_body": '"just a string"'},
+            api_key=None,
+            api_base=None,
+        )
+
+
+def test_extra_body_not_counted_unsupported() -> None:
+    unsupported = get_unsupported_custom_config_keys(
+        model_provider="groq",
+        custom_config={"extra_body": "{}"},
+    )
+    assert unsupported == set()
 
 
 def test_generic_provider_api_key_ignored_when_explicit_key_set() -> None:

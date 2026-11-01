@@ -6,6 +6,7 @@ the llm_custom_config_env_injection security setting allows it (self-hosted
 only, default on), dropped otherwise.
 """
 
+import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -83,6 +84,14 @@ def _normalize_key(key: str) -> str:
     return key.upper().replace("_", "").replace("-", "")
 
 
+# JSON-encoded dict merged into each completion request's payload. OpenAI-
+# compatible engines expose provider-specific request fields that LiteLLM has
+# no named kwarg for — e.g. llama.cpp's chat_template_kwargs, which disables a
+# Qwen model's thinking mode (`{"enable_thinking": false}`) so short-output
+# calls don't burn a long reasoning trace first.
+EXTRA_BODY_CONFIG_KEY = "extra_body"
+
+
 def _map_vertex_config(custom_config: dict[str, str]) -> CustomConfigMapping:
     kwargs: dict[str, Any] = {}
     consumed: set[str] = set()
@@ -147,7 +156,18 @@ def map_custom_config_to_model_kwargs(
         if key in consumed:
             continue
         key_normalized = _normalize_key(key)
-        if key_normalized == f"{provider_normalized}APIKEY":
+        if key_normalized == _normalize_key(EXTRA_BODY_CONFIG_KEY):
+            consumed.add(key)
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"custom_config '{key}' must be a JSON object: {e}"
+                ) from e
+            if not isinstance(parsed, dict):
+                raise ValueError(f"custom_config '{key}' must be a JSON object")
+            kwargs["extra_body"] = parsed
+        elif key_normalized == f"{provider_normalized}APIKEY":
             consumed.add(key)
             if not api_key and "api_key" not in kwargs:
                 kwargs["api_key"] = value

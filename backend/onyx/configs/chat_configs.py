@@ -241,6 +241,14 @@ DR_MAX_PARALLEL_SUBAGENTS = int(os.environ.get("DR_MAX_PARALLEL_SUBAGENTS") or "
 SECONDARY_LLM_FLOW_TIMEOUT_S = int(
     os.environ.get("SECONDARY_LLM_FLOW_TIMEOUT_S") or "60"
 )
+# Output cap for every secondary-flow invoke. These flows emit one-digit
+# classifications, short ID lists, or one-line answers; the cap bounds a
+# thinking-mode model that ignores reasoning_effort=OFF (e.g. Qwen served by
+# llama.cpp) so one call cannot burn minutes of CPU decode. A truncated
+# output fails parsing and the flow falls back gracefully.
+SECONDARY_LLM_MAX_OUTPUT_TOKENS = int(
+    os.environ.get("SECONDARY_LLM_MAX_OUTPUT_TOKENS") or "256"
+)
 # Live buffer TTL. Refreshed per write.
 CHAT_STREAM_BUFFER_TTL_S = int(os.environ.get("CHAT_STREAM_BUFFER_TTL_S") or 3600)
 # Retention after the run is done.

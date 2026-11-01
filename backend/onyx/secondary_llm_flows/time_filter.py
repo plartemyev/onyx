@@ -5,7 +5,10 @@ from enum import StrEnum
 from dateutil.relativedelta import relativedelta
 from pydantic import BaseModel
 
-from onyx.configs.chat_configs import SECONDARY_LLM_FLOW_TIMEOUT_S
+from onyx.configs.chat_configs import (
+    SECONDARY_LLM_FLOW_TIMEOUT_S,
+    SECONDARY_LLM_MAX_OUTPUT_TOKENS,
+)
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import BaseFilters, TimeRange
 from onyx.llm.interfaces import LLM
@@ -189,6 +192,7 @@ def decide_time_filter(
                 prompt=messages,
                 reasoning_effort=ReasoningEffort.OFF,
                 timeout_override=SECONDARY_LLM_FLOW_TIMEOUT_S,
+                max_tokens=SECONDARY_LLM_MAX_OUTPUT_TOKENS,
             )
             record_llm_response(span_generation, response)
             content = response.choice.message.content

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -10,6 +11,10 @@ from onyx.error_handling.error_codes import OnyxErrorCode
 from onyx.error_handling.exceptions import OnyxError
 from onyx.llm.api_surfaces import resolve_api_surface
 from onyx.llm.constants import DYNAMIC_LLM_PROVIDERS
+from onyx.llm.custom_config_mapping import (
+    EXTRA_BODY_CONFIG_KEY,
+    _normalize_key,
+)
 from onyx.llm.model_capabilities import (
     anthropic_supports_thinking,
     get_max_input_tokens,
@@ -158,6 +163,29 @@ class LLMProviderUpsertRequest(LLMProvider):
     # only adds or updates.
     keep_existing_models: bool = False
     model_configurations: list["ModelConfigurationUpsertRequest"] = []
+
+    @field_validator("custom_config")
+    @classmethod
+    def validate_extra_body_json(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        """Fail the save when the extra_body passthrough is not a JSON object —
+        otherwise a malformed value would break every call to the provider."""
+        if value is None:
+            return value
+        for key, val in value.items():
+            if _normalize_key(key) == _normalize_key(
+                EXTRA_BODY_CONFIG_KEY
+            ) and isinstance(val, str):
+                try:
+                    parsed = json.loads(val)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"custom_config '{key}' must be a JSON object: {e}"
+                    ) from e
+                if not isinstance(parsed, dict):
+                    raise ValueError(f"custom_config '{key}' must be a JSON object")
+        return value
 
     @field_validator("provider", mode="before")
     @classmethod

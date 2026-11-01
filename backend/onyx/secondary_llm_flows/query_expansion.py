@@ -1,4 +1,7 @@
-from onyx.configs.chat_configs import SECONDARY_LLM_FLOW_TIMEOUT_S
+from onyx.configs.chat_configs import (
+    SECONDARY_LLM_FLOW_TIMEOUT_S,
+    SECONDARY_LLM_MAX_OUTPUT_TOKENS,
+)
 from onyx.configs.constants import MessageType
 from onyx.llm.interfaces import LLM
 from onyx.llm.models import (
@@ -143,6 +146,7 @@ def semantic_query_rephrase(
             prompt=messages,
             reasoning_effort=ReasoningEffort.OFF,
             timeout_override=SECONDARY_LLM_FLOW_TIMEOUT_S,
+            max_tokens=SECONDARY_LLM_MAX_OUTPUT_TOKENS,
         )
         record_llm_response(span_generation, response)
         final_query = response.choice.message.content
@@ -227,6 +231,7 @@ def keyword_query_expansion(
             prompt=messages,
             reasoning_effort=ReasoningEffort.OFF,
             timeout_override=SECONDARY_LLM_FLOW_TIMEOUT_S,
+            max_tokens=SECONDARY_LLM_MAX_OUTPUT_TOKENS,
         )
         record_llm_response(span_generation, response)
         content = response.choice.message.content

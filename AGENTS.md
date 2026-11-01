@@ -69,7 +69,16 @@ This file provides guidance to AI agents when working with code in this reposito
   secondary without ever touching the primary — they fail open into their graceful fallbacks.
   Net effect: prompts under ~2k tokens (naming, small expansions) genuinely run on the 9B;
   classification (~5k) and selection (~25.6k) mostly fall back until the server's prefill
-  speeds up or the env var is raised.
+  speeds up or the env var is raised. INCIDENT 2026-11-02: Qwen3.5 is a thinking model and
+  llama.cpp ignores reasoning_effort=OFF, so every flow call generated a multi-thousand-token
+  think trace at ~6 tok/s CPU decode; the 9B's decode load also throttled the primary
+  35B-A3B on the same host ~13x (1.2k -> 92 tok/s prefill — MoE expert tensors are
+  CPU-bandwidth-bound). Fixes: (1) custom_config now supports an `extra_body` JSON passthrough
+  (`EXTRA_BODY_CONFIG_KEY` in custom_config_mapping.py, validated at upsert) — the provider is
+  configured with `{"chat_template_kwargs": {"enable_thinking": false}}`, verified: flow
+  answers in seconds, zero trace; (2) every secondary invoke caps output at
+  `SECONDARY_LLM_MAX_OUTPUT_TOKENS` (256) so any thinking model truncates into graceful
+  fallbacks instead of running 15 min.
 - Tool response stats (added 2026-10-28, per-doc breakdown 2026-11-01): `open_url` measures its
   LLM-facing response (bytes + tokens) and streams them in `OpenUrlDocuments`
   (`content_bytes`/`token_count`, plus `doc_stats` — per-document breakdown keyed by
