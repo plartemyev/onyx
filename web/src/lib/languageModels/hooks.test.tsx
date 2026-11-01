@@ -45,7 +45,7 @@ function mockProvidersResponse(
       })),
       default_text: null,
       default_vision: defaultVision,
-      default_chat_naming: null,
+      default_secondary: null,
       default_craft: null,
     },
     error: undefined,

@@ -1502,12 +1502,12 @@
       "betaTag": {
         "label": "ベータ"
       },
-      "chatNaming": {
-        "description": "チャットセッションに自動で名前を付けるモデルです。既定では各セッションのモデルを使用します。メインのモデルが同時リクエストを処理できない場合は、小さく高速なモデルをここで指定してください。",
+      "secondaryModel": {
+        "description": "補助タスク用の小規模・高速モデル：クエリの言い換え、キーワード拡張、ドキュメント選択と関連性分類、期間・ソースフィルター、セッション命名、メモリ更新。未設定の場合はセッション自身のモデルを使用します — メインモデルを占有しないよう小規模モデルを指定できます。",
         "resetButton": {
           "label": "リセット"
         },
-        "title": "チャット命名モデル"
+        "title": "セカンダリモデル"
       },
       "connectors": {
         "empty": {
@@ -1670,10 +1670,10 @@
         "title": "Temperature の制御"
       },
       "toasts": {
-        "chatNamingReset": "チャット命名をセッションのモデルにリセットしました",
-        "chatNamingResetFailed": "チャット命名モデルのリセットに失敗しました",
-        "chatNamingUpdateFailed": "チャット命名モデルの更新に失敗しました",
-        "chatNamingUpdated": "チャット命名モデルを更新しました",
+        "secondaryModelReset": "補助フローをセッションモデルにリセットしました",
+        "secondaryModelResetFailed": "セカンダリモデルのリセットに失敗しました",
+        "secondaryModelUpdateFailed": "セカンダリモデルの更新に失敗しました",
+        "secondaryModelUpdated": "セカンダリモデルを更新しました",
         "providerResolveFailed": "プロバイダーを解決できませんでした",
         "settingsUpdateFailed": "設定の更新に失敗しました",
         "settingsUpdated": "設定を更新しました",

@@ -17,6 +17,32 @@ logger = setup_logger()
 DEFAULT_CHAT_SESSION_NAME = "New Chat"
 FALLBACK_CHAT_SESSION_NAME_LENGTH = 40
 
+# Headroom in the naming model's window for the system prompt, the reminder,
+# and the short generated name itself.
+NAMING_HISTORY_RESERVE_TOKENS = 1024
+
+
+def _cap_history_to_window(
+    chat_history: list[ChatMessageSimple],
+    llm: LLM,
+) -> list[ChatMessageSimple]:
+    """Keep the newest messages whose stored token counts fit the naming
+    model's window. The full session can dwarf a small secondary model; the
+    title only needs the recent conversation. The newest message is always
+    kept."""
+    budget = llm.config.max_input_tokens - NAMING_HISTORY_RESERVE_TOKENS
+    if budget <= 0:
+        return chat_history[-1:]
+
+    total = 0
+    cut = len(chat_history) - 1
+    for idx in range(len(chat_history) - 1, -1, -1):
+        total += max(chat_history[idx].token_count, 0)
+        if total > budget:
+            break
+        cut = idx
+    return chat_history[cut:]
+
 
 def get_fallback_chat_session_name(chat_history: Sequence[ChatMessage]) -> str:
     user_message = next(
@@ -50,7 +76,9 @@ def generate_chat_session_name(
         message_type=MessageType.USER_REMINDER,
     )
 
-    complete_message_history = [system_prompt] + chat_history + [reminder_prompt]
+    complete_message_history = (
+        [system_prompt] + _cap_history_to_window(chat_history, llm) + [reminder_prompt]
+    )
 
     llm_facing_history = translate_history_to_llm_format(
         complete_message_history, llm.config

@@ -1502,12 +1502,12 @@
       "betaTag": {
         "label": "beta"
       },
-      "chatNaming": {
-        "description": "Modelo que se usa para nombrar automáticamente las sesiones de chat. De forma predeterminada usa el modelo de cada sesión: fija aquí un modelo pequeño y rápido si tu modelo principal no puede atender solicitudes simultáneas.",
+      "secondaryModel": {
+        "description": "Modelo pequeño y rápido para tareas auxiliares: reformulación de consultas, expansión de palabras clave, selección de documentos y clasificación de relevancia, filtros de tiempo y fuente, nombrado de sesiones y actualizaciones de memoria. Si no se establece, cada sesión usa su propio modelo — fija un modelo pequeño aquí para liberar tu modelo principal.",
         "resetButton": {
           "label": "Restablecer"
         },
-        "title": "Modelo para nombrar chats"
+        "title": "Modelo secundario"
       },
       "connectors": {
         "empty": {
@@ -1670,10 +1670,10 @@
         "title": "Control de la temperatura"
       },
       "toasts": {
-        "chatNamingReset": "Los chats se nombrarán de nuevo con el modelo de la sesión",
-        "chatNamingResetFailed": "No se pudo restablecer el modelo para nombrar chats",
-        "chatNamingUpdateFailed": "No se pudo actualizar el modelo para nombrar chats",
-        "chatNamingUpdated": "Modelo para nombrar chats actualizado",
+        "secondaryModelReset": "Los flujos auxiliares vuelven al modelo de la sesión",
+        "secondaryModelResetFailed": "No se pudo restablecer el modelo secundario",
+        "secondaryModelUpdateFailed": "No se pudo actualizar el modelo secundario",
+        "secondaryModelUpdated": "Modelo secundario actualizado",
         "providerResolveFailed": "No se pudo resolver el proveedor",
         "settingsUpdateFailed": "No se pudo actualizar la configuración",
         "settingsUpdated": "Configuración actualizada",

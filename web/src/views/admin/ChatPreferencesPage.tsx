@@ -675,29 +675,32 @@ export default function ChatPreferencesPage() {
   const businessTier = useTierAtLeast(Tier.BUSINESS);
   const enterpriseTier = useTierAtLeast(Tier.ENTERPRISE);
 
-  // Dedicated chat-naming model. Auto-naming reads this designation via
-  // fetch_default_chat_naming_model; when unset it uses the session's model.
+  // Admin-designated secondary model for the auxiliary LLM flows (query
+  // rephrase/expansion, document selection, section-relevance classification,
+  // time filter, search scope, session naming, memory update). Reads the
+  // designation via fetch_default_secondary_model; when unset every flow uses
+  // the session's model.
   const {
     llmProviders,
-    defaultChatNaming,
+    defaultSecondary,
     refetch: refetchLlmProviders,
   } = useAdminLLMProviders();
 
-  // Resolve defaultChatNaming (id + name based) to a model_configuration_id
+  // Resolve defaultSecondary (id + name based) to a model_configuration_id
   // for ModelSelector.
-  const chatNamingModelConfigId = useMemo(() => {
-    if (!defaultChatNaming || !llmProviders) return null;
+  const secondaryModelConfigId = useMemo(() => {
+    if (!defaultSecondary || !llmProviders) return null;
     for (const p of llmProviders) {
-      if (p.id !== defaultChatNaming.provider_id) continue;
+      if (p.id !== defaultSecondary.provider_id) continue;
       const mc = p.model_configurations.find(
-        (m) => m.name === defaultChatNaming.model_name
+        (m) => m.name === defaultSecondary.model_name
       );
       if (mc?.id != null) return mc.id;
     }
     return null;
-  }, [llmProviders, defaultChatNaming]);
+  }, [llmProviders, defaultSecondary]);
 
-  const handleChatNamingModelChange = useCallback(
+  const handleSecondaryModelChange = useCallback(
     async ({
       modelName,
       modelConfigurationId,
@@ -714,7 +717,7 @@ export default function ChatPreferencesPage() {
         return;
       }
       try {
-        const response = await fetch("/api/admin/llm/default-chat-naming", {
+        const response = await fetch("/api/admin/llm/default-secondary", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -724,11 +727,12 @@ export default function ChatPreferencesPage() {
         });
         if (!response.ok) {
           throw new Error(
-            (await response.json()).detail ?? t("toasts.chatNamingUpdateFailed")
+            (await response.json()).detail ??
+              t("toasts.secondaryModelUpdateFailed")
           );
         }
         await refetchLlmProviders();
-        toast.success(t("toasts.chatNamingUpdated"));
+        toast.success(t("toasts.secondaryModelUpdated"));
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : t("toasts.unknownError")
@@ -738,18 +742,19 @@ export default function ChatPreferencesPage() {
     [llmProviders, refetchLlmProviders, t]
   );
 
-  const handleClearChatNamingModel = useCallback(async () => {
+  const handleClearSecondaryModel = useCallback(async () => {
     try {
-      const response = await fetch("/api/admin/llm/default-chat-naming", {
+      const response = await fetch("/api/admin/llm/default-secondary", {
         method: "DELETE",
       });
       if (!response.ok) {
         throw new Error(
-          (await response.json()).detail ?? t("toasts.chatNamingResetFailed")
+          (await response.json()).detail ??
+            t("toasts.secondaryModelResetFailed")
         );
       }
       await refetchLlmProviders();
-      toast.success(t("toasts.chatNamingReset"));
+      toast.success(t("toasts.secondaryModelReset"));
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : t("toasts.unknownError")
@@ -1058,24 +1063,24 @@ export default function ChatPreferencesPage() {
                 />
               </InputHorizontal>
               <InputHorizontal
-                title={t("chatNaming.title")}
-                description={t("chatNaming.description")}
+                title={t("secondaryModel.title")}
+                description={t("secondaryModel.description")}
                 withLabel
               >
                 <div className="flex items-center gap-2">
-                  {chatNamingModelConfigId !== null && (
+                  {secondaryModelConfigId !== null && (
                     <Button
                       prominence="tertiary"
                       size="sm"
-                      onClick={() => void handleClearChatNamingModel()}
+                      onClick={() => void handleClearSecondaryModel()}
                     >
-                      {t("chatNaming.resetButton.label")}
+                      {t("secondaryModel.resetButton.label")}
                     </Button>
                   )}
                   <ModelSelector
-                    value={chatNamingModelConfigId}
+                    value={secondaryModelConfigId}
                     onChange={(opt) =>
-                      void handleChatNamingModelChange({
+                      void handleSecondaryModelChange({
                         modelName: opt.modelName,
                         modelConfigurationId: opt.modelConfigurationId,
                       })

@@ -50,7 +50,7 @@ const llmResponse: LLMProviderResponse<LLMProviderDescriptor> = {
   providers: llmProviders,
   default_text: null,
   default_vision: null,
-  default_chat_naming: null,
+  default_secondary: null,
   default_craft: null,
 };
 

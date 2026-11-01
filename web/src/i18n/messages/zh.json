@@ -1502,12 +1502,12 @@
       "betaTag": {
         "label": "测试版"
       },
-      "chatNaming": {
-        "description": "用于自动命名对话会话的模型。默认使用每个会话自身的模型——如果主模型无法处理并发请求，请在此固定一个小而快的模型。",
+      "secondaryModel": {
+        "description": "用于辅助任务的小型快速模型：查询改写、关键词扩展、文档选择与相关性分类、时间和来源过滤、会话命名和记忆更新。未设置时各会话使用自己的模型——在此指定一个小模型，让主模型保持空闲。",
         "resetButton": {
           "label": "重置"
         },
-        "title": "对话命名模型"
+        "title": "次要模型"
       },
       "connectors": {
         "empty": {
@@ -1670,10 +1670,10 @@
         "title": "温度控制"
       },
       "toasts": {
-        "chatNamingReset": "对话命名已重置为会话自身的模型",
-        "chatNamingResetFailed": "重置对话命名模型失败",
-        "chatNamingUpdateFailed": "更新对话命名模型失败",
-        "chatNamingUpdated": "对话命名模型已更新",
+        "secondaryModelReset": "辅助流程已重置为会话自身的模型",
+        "secondaryModelResetFailed": "重置次要模型失败",
+        "secondaryModelUpdateFailed": "更新次要模型失败",
+        "secondaryModelUpdated": "次要模型已更新",
         "providerResolveFailed": "无法解析提供商",
         "settingsUpdateFailed": "更新设置失败",
         "settingsUpdated": "设置已更新",

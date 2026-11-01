@@ -11,6 +11,7 @@ from onyx.db.llm import (
     can_user_access_llm_provider,
     fetch_default_contextual_rag_model,
     fetch_default_llm_model,
+    fetch_default_secondary_model,
     fetch_default_vision_model,
     fetch_existing_llm_provider,
     fetch_existing_models,
@@ -459,6 +460,23 @@ def get_default_llm(
             policy_fn=policy_fn,
             user_defaults=user_defaults,
         )
+
+
+def get_secondary_llm(db_session: Session) -> LLM | None:
+    """LLM for the secondary flows: query rephrase/keyword expansion, document
+    selection, section-relevance classification, time filter, search scope,
+    session naming, memory update, and slack query building.
+
+    Returns the admin-designated secondary model, or None when unset —
+    callers fall back to the main/session model in that case.
+    """
+    model = fetch_default_secondary_model(db_session)
+    if not model:
+        return None
+    return llm_from_provider(
+        model_name=model.name,
+        llm_provider=LLMProviderView.from_model(model.llm_provider),
+    )
 
 
 def get_llm(

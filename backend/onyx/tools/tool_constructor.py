@@ -24,6 +24,7 @@ from onyx.db.tools import get_builtin_tool
 from onyx.document_index.factory import get_default_document_index
 from onyx.image_gen.interfaces import ImageGenerationProviderCredentials
 from onyx.llm.engine_token_counter import get_engine_token_counter
+from onyx.llm.factory import get_secondary_llm
 from onyx.llm.interfaces import LLM, LLMConfig
 from onyx.onyxbot.slack.models import SlackContext
 from onyx.server.features.mcp.credentials import (
@@ -217,6 +218,10 @@ def _construct_tools_impl(
     # This flow is for search so we do not get all indices.
     document_index = get_default_document_index(search_settings, None, db_session)
 
+    # Admin-designated small model for the secondary flows; None falls back to
+    # the main llm inside each consumer.
+    secondary_llm = get_secondary_llm(db_session)
+
     def _build_search_tool(tool_id: int, config: SearchToolConfig) -> SearchTool:
         # Chat document ids extend (never replace) the persona's explicit
         # knowledge: both land in the same OR-based knowledge filter.
@@ -248,6 +253,7 @@ def _construct_tools_impl(
             enable_slack_search=config.enable_slack_search,
             auto_detect_filters=config.auto_detect_filters,
             chat_scoped=config.chat_document_ids is not None,
+            secondary_llm=secondary_llm,
         )
 
     open_url_web_fetch_disabled = should_disable_open_url_web_fetch(
@@ -578,7 +584,7 @@ def _construct_tools_impl(
             memory_tool = MemoryTool(
                 tool_id=memory_tool_db_model.id,
                 emitter=emitter,
-                llm=llm,
+                llm=secondary_llm or llm,
             )
             tool_dict[memory_tool_db_model.id] = [memory_tool]
         except RuntimeError:

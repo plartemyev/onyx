@@ -1502,12 +1502,12 @@
       "betaTag": {
         "label": "beta"
       },
-      "chatNaming": {
-        "description": "Model used to auto-name chat sessions. Defaults to each session's own model — pin a small, fast model here if your main model can't serve concurrent requests.",
+      "secondaryModel": {
+        "description": "Small, fast model for auxiliary tasks: query rephrasing, keyword expansion, document selection and relevance classification, time and source filters, session naming, and memory updates. Defaults to each session's own model — pin a small model here to keep your main model free.",
         "resetButton": {
           "label": "Reset"
         },
-        "title": "Chat Naming Model"
+        "title": "Secondary Model"
       },
       "connectors": {
         "empty": {
@@ -1670,10 +1670,10 @@
         "title": "Temperature Control"
       },
       "toasts": {
-        "chatNamingReset": "Chat naming reset to the session's model",
-        "chatNamingResetFailed": "Failed to reset chat naming model",
-        "chatNamingUpdateFailed": "Failed to update chat naming model",
-        "chatNamingUpdated": "Chat naming model updated",
+        "secondaryModelReset": "Secondary flows reset to the session's model",
+        "secondaryModelResetFailed": "Failed to reset secondary model",
+        "secondaryModelUpdateFailed": "Failed to update secondary model",
+        "secondaryModelUpdated": "Secondary model updated",
         "providerResolveFailed": "Could not resolve provider",
         "settingsUpdateFailed": "Failed to update settings",
         "settingsUpdated": "Settings updated",

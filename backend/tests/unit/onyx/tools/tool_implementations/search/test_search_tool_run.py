@@ -26,7 +26,7 @@ def _make_tool(
         emitter=MagicMock(),
         user=MagicMock(is_anonymous=False),
         persona_search_info=MagicMock(document_set_names=[]),
-        llm=MagicMock(),
+        llm=MagicMock(config=MagicMock(max_input_tokens=100_000)),
         document_index=MagicMock(),
         user_selected_filters=user_selected_filters,
         project_id_filter=None,

@@ -1502,12 +1502,12 @@
       "betaTag": {
         "label": "베타"
       },
-      "chatNaming": {
-        "description": "채팅 세션의 이름을 자동으로 지정하는 데 사용하는 모델입니다. 기본값은 각 세션의 모델입니다. 기본 모델이 동시 요청을 처리할 수 없으면 여기에 작고 빠른 모델을 지정하세요.",
+      "secondaryModel": {
+        "description": "보조 작업용 소형 고속 모델: 쿼리 재작성, 키워드 확장, 문서 선택 및 관련성 분류, 시간·소스 필터, 세션 이름 지정, 메모리 업데이트. 설정하지 않으면 각 세션의 모델을 사용합니다 — 여기에 작고 빠른 모델을 지정하여 기본 모델을 여유롭게 유지하세요.",
         "resetButton": {
           "label": "초기화"
         },
-        "title": "채팅 이름 지정 모델"
+        "title": "보조 모델"
       },
       "connectors": {
         "empty": {
@@ -1670,10 +1670,10 @@
         "title": "Temperature 제어"
       },
       "toasts": {
-        "chatNamingReset": "채팅 이름 지정 모델을 세션 모델로 초기화했습니다",
-        "chatNamingResetFailed": "채팅 이름 지정 모델을 초기화하지 못했습니다",
-        "chatNamingUpdateFailed": "채팅 이름 지정 모델을 업데이트하지 못했습니다",
-        "chatNamingUpdated": "채팅 이름 지정 모델을 업데이트했습니다",
+        "secondaryModelReset": "보조 흐름이 세션 모델로 초기화되었습니다",
+        "secondaryModelResetFailed": "보조 모델을 초기화하지 못했습니다",
+        "secondaryModelUpdateFailed": "보조 모델을 업데이트하지 못했습니다",
+        "secondaryModelUpdated": "보조 모델이 업데이트되었습니다",
         "providerResolveFailed": "제공자를 확인할 수 없습니다",
         "settingsUpdateFailed": "설정을 업데이트하지 못했습니다",
         "settingsUpdated": "설정을 업데이트했습니다",

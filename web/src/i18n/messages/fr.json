@@ -1502,12 +1502,12 @@
       "betaTag": {
         "label": "bêta"
       },
-      "chatNaming": {
-        "description": "Modèle utilisé pour nommer automatiquement les sessions de discussion. Par défaut, chaque session utilise son propre modèle. Fixez ici un petit modèle rapide si votre modèle principal ne peut pas traiter des requêtes simultanées.",
+      "secondaryModel": {
+        "description": "Petit modèle rapide pour les tâches auxiliaires : reformulation des requêtes, expansion de mots-clés, sélection des documents et classification de pertinence, filtres de période et de source, nommage des sessions et mises à jour de mémoire. Sans désignation, chaque session utilise son propre modèle — épinglez un petit modèle ici pour libérer votre modèle principal.",
         "resetButton": {
           "label": "Réinitialiser"
         },
-        "title": "Modèle de nommage des discussions"
+        "title": "Modèle secondaire"
       },
       "connectors": {
         "empty": {
@@ -1670,10 +1670,10 @@
         "title": "Contrôle de la température"
       },
       "toasts": {
-        "chatNamingReset": "Nommage des discussions réinitialisé sur le modèle de la session",
-        "chatNamingResetFailed": "Échec de la réinitialisation du modèle de nommage des discussions",
-        "chatNamingUpdateFailed": "Échec de la mise à jour du modèle de nommage des discussions",
-        "chatNamingUpdated": "Modèle de nommage des discussions mis à jour",
+        "secondaryModelReset": "Les flux auxiliaires sont revenus au modèle de la session",
+        "secondaryModelResetFailed": "Échec de la réinitialisation du modèle secondaire",
+        "secondaryModelUpdateFailed": "Échec de la mise à jour du modèle secondaire",
+        "secondaryModelUpdated": "Modèle secondaire mis à jour",
         "providerResolveFailed": "Impossible de résoudre le fournisseur",
         "settingsUpdateFailed": "Échec de la mise à jour des paramètres",
         "settingsUpdated": "Paramètres mis à jour",

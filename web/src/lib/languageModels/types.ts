@@ -165,7 +165,7 @@ export interface LLMProviderResponse<T> {
   providers: T[];
   default_text: DefaultModel | null;
   default_vision: DefaultModel | null;
-  default_chat_naming: DefaultModel | null;
+  default_secondary: DefaultModel | null;
   default_craft: DefaultModel | null;
 }
 

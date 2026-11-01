@@ -46,6 +46,30 @@ This file provides guidance to AI agents when working with code in this reposito
   rate limits etc. work with no license installed. BOTH vars are required: flipping
   `LICENSE_ENFORCEMENT_ENABLED` to false alone unsets EE entirely (CE main mounts none of the
   `ee/onyx/server/*` routers → the pages 404). `/api/settings` reports `tier: enterprise`.
+- Secondary model for auxiliary flows (2026-11-02): the former "Chat Naming Model" pointer flow
+  (`LLMModelFlowType.SECONDARY`, renamed from `CHAT_NAMING` by migration a3f2c81d7e04) now drives a
+  small/auxiliary model for ALL secondary flows — query rephrase, keyword expansion, document
+  selection, section-relevance classification, time filter, search scope, slack query building,
+  session naming, and memory update. Designated via Admin → Chat Preferences → "Secondary Model"
+  (`POST/DELETE /api/admin/llm/default-secondary`, response field `default_secondary`); unset →
+  every flow falls back to the session/main model. `SearchTool.secondary_llm` (None → main llm) is
+  fetched in `tool_constructor._construct_tools_impl` and `server/features/search/api.py`;
+  `MemoryTool` gets it too; naming still resolves via `LLMOverride`. Selection content budget and
+  expansion history are clamped to the secondary model's `max_input_tokens` (constants in
+  `search/constants.py`); all secondary-flow invokes carry `SECONDARY_LLM_FLOW_TIMEOUT_S`.
+  Recommended: a dense 3-8B model with ≥32k context (the 25-chunk selection budget is ~25.6k
+  tokens). Deployed live 2026-11-02: provider `simple-llm-secondary`
+  (openai_compatible → http://172.29.153.35:8013, same Bearer token as the primary
+  `simple-llm`), model `/models/Qwen3.5-9B-Q4_K_M.gguf` (shown as "Qwen3.5-9B (secondary)"),
+  `max_input_tokens=32768` — matches the server's real `n_ctx` (its 400 error reports it
+  directly). The selection token counter deliberately stays on the PRIMARY engine (`self.llm`),
+  not the secondary. Server prefill is ~34 tok/s (CPU-class), which is fine for the offload's
+  purpose: auxiliary calls stop evicting the single-slot primary's KV cache (no re-prefill of
+  the main context), and flows exceeding the 60s `SECONDARY_LLM_FLOW_TIMEOUT_S` abort on the
+  secondary without ever touching the primary — they fail open into their graceful fallbacks.
+  Net effect: prompts under ~2k tokens (naming, small expansions) genuinely run on the 9B;
+  classification (~5k) and selection (~25.6k) mostly fall back until the server's prefill
+  speeds up or the env var is raised.
 - Tool response stats (added 2026-10-28, per-doc breakdown 2026-11-01): `open_url` measures its
   LLM-facing response (bytes + tokens) and streams them in `OpenUrlDocuments`
   (`content_bytes`/`token_count`, plus `doc_stats` — per-document breakdown keyed by

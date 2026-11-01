@@ -85,7 +85,7 @@ from onyx.db.incognito import (
     is_incognito_teardown_target,
     mark_incognito_user_files_deleting,
 )
-from onyx.db.llm import fetch_default_chat_naming_model
+from onyx.db.llm import fetch_default_secondary_model
 from onyx.db.models import ChatMessage, ChatSessionSharedStatus, Persona, User
 from onyx.db.persona import get_persona_by_id
 from onyx.db.usage import UsageType, increment_usage
@@ -618,10 +618,10 @@ def rename_chat_session(
             chat_session_id=chat_session_id,
             db_session=db_session,
         )
-        # Admin-designated dedicated naming model (so a single-stream local
-        # session model isn't blocked by naming calls) takes priority over the
-        # session's model.
-        naming_model = fetch_default_chat_naming_model(db_session)
+        # Admin-designated secondary model (so a single-stream local session
+        # model isn't blocked by naming and other secondary-flow calls) takes
+        # priority over the session's model.
+        naming_model = fetch_default_secondary_model(db_session)
         naming_override = (
             LLMOverride(
                 model_provider=naming_model.llm_provider.name,

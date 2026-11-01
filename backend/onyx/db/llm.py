@@ -1019,10 +1019,10 @@ def fetch_default_contextual_rag_model(
     return fetch_default_model(db_session, LLMModelFlowType.CONTEXTUAL_RAG)
 
 
-def fetch_default_chat_naming_model(
+def fetch_default_secondary_model(
     db_session: Session,
 ) -> ModelConfiguration | None:
-    return fetch_default_model(db_session, LLMModelFlowType.CHAT_NAMING)
+    return fetch_default_model(db_session, LLMModelFlowType.SECONDARY)
 
 
 def fetch_default_craft_model(db_session: Session) -> ModelConfiguration | None:
@@ -1192,8 +1192,8 @@ def update_default_vision_provider(
     )
 
 
-def update_default_chat_naming_provider(
-    provider_id: int, chat_naming_model: str, db_session: Session
+def update_default_secondary_provider(
+    provider_id: int, secondary_model: str, db_session: Session
 ) -> None:
     provider = db_session.scalar(
         select(LLMProviderModel).where(
@@ -1207,8 +1207,8 @@ def update_default_chat_naming_provider(
     _update_default_model(
         db_session=db_session,
         provider_id=provider_id,
-        model=chat_naming_model,
-        flow_type=LLMModelFlowType.CHAT_NAMING,
+        model=secondary_model,
+        flow_type=LLMModelFlowType.SECONDARY,
     )
 
 
@@ -1243,13 +1243,13 @@ def update_default_craft_provider(
     )
 
 
-def update_no_default_chat_naming_provider(
+def update_no_default_secondary_provider(
     db_session: Session,
 ) -> None:
     db_session.execute(
         update(LLMModelFlow)
         .where(
-            LLMModelFlow.llm_model_flow_type == LLMModelFlowType.CHAT_NAMING,
+            LLMModelFlow.llm_model_flow_type == LLMModelFlowType.SECONDARY,
             LLMModelFlow.is_default == True,  # noqa: E712
         )
         .values(is_default=False)
@@ -1603,7 +1603,7 @@ def update_model_configuration__no_commit(
         if flow_type not in model_configuration.llm_model_flow_types
     }
     # Only the capability-derived flows are reconciled here. The pointer flows —
-    # CONTEXTUAL_RAG, CHAT_NAMING and CRAFT — are set by their own endpoints and
+    # CONTEXTUAL_RAG, SECONDARY and CRAFT — are set by their own endpoints and
     # are implied by no supports_* field, so they are never in supported_flows.
     # Without this filter an ordinary provider update deletes them, and the
     # deployment default each one carries goes with it.

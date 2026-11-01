@@ -118,12 +118,16 @@ from onyx.tools.models import (
     ToolResponse,
 )
 from onyx.tools.tool_implementations.search.constants import (
+    ESTIMATED_TOKENS_PER_MESSAGE_OVERHEAD,
+    EXPANSION_HISTORY_RESERVE_TOKENS,
     KEYWORD_QUERY_HYBRID_ALPHA,
     LLM_KEYWORD_QUERY_WEIGHT,
     LLM_NON_CUSTOM_QUERY_WEIGHT,
     LLM_SEMANTIC_QUERY_WEIGHT,
     MAX_CHUNKS_FOR_RELEVANCE,
     ORIGINAL_QUERY_WEIGHT,
+    SELECTION_MIN_CONTENT_BUDGET_TOKENS,
+    SELECTION_PROMPT_RESERVE_TOKENS,
     SELECTION_TOKEN_BUDGET_MULTIPLIER,
 )
 from onyx.tools.tool_implementations.search.search_utils import (
@@ -271,6 +275,66 @@ def _trim_sections_by_tokens(
     return trimmed_sections
 
 
+def _selection_content_budget(
+    secondary_llm: LLM,
+    override_max_chunks: int | None,
+) -> int:
+    """Content-token budget for the document-selection prompt: the chunk-count
+    budget, clamped to the secondary model's window with headroom for the
+    prompt skeleton, per-section metadata, and output. The floor keeps a tiny
+    window usable at all."""
+    chunk_budget = (
+        (override_max_chunks or MAX_CHUNKS_FED_TO_CHAT)
+        * DOC_EMBEDDING_CONTEXT_SIZE
+        * SELECTION_TOKEN_BUDGET_MULTIPLIER
+    )
+    return min(
+        chunk_budget,
+        max(
+            SELECTION_MIN_CONTENT_BUDGET_TOKENS,
+            secondary_llm.config.max_input_tokens - SELECTION_PROMPT_RESERVE_TOKENS,
+        ),
+    )
+
+
+def _trim_history_for_expansion(
+    history: list[ChatMinimalTextMessage],
+    llm: LLM,
+) -> list[ChatMinimalTextMessage]:
+    """Trim chat history to the given model's input window, newest-first.
+
+    The history handed to the search tool is pre-trimmed to the MAIN model's
+    window, which can dwarf a small secondary model's window. Token counts here
+    are rough (chars/4 plus a per-message overhead); the newest messages win,
+    and the last message is always kept so the current query survives.
+    """
+    if not history:
+        return history
+
+    budget_tokens = llm.config.max_input_tokens - EXPANSION_HISTORY_RESERVE_TOKENS
+    if budget_tokens <= 0:
+        return history[-1:]
+
+    trimmed_reversed: list[ChatMinimalTextMessage] = []
+    total_tokens = 0
+    for msg in reversed(history):
+        msg_tokens = len(msg.message) // 4 + ESTIMATED_TOKENS_PER_MESSAGE_OVERHEAD
+        if trimmed_reversed and total_tokens + msg_tokens > budget_tokens:
+            break
+        trimmed_reversed.append(msg)
+        total_tokens += msg_tokens
+
+    trimmed = list(reversed(trimmed_reversed))
+    if len(trimmed) < len(history):
+        logger.debug(
+            "Trimmed expansion history from %s to %s messages for a %s-token window",
+            len(history),
+            len(trimmed),
+            llm.config.max_input_tokens,
+        )
+    return trimmed
+
+
 def _build_retrieval_candidate_lanes(
     lane_specs: list[tuple[str, float | None]],
     lane_results: list[list[InferenceChunk]],
@@ -307,6 +371,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
     # still behave: ``__init__`` overrides both for chat-scoped tools.
     _description_text = DESCRIPTION
     chat_scoped = False
+    _secondary_llm: LLM | None = None
 
     def __init__(
         self,
@@ -338,12 +403,18 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         # With no knowledge scope at all, the tool then honestly reports
         # nothing instead of searching every indexed user file.
         chat_scoped: bool = False,
+        # Small/auxiliary model for the secondary flows (query rephrase and
+        # keyword expansion, document selection, section-relevance
+        # classification, time filter, search scope, slack query building).
+        # None falls back to the main `llm`.
+        secondary_llm: LLM | None = None,
     ) -> None:
         super().__init__(emitter=emitter)
 
         self.user = user
         self.persona_search_info = persona_search_info
         self.llm = llm
+        self._secondary_llm = secondary_llm
         self.document_index = document_index
         self.user_selected_filters = user_selected_filters
         self.project_id_filter = project_id_filter
@@ -370,6 +441,12 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         self._time_filter_computed = False
 
         self._id = tool_id
+
+    @property
+    def secondary_llm(self) -> LLM:
+        """The model the secondary flows run on: the designated small model
+        when one is set, else the main ``llm``."""
+        return self._secondary_llm or self.llm
 
     def _prefetch_slack_data(
         self, db_session: Session
@@ -547,7 +624,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
                 bot_token=bot_token,
                 team_id=None,
                 search_settings=search_settings,
-                llm=self.llm,
+                llm=self.secondary_llm,
             )
 
             logger.info("Slack federated search returned %s chunks", len(chunks))
@@ -730,7 +807,12 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         scope_job_index: int | None = None
         time_job_index: int | None = None
         if expand_queries:
-            expansion_args = (message_history, self.llm, user_info, memories)
+            expansion_args = (
+                _trim_history_for_expansion(message_history, self.secondary_llm),
+                self.secondary_llm,
+                user_info,
+                memories,
+            )
             jobs.append((semantic_query_rephrase, expansion_args))
             jobs.append((keyword_query_expansion, expansion_args))
         if decide_scope:
@@ -738,7 +820,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
             jobs.append((decide_search_scope, decide_args))
         if decide_time:
             time_job_index = len(jobs)
-            jobs.append((decide_time_filter, (message_history, self.llm)))
+            jobs.append((decide_time_filter, (message_history, self.secondary_llm)))
 
         results = run_functions_tuples_in_parallel(jobs) if jobs else []
 
@@ -950,7 +1032,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
 
         decide_args = (
             message_history,
-            self.llm,
+            self.secondary_llm,
             candidate_sources,
             list(self._search_cycles),
             llm_queries,
@@ -1254,16 +1336,17 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
             or (llm_queries[0] if llm_queries else "")
         )
 
+        # Token counting stays on the main engine even when the selection runs
+        # on the secondary model: the budget constants were calibrated against
+        # the main engine's tokenizer, and this keeps a single probe target.
         token_counter = get_engine_token_counter(self.llm)
 
         # Trim sections to fit within token budget before LLM selection
         # This is to account for very short chunks flooding the search context
         # Only consider MAX_CHUNKS_FOR_RELEVANCE chunks per section to avoid flooding from
         # documents with many matching sections
-        max_tokens_for_selection = (
-            (override_kwargs.max_llm_chunks or MAX_CHUNKS_FED_TO_CHAT)
-            * DOC_EMBEDDING_CONTEXT_SIZE
-            * SELECTION_TOKEN_BUDGET_MULTIPLIER
+        max_tokens_for_selection = _selection_content_budget(
+            self.secondary_llm, override_kwargs.max_llm_chunks
         )
 
         # This is approximate since it doesn't build the exact string of the call below
@@ -1282,7 +1365,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         selected_sections, best_doc_ids = select_sections_for_expansion(
             sections=sections_for_selection,
             user_query=secondary_flows_user_query,
-            llm=self.llm,
+            llm=self.secondary_llm,
             max_chunks_per_section=MAX_CHUNKS_FOR_RELEVANCE,
         )
 
@@ -1344,7 +1427,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
                 (
                     section,
                     secondary_flows_user_query,
-                    self.llm,
+                    self.secondary_llm,
                     self.document_index,
                     section.center_chunk.document_id in best_doc_ids_set,
                 ),

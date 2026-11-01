@@ -18,9 +18,9 @@ from onyx.db.engine.sql_engine import get_session
 from onyx.db.enums import LLMModelFlowType, Permission
 from onyx.db.llm import (
     can_user_access_llm_provider,
-    fetch_default_chat_naming_model,
     fetch_default_craft_model,
     fetch_default_llm_model,
+    fetch_default_secondary_model,
     fetch_default_vision_model,
     fetch_existing_llm_provider_by_id,
     fetch_existing_llm_providers,
@@ -30,12 +30,12 @@ from onyx.db.llm import (
     fetch_user_group_ids,
     remove_llm_provider,
     sync_model_configurations,
-    update_default_chat_naming_provider,
     update_default_craft_provider,
     update_default_provider,
+    update_default_secondary_provider,
     update_default_vision_provider,
-    update_no_default_chat_naming_provider,
     update_no_default_craft_provider,
+    update_no_default_secondary_provider,
     upsert_llm_provider,
     validate_persona_ids_exist,
 )
@@ -53,7 +53,6 @@ from onyx.llm.factory import (
     get_default_llm,
     get_llm,
 )
-from onyx.llm.utils import get_max_input_tokens_from_llm_provider
 from onyx.llm.model_capabilities import (
     get_bedrock_token_limit,
     litellm_thinks_model_supports_image_input,
@@ -61,6 +60,7 @@ from onyx.llm.model_capabilities import (
 )
 from onyx.llm.utils import (
     get_llm_contextual_cost,
+    get_max_input_tokens_from_llm_provider,
     is_sensitive_custom_config_key,
     test_llm,
 )
@@ -559,8 +559,8 @@ def list_llm_providers(
         default_vision=DefaultModel.from_model_config(
             fetch_default_vision_model(db_session)
         ),
-        default_chat_naming=DefaultModel.from_model_config(
-            fetch_default_chat_naming_model(db_session)
+        default_secondary=DefaultModel.from_model_config(
+            fetch_default_secondary_model(db_session)
         ),
         default_craft=DefaultModel.from_model_config(
             fetch_default_craft_model(db_session)
@@ -792,28 +792,28 @@ def set_provider_as_default_vision(
     invalidate_provider_listing_cache()
 
 
-@admin_router.post("/default-chat-naming")
-def set_provider_as_default_chat_naming(
+@admin_router.post("/default-secondary")
+def set_provider_as_default_secondary(
     default_model: DefaultModel,
     _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> None:
-    update_default_chat_naming_provider(
+    update_default_secondary_provider(
         provider_id=default_model.provider_id,
-        chat_naming_model=default_model.model_name,
+        secondary_model=default_model.model_name,
         db_session=db_session,
     )
     invalidate_provider_listing_cache()
 
 
-@admin_router.delete("/default-chat-naming")
-def clear_default_chat_naming(
+@admin_router.delete("/default-secondary")
+def clear_default_secondary(
     _: User = Depends(require_permission(Permission.FULL_ADMIN_PANEL_ACCESS)),
     db_session: Session = Depends(get_session),
 ) -> None:
-    """Clear the dedicated naming model; auto-naming falls back to the
-    session's model."""
-    update_no_default_chat_naming_provider(db_session=db_session)
+    """Clear the dedicated secondary model; every secondary flow falls back
+    to the session's model."""
+    update_no_default_secondary_provider(db_session=db_session)
     invalidate_provider_listing_cache()
 
 
@@ -964,8 +964,8 @@ def list_llm_provider_basics(
         default_vision=DefaultModel.from_model_config(
             fetch_default_vision_model(db_session)
         ),
-        default_chat_naming=DefaultModel.from_model_config(
-            fetch_default_chat_naming_model(db_session)
+        default_secondary=DefaultModel.from_model_config(
+            fetch_default_secondary_model(db_session)
         ),
         default_craft=DefaultModel.from_model_config(
             fetch_default_craft_model(db_session)

@@ -628,7 +628,11 @@ class LLMModelFlowType(str, PyEnum):
     VISION = "vision"
     CONTEXTUAL_RAG = "contextual_rag"
     REASONING = "reasoning"
-    CHAT_NAMING = "chat_naming"
+    # Pointer flow for the small/auxiliary model that runs the secondary LLM
+    # flows (query rephrase/expansion, document selection, section-relevance
+    # classification, time filter, search scope, session naming, memory
+    # update). Falls back to the session/main model when unset.
+    SECONDARY = "secondary"
     CRAFT = "craft"
 
 

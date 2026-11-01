@@ -1502,12 +1502,12 @@
       "betaTag": {
         "label": "Beta"
       },
-      "chatNaming": {
-        "description": "Modell, das Chat-Sitzungen automatisch benennt. Standardmäßig wird das Modell der jeweiligen Sitzung verwendet — legen Sie hier ein kleines, schnelles Modell fest, wenn Ihr Hauptmodell keine gleichzeitigen Anfragen bedienen kann.",
+      "secondaryModel": {
+        "description": "Kleines, schnelles Modell für Hilfsaufgaben: Anfragen umformulieren, Schlüsselwörter erweitern, Dokumente auswählen und Relevanz klassifizieren, Zeit- und Quellfilter, Sitzungsbenennung und Speicher-Aktualisierungen. Ohne Festlegung verwendet jede Sitzung ihr eigenes Modell — legen Sie hier ein kleines, schnelles Modell fest, um Ihr Hauptmodell freizuhalten.",
         "resetButton": {
           "label": "Zurücksetzen"
         },
-        "title": "Modell für die Chat-Benennung"
+        "title": "Sekundärmodell"
       },
       "connectors": {
         "empty": {
@@ -1670,10 +1670,10 @@
         "title": "Temperatursteuerung"
       },
       "toasts": {
-        "chatNamingReset": "Die Chat-Benennung wurde auf das Modell der Sitzung zurückgesetzt",
-        "chatNamingResetFailed": "Das Modell für die Chat-Benennung konnte nicht zurückgesetzt werden",
-        "chatNamingUpdateFailed": "Das Modell für die Chat-Benennung konnte nicht aktualisiert werden",
-        "chatNamingUpdated": "Modell für die Chat-Benennung aktualisiert",
+        "secondaryModelReset": "Hilfsflüsse wurden auf das Sitzungsmodell zurückgesetzt",
+        "secondaryModelResetFailed": "Das Sekundärmodell konnte nicht zurückgesetzt werden",
+        "secondaryModelUpdateFailed": "Das Sekundärmodell konnte nicht aktualisiert werden",
+        "secondaryModelUpdated": "Sekundärmodell aktualisiert",
         "providerResolveFailed": "Der Anbieter konnte nicht aufgelöst werden",
         "settingsUpdateFailed": "Die Einstellungen konnten nicht aktualisiert werden",
         "settingsUpdated": "Einstellungen aktualisiert",

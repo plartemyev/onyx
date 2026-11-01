@@ -34,7 +34,12 @@ from onyx.db.tools import get_tools
 from onyx.document_index.factory import get_default_document_index
 from onyx.error_handling.error_codes import OnyxErrorCode
 from onyx.error_handling.exceptions import OnyxError
-from onyx.llm.factory import get_default_llm, get_llm_for_persona, llm_from_provider
+from onyx.llm.factory import (
+    get_default_llm,
+    get_llm_for_persona,
+    get_secondary_llm,
+    llm_from_provider,
+)
 from onyx.server.features.search.models import (
     SearchRequest,
     SearchResponse,
@@ -174,6 +179,7 @@ def search(
         slack_context=None,
         enable_slack_search=True,
         auto_detect_filters=load_settings().auto_detect_search_filters is not False,
+        secondary_llm=get_secondary_llm(db_session),
     )
 
     # 7. Run search

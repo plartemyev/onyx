@@ -23,6 +23,20 @@ RRF_K_VALUE = 50
 # below the selection cut; a wider budget lets the selection LLM rescue them.
 SELECTION_TOKEN_BUDGET_MULTIPLIER = 2
 
+# The document-selection prompt is trimmed to a fixed content budget derived
+# from chunk counts, but the secondary model running the selection may have a
+# much smaller window than that budget assumes. Prompt skeleton, per-section
+# JSON metadata, and the model's output reserve are subtracted from its input
+# window before clamping; the floor keeps a tiny window usable at all.
+SELECTION_PROMPT_RESERVE_TOKENS = 4096
+SELECTION_MIN_CONTENT_BUDGET_TOKENS = 1024
+
+# History headroom kept for the query-expansion prompts and their output when
+# the history is trimmed to the secondary model's window. Messages carry a
+# rough per-message overhead on top of the char-based token estimate.
+EXPANSION_HISTORY_RESERVE_TOKENS = 2048
+ESTIMATED_TOKENS_PER_MESSAGE_OVERHEAD = 8
+
 # Context Expansion
 FULL_DOC_NUM_CHUNKS_AROUND = 5
 

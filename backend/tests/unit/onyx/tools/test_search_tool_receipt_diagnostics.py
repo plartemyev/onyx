@@ -224,7 +224,7 @@ def _real_tool(enable_slack_search: bool = False) -> SearchTool:
         emitter=MagicMock(),
         user=MagicMock(is_anonymous=False),
         persona_search_info=_persona_mock(),
-        llm=MagicMock(),
+        llm=MagicMock(config=MagicMock(max_input_tokens=100_000)),
         document_index=MagicMock(),
         user_selected_filters=None,
         project_id_filter=None,
