@@ -82,10 +82,16 @@ export function parseToolKey(key: string): {
   turn_index: number;
   tab_index: number;
 } {
-  const parts = key.split("-");
+  // Turn indices can be negative (file-context packets use -1), so a plain
+  // split on "-" would break keys like "-1-0". Split at the first "-" after
+  // the (optional) leading minus of the turn index.
+  const separatorIndex = key.indexOf("-", 1);
+  if (separatorIndex === -1) {
+    return { turn_index: parseInt(key, 10) || 0, tab_index: 0 };
+  }
   return {
-    turn_index: parseInt(parts[0] ?? "0", 10),
-    tab_index: parseInt(parts[1] ?? "0", 10),
+    turn_index: parseInt(key.slice(0, separatorIndex), 10) || 0,
+    tab_index: parseInt(key.slice(separatorIndex + 1), 10) || 0,
   };
 }
 
