@@ -1241,11 +1241,11 @@ export default function useChatController({
               ? llmManager.temperature
               : undefined,
             deepResearch,
-            // Internal search starts disabled for every chat, so this whitelist
-            // is the common path. To the backend an explicit list is a
-            // whitelist, but it is only applied to tools the frontend can see
-            // — tools marked `expose_to_frontend=False` keep flowing, so
-            // disabling one visible tool cannot withhold the hidden ones.
+            // Disabled tools narrow the whitelist; with nothing disabled no
+            // whitelist is sent and every attached tool flows. The whitelist
+            // is only applied to tools the frontend can see — tools marked
+            // `expose_to_frontend=False` keep flowing, so disabling one
+            // visible tool cannot withhold the hidden ones.
             enabledToolIds:
               activeAgent && toolConfiguration.disabledToolIds.length > 0
                 ? activeAgent.tools
@@ -1777,8 +1777,9 @@ export default function useChatController({
   // document tokens. The backend already accounts for system prompt, tools,
   // and user-message reservations. `null` while unknown — the UI must not
   // assume a context size the selected model has not reported.
-  const [availableContextTokens, setAvailableContextTokens] =
-    useState<number | null>(null);
+  const [availableContextTokens, setAvailableContextTokens] = useState<
+    number | null
+  >(null);
 
   useEffect(() => {
     if (!llmManager.hasAnyProvider) return;

@@ -179,39 +179,21 @@ describe("useToolConfiguration — orthogonal axes", () => {
   });
 });
 
-describe("useToolConfiguration — internal search starts off", () => {
-  test("a fresh chat reads the search tool as disabled and leaves the rest alone", () => {
+describe("useToolConfiguration — internal search default", () => {
+  test("a fresh chat leaves the search tool neutral, like every other tool", () => {
     mockActiveAgent = agentWithTools([
       toolSnapshot(3, SEARCH_TOOL_ID),
       toolSnapshot(4, WEB_SEARCH_TOOL_ID),
     ]);
     const { result } = renderHook(() => useToolConfiguration());
 
-    expect(result.current.disabledToolIds).toEqual([3]);
+    expect(result.current.disabledToolIds).toEqual([]);
     expect(result.current.forcedToolId).toBeNull();
+    expect(result.current.stateOf(3)).toBeNull();
     expect(result.current.stateOf(4)).toBeNull();
   });
 
-  test("no search tool on the agent means no default", () => {
-    mockActiveAgent = agentWithTools([toolSnapshot(4, WEB_SEARCH_TOOL_ID)]);
-    const { result } = renderHook(() => useToolConfiguration());
-
-    expect(result.current.disabledToolIds).toEqual([]);
-  });
-
-  test("pinning search overrides the default and releases back into it", () => {
-    mockActiveAgent = agentWithTools([toolSnapshot(3, SEARCH_TOOL_ID)]);
-    const { result } = renderHook(() => useToolConfiguration());
-    act(() => result.current.toggleToolState(3, "forced"));
-    expect(result.current.forcedToolId).toBe(3);
-    expect(result.current.disabledToolIds).toEqual([]);
-
-    act(() => result.current.toggleToolState(3, "forced"));
-    expect(result.current.forcedToolId).toBeNull();
-    expect(result.current.disabledToolIds).toEqual([3]);
-  });
-
-  test("an explicit disabled entry for the search tool is not doubled", () => {
+  test("an explicit disabled entry for the search tool is honored", () => {
     sessionStorage.setItem(
       CHAT_KEY,
       JSON.stringify({ tools: { 3: "disabled" } })
@@ -222,15 +204,24 @@ describe("useToolConfiguration — internal search starts off", () => {
     expect(result.current.disabledToolIds).toEqual([3]);
   });
 
-  test("the seed rides along when the composer hands off to a new chat", () => {
+  test("pinning search releases back into neutral", () => {
+    mockActiveAgent = agentWithTools([toolSnapshot(3, SEARCH_TOOL_ID)]);
+    const { result } = renderHook(() => useToolConfiguration());
+    act(() => result.current.toggleToolState(3, "forced"));
+    expect(result.current.forcedToolId).toBe(3);
+    expect(result.current.disabledToolIds).toEqual([]);
+
+    act(() => result.current.toggleToolState(3, "forced"));
+    expect(result.current.forcedToolId).toBeNull();
+    expect(result.current.disabledToolIds).toEqual([]);
+  });
+
+  test("a neutral handoff to a new chat stores nothing", () => {
     mockActiveAgent = agentWithTools([toolSnapshot(3, SEARCH_TOOL_ID)]);
     const { result } = renderHook(() => useToolConfiguration());
     act(() => result.current.handOffTo("chat-xyz"));
 
-    const stored = JSON.parse(
-      sessionStorage.getItem("onyx:tools:chat:chat-xyz") ?? "null"
-    );
-    expect(stored.tools).toEqual({ 3: "disabled" });
+    expect(sessionStorage.getItem("onyx:tools:chat:chat-xyz")).toBeNull();
   });
 });
 
