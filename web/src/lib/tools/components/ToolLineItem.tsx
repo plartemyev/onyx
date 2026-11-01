@@ -118,9 +118,13 @@ export default function ToolLineItem({ tool }: ToolLineItemProps) {
   // Inside a project the row searches that project's files, so it neither
   // owns the connector sources nor offers a way into them.
   const ownsSources = isSearchTool && !inProject;
-  const needsConnectors = ownsSources && ccPairs.length === 0;
-
   const isConfigured = availableTools.some(({ id }) => id === tool.id);
+  // The backend advertises internal search whenever it has anything to
+  // search — connectors, federated sources, or the user's own indexed files.
+  // Only demand connectors when the backend itself leaves the tool out,
+  // otherwise user-file-only deployments would see the row permanently
+  // grayed.
+  const needsConnectors = ownsSources && ccPairs.length === 0 && !isConfigured;
   // Search is advertised even when unconfigured, so an admin can go set it up.
   const isUnavailable = !isConfigured && !isSearchTool;
 

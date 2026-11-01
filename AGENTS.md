@@ -118,6 +118,13 @@ This file provides guidance to AI agents when working with code in this reposito
   is the endpoint, and fd `type` must be a `ChatFileType` value like `plain_text`).
   Live E2E gotcha: the local model server can take 5+ minutes per forced-search turn; poll logs
   instead of assuming a hang.
+- Tool row gating aligned with backend availability (2026-11-01, follows the scoping change):
+  `ToolLineItem` grayed internal search when `ccPairs.length === 0`, and
+  `/api/manage/connector-status` excludes the auto-created `DefaultCCPair` — so user-file-only
+  deployments saw the row permanently grayed with an "add connectors" gear. Both gates
+  (`needsConnectors` in ToolLineItem, the Basic-user visibility filter in ToolsPopover) now use
+  the backend's own availability listing (`/api/tool`, filtered by `SearchTool.is_available`,
+  which counts user files). Verified headless: row renders enabled with zero connectors.
 - Telegram channel crawls and URL identity (2026-11-01): the SearXNG fork transparently serves
   bare `t.me/<channel>` crawls from the `t.me/s/<channel>` web preview, so `RenderedPage.final_url`
   carries the `/s/` URL. `open_url` matches fetched content back to the requested URL — a crawled

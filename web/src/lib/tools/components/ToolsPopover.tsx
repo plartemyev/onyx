@@ -15,13 +15,12 @@ import { SvgActions, SvgKey, SvgSliders, SvgSimpleLoader } from "@opal/icons";
 import { ADMIN_ROUTES } from "@/lib/admin-routes";
 import { MinimalAgent } from "@/lib/agents/types";
 import MCPApiKeyModal from "@/components/chat/MCPApiKeyModal";
-import useCCPairs from "@/hooks/useCCPairs";
 import { useLLMProviders } from "@/lib/languageModels/hooks";
 import { hasPermission } from "@/lib/permissions";
 import { useProjectsContext } from "@/lib/projects/providers";
-import { useSettings } from "@/lib/settings/hooks";
 import { FILE_READER_TOOL_ID, SEARCH_TOOL_ID } from "@/lib/tools/constants";
 import {
+  useAvailableTools,
   useBuiltInToolNames,
   type ToolConfigurationHandle,
 } from "@/lib/tools/hooks";
@@ -107,12 +106,14 @@ export default function ToolsPopover({
   });
 
   const { permissions } = useUser();
-  const { vectorDbEnabled } = useSettings();
-  const { ccPairs } = useCCPairs(vectorDbEnabled);
+  const { tools: availableTools } = useAvailableTools();
   const { currentProjectId, allCurrentProjectFiles } = useProjectsContext();
 
-  // Check if there are any connectors available
-  const hasNoConnectors = ccPairs.length === 0;
+  // Whether the backend leaves the internal search tool out of the available
+  // listing — no connectors, no federated sources, no indexed user files.
+  const searchUnavailable = !availableTools.some(
+    (tool) => tool.in_code_tool_id === SEARCH_TOOL_ID
+  );
 
   const close = useCallback(() => setOpen(false), []);
   const openSources = useCallback(
@@ -152,10 +153,11 @@ export default function ToolsPopover({
       return true;
     }
 
-    // Filter out internal search tool for users without connector management when there are no connectors
+    // Filter out internal search tool for users without connector management
+    // when the backend does not offer it at all
     if (
       tool.in_code_tool_id === SEARCH_TOOL_ID &&
-      hasNoConnectors &&
+      searchUnavailable &&
       !hasPermission(permissions, Permission.MANAGE_CONNECTORS)
     ) {
       return false;
