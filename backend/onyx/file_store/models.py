@@ -97,6 +97,11 @@ class FileDescriptor(TypedDict):
     type: ChatFileType
     name: NotRequired[str | None]
     user_file_id: NotRequired[str | None]
+    # Measured size/token cost of the text representation fed to the LLM for
+    # this document. Set on chat-message descriptors at send time (open_url-
+    # style timeline stats); absent for generated files and incognito sends.
+    content_bytes: NotRequired[int | None]
+    token_count: NotRequired[int | None]
 
 
 class InMemoryChatFile(BaseModel):

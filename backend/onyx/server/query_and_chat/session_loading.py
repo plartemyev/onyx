@@ -24,11 +24,12 @@ from onyx.deep_research.dr_mock_tools import (
     RESEARCH_AGENT_IN_CODE_ID,
     RESEARCH_AGENT_TASK_KEY,
 )
-from onyx.file_store.models import FileDescriptor
+from onyx.file_store.models import ChatFileType, FileDescriptor
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     AgentResponseDelta,
     AgentResponseStart,
+    ChatFileContext,
     CitationInfo,
     CodingAgentFinal,
     CodingAgentStart,
@@ -45,6 +46,7 @@ from onyx.server.query_and_chat.streaming_models import (
     IntermediateReportStart,
     MemoryToolDelta,
     MemoryToolStart,
+    OpenUrlDocStat,
     OpenUrlDocuments,
     OpenUrlStart,
     OpenUrlUrls,
@@ -375,6 +377,9 @@ def create_fetch_packets(
     urls: list[str],
     turn_index: int,
     tab_index: int = 0,
+    content_bytes: int | None = None,
+    token_count: int | None = None,
+    doc_stats: list[OpenUrlDocStat] | None = None,
 ) -> list[Packet]:
     packets: list[Packet] = []
     # Emit start packet
@@ -396,7 +401,10 @@ def create_fetch_packets(
         Packet(
             placement=Placement(turn_index=turn_index, tab_index=tab_index),
             obj=OpenUrlDocuments(
-                documents=[SearchDoc(**doc.model_dump()) for doc in fetch_docs]
+                documents=[SearchDoc(**doc.model_dump()) for doc in fetch_docs],
+                content_bytes=content_bytes,
+                token_count=token_count,
+                doc_stats=doc_stats or [],
             ),
         )
     )
@@ -406,6 +414,41 @@ def create_fetch_packets(
             obj=SectionEnd(),
         )
     )
+    return packets
+
+
+def create_file_context_packets(
+    files: list[FileDescriptor],
+    turn_index: int = -1,
+    tab_index: int = 0,
+) -> list[Packet]:
+    """Recreate the chat_file_context packets for a message's uploaded
+    documents. Stats (content_bytes/token_count) were persisted on the
+    descriptors at send time; descriptors without them still render, just
+    without the numeric badges."""
+    placement = Placement(turn_index=turn_index, tab_index=tab_index)
+    packets: list[Packet] = []
+    for fd in files:
+        try:
+            file_type = ChatFileType(fd.get("type"))
+        except ValueError:
+            continue
+        if not file_type.is_text_file():
+            continue
+        packets.append(
+            Packet(
+                placement=placement,
+                obj=ChatFileContext(
+                    file_name=fd.get("name") or "document",
+                    file_id=fd.get("id") or "",
+                    content_bytes=fd.get("content_bytes"),
+                    token_count=fd.get("token_count"),
+                ),
+            )
+        )
+    if not packets:
+        return []
+    packets.append(Packet(placement=placement, obj=SectionEnd()))
     return packets
 
 
@@ -577,6 +620,7 @@ def create_search_packets(
 def translate_assistant_message_to_packets(
     chat_message: ChatMessage,
     db_session: Session,
+    parent_user_files: list[FileDescriptor] | None = None,
 ) -> list[Packet]:
     """
     Translates an assistant message and tool calls to packet format.
@@ -584,6 +628,12 @@ def translate_assistant_message_to_packets(
     The final answer and citations are also a "step".
     """
     packet_list: list[Packet] = []
+
+    # Uploaded documents attached to the prompting user message render as the
+    # first timeline step, grouped at turn -1 so they precede agent turns.
+    if parent_user_files:
+        packet_list.extend(create_file_context_packets(parent_user_files))
+    occupied_turns = {-1} if parent_user_files else set()
 
     if chat_message.message_type != MessageType.ASSISTANT:
         raise ValueError(f"Chat message {chat_message.id} is not an assistant message")
@@ -614,7 +664,11 @@ def translate_assistant_message_to_packets(
             if turn_reasoning:
                 # Use the previous turn slot when free to preserve reasoning-before-tool ordering.
                 reasoning_turn_index = turn_num
-                if turn_num > 0 and (turn_num - 1) not in tool_call_turns:
+                if (
+                    turn_num > 0
+                    and (turn_num - 1) not in tool_call_turns
+                    and (turn_num - 1) not in occupied_turns
+                ):
                     reasoning_turn_index = turn_num - 1
                 packet_list.extend(
                     create_reasoning_packets(
@@ -673,6 +727,12 @@ def translate_assistant_message_to_packets(
                                 urls,
                                 turn_num,
                                 tab_index=tool_call.tab_index,
+                                content_bytes=tool_call.response_bytes,
+                                token_count=tool_call.response_tokens,
+                                doc_stats=[
+                                    OpenUrlDocStat(**stat)
+                                    for stat in (tool_call.response_doc_stats or [])
+                                ],
                             )
                         )
 

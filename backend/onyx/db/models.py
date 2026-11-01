@@ -3469,6 +3469,15 @@ class ToolCall(Base):
     # Only the top level tools (the ones with a parent_chat_message_id) have token counts that are counted
     # towards the session total.
     tool_call_tokens: Mapped[int] = mapped_column(Integer())
+    # Measured size and token cost of tool_call_response (open_url only today);
+    # surfaced in the UI timeline. Null for tools that don't measure it.
+    response_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Per-document breakdown of the same response (open_url only today):
+    # [{document_id, content_bytes, token_count}, ...] for timeline chips.
+    response_doc_stats: Mapped[list[dict] | None] = mapped_column(
+        postgresql.JSONB(), nullable=True
+    )
     # For image generation tool - stores GeneratedImage objects for replay
     generated_images: Mapped[list[dict] | None] = mapped_column(
         postgresql.JSONB(), nullable=True

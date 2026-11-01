@@ -12,6 +12,7 @@ import {
 export const COLLAPSED_STREAMING_PACKET_TYPES = new Set<PacketType>([
   PacketType.SEARCH_TOOL_START,
   PacketType.FETCH_TOOL_START,
+  PacketType.FILE_CONTEXT,
   PacketType.DOWNLOAD_TOOL_START,
   PacketType.ANALYZE_IMAGE_START,
   PacketType.PYTHON_TOOL_START,
@@ -65,6 +66,22 @@ export const isAnalyzeImagePackets = (packets: Packet[]): boolean =>
 export const isReasoningPackets = (packets: Packet[]): boolean =>
   packets.some((p) => p.obj.type === PacketType.REASONING_START);
 
+// Check if packets belong to the fetch (open_url) tool
+export const isFetchToolPackets = (packets: Packet[]): boolean =>
+  packets.some((p) => p.obj.type === PacketType.FETCH_TOOL_START);
+
+// Check if packets belong to the uploaded-documents context step
+export const isFileContextPackets = (packets: Packet[]): boolean =>
+  packets.some((p) => p.obj.type === PacketType.FILE_CONTEXT);
+
+// Search/fetch/uploaded-document steps render as a one-line summary (with
+// result counts/stats) until expanded — both at the top level and nested
+// inside research agents.
+export const stepDefaultsCollapsed = (packets: Packet[]): boolean =>
+  isSearchToolPackets(packets) ||
+  isFetchToolPackets(packets) ||
+  isFileContextPackets(packets);
+
 // Check if step supports collapsed streaming rendering mode
 export const stepSupportsCollapsedStreaming = (packets: Packet[]): boolean =>
   packets.some(
@@ -102,6 +119,11 @@ export const stepHasCollapsedStreamingContent = (
     packetTypes.has(PacketType.FETCH_TOOL_URLS) ||
     packetTypes.has(PacketType.FETCH_TOOL_DOCUMENTS)
   ) {
+    return true;
+  }
+
+  // File context shows the uploaded documents as soon as they arrive
+  if (packetTypes.has(PacketType.FILE_CONTEXT)) {
     return true;
   }
 

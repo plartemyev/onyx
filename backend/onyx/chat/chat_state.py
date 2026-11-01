@@ -23,6 +23,7 @@ from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.models import ReasoningEffort
 from onyx.onyxbot.slack.models import SlackContext
 from onyx.server.query_and_chat.models import SendMessageRequest
+from onyx.server.query_and_chat.streaming_models import ChatFileContext
 from onyx.tools.models import ChatFile, ToolCallInfo
 
 # Type alias for search doc deduplication key
@@ -231,6 +232,10 @@ class ChatTurnSetup:
     tool_id_to_name_map: dict[int, str]
     forced_tool_id: int | None
     files: list[ChatLoadedFile]
+    # Per-document stats for the files attached to the current user message
+    # (text types only), measured at setup time. Emitted as chat_file_context
+    # packets before the agent loop runs.
+    file_context: list[ChatFileContext]
     chat_files_for_tools: list[ChatFile]
     custom_agent_prompt: str | None
     user_memory_context: UserMemoryContext

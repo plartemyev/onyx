@@ -91,6 +91,14 @@ export function useTimelineHeader(
       return { headerText: t("header.reading.label"), hasPackets, userStopped };
     }
 
+    if (packetType === PacketType.FILE_CONTEXT) {
+      return {
+        headerText: t("fileContext.reading.status"),
+        hasPackets,
+        userStopped,
+      };
+    }
+
     if (packetType === PacketType.DOWNLOAD_TOOL_START) {
       return {
         headerText: t("header.downloadingFile.label"),

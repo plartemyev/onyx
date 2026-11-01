@@ -157,6 +157,13 @@ def _create_and_link_tool_calls(
             ),
             tab_index=tool_call_info.tab_index,
             add_only=True,
+            response_bytes=tool_call_info.response_bytes,
+            response_tokens=tool_call_info.response_tokens,
+            response_doc_stats=(
+                [stat.model_dump() for stat in tool_call_info.doc_stats]
+                if tool_call_info.doc_stats
+                else None
+            ),
         )
 
         # Flush to get all of the IDs

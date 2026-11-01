@@ -358,6 +358,9 @@ def create_tool_call_no_commit(
     generated_images: list[dict] | None = None,
     tab_index: int = 0,
     add_only: bool = True,
+    response_bytes: int | None = None,
+    response_tokens: int | None = None,
+    response_doc_stats: list[dict[str, Any]] | None = None,
 ) -> ToolCall:
     """
     Create a ToolCall entry in the database.
@@ -376,7 +379,11 @@ def create_tool_call_no_commit(
         reasoning_tokens: Optional reasoning tokens
         generated_images: Optional list of generated image metadata for replay
         tab_index: Index order of tool calls from the LLM for parallel tool calls
-        commit: If True, commit the transaction; if False, flush only
+        add_only: If True, flush only; if False, also add again (legacy)
+        response_bytes: Optional measured byte size of tool_call_response
+        response_tokens: Optional measured token cost of tool_call_response
+        response_doc_stats: Optional per-document breakdown of
+            tool_call_response (open_url only)
 
     Returns:
         The created ToolCall object
@@ -396,6 +403,9 @@ def create_tool_call_no_commit(
         tool_call_response=sanitize_json_like(tool_call_response),
         tool_call_tokens=tool_call_tokens,
         generated_images=sanitize_json_like(generated_images),
+        response_bytes=response_bytes,
+        response_tokens=response_tokens,
+        response_doc_stats=sanitize_json_like(response_doc_stats),
     )
 
     db_session.add(tool_call)

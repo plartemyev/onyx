@@ -10069,6 +10069,19 @@
         "fetch": {
           "reading": {
             "status": "Reading"
+          },
+          "summary": {
+            "size": "{size} KiB",
+            "tokens": "{tokens} tokens"
+          }
+        },
+        "fileContext": {
+          "reading": {
+            "status": "Reading documents"
+          },
+          "summary": {
+            "files": "{count, plural, one {# document} other {# documents}}",
+            "tokens": "{tokens} tokens"
           }
         },
         "fileReader": {
@@ -10266,6 +10279,10 @@
         "webSearch": {
           "searching": {
             "status": "Searching the web"
+          },
+          "summary": {
+            "queries": "{count, plural, one {# query} other {# queries}}",
+            "results": "{count, plural, one {# result} other {# results}}"
           }
         }
       },

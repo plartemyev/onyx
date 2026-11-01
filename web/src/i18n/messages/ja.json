@@ -10041,6 +10041,19 @@
         "fetch": {
           "reading": {
             "status": "読み取り中"
+          },
+          "summary": {
+            "size": "{size} KiB",
+            "tokens": "{tokens} トークン"
+          }
+        },
+        "fileContext": {
+          "reading": {
+            "status": "ドキュメントを読み込み中"
+          },
+          "summary": {
+            "files": "{count, plural, one {# 件のドキュメント} other {# 件のドキュメント}}",
+            "tokens": "{tokens} トークン"
           }
         },
         "fileReader": {
@@ -10238,6 +10251,10 @@
         "webSearch": {
           "searching": {
             "status": "ウェブを検索中"
+          },
+          "summary": {
+            "queries": "{count, plural, one {# クエリ} other {# クエリ}}",
+            "results": "{count, plural, one {# 件の結果} other {# 件の結果}}"
           }
         }
       },

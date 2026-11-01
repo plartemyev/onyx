@@ -29,6 +29,7 @@ export function isToolPacket(
     PacketType.FETCH_TOOL_START,
     PacketType.FETCH_TOOL_URLS,
     PacketType.FETCH_TOOL_DOCUMENTS,
+    PacketType.FILE_CONTEXT,
     PacketType.MEMORY_TOOL_START,
     PacketType.MEMORY_TOOL_DELTA,
     PacketType.MEMORY_TOOL_NO_ACCESS,

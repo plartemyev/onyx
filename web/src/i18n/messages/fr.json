@@ -10043,6 +10043,19 @@
         "fetch": {
           "reading": {
             "status": "Lecture"
+          },
+          "summary": {
+            "size": "{size} KiB",
+            "tokens": "{tokens} jetons"
+          }
+        },
+        "fileContext": {
+          "reading": {
+            "status": "Lecture des documents"
+          },
+          "summary": {
+            "files": "{count, plural, one {# document} other {# documents}}",
+            "tokens": "{tokens} jetons"
           }
         },
         "fileReader": {
@@ -10240,6 +10253,10 @@
         "webSearch": {
           "searching": {
             "status": "Recherche sur le web"
+          },
+          "summary": {
+            "queries": "{count, plural, one {# requête} other {# requêtes}}",
+            "results": "{count, plural, one {# résultat} other {# résultats}}"
           }
         }
       },

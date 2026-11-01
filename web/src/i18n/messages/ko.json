@@ -10039,6 +10039,19 @@
         "fetch": {
           "reading": {
             "status": "읽는 중"
+          },
+          "summary": {
+            "size": "{size} KiB",
+            "tokens": "{tokens} 토큰"
+          }
+        },
+        "fileContext": {
+          "reading": {
+            "status": "문서 읽는 중"
+          },
+          "summary": {
+            "files": "{count, plural, one {#개 문서} other {#개 문서}}",
+            "tokens": "{tokens} 토큰"
           }
         },
         "fileReader": {
@@ -10236,6 +10249,10 @@
         "webSearch": {
           "searching": {
             "status": "웹 검색 중"
+          },
+          "summary": {
+            "queries": "{count, plural, one {#개 쿼리} other {#개 쿼리}}",
+            "results": "{count, plural, one {#개 결과} other {#개 결과}}"
           }
         }
       },

@@ -20,12 +20,14 @@ from typing import Final, cast
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from onyx.cache.factory import get_cache_backend
 from onyx.chat.chat_processing_checker import set_processing_status
 from onyx.chat.chat_state import AvailableFiles, ChatStateContainer, ChatTurnSetup
 from onyx.chat.chat_utils import (
     build_file_context,
+    build_file_context_stats,
     convert_chat_history,
     create_chat_history_chain,
     create_chat_session_from_request,
@@ -116,6 +118,7 @@ from onyx.hooks.points.query_processing import (
     QueryProcessingPayload,
     QueryProcessingResponse,
 )
+from onyx.llm.engine_token_counter import get_engine_token_counter
 from onyx.llm.exceptions import ClassifiedLLMError, LLMStreamCancelled
 from onyx.llm.factory import get_llm_for_persona, get_llm_token_counter
 from onyx.llm.interfaces import LLM, LLMUserIdentity
@@ -143,6 +146,7 @@ from onyx.server.query_and_chat.streaming_models import (
     AgentResponseDelta,
     AgentResponseFinal,
     AgentResponseStart,
+    ChatFileContext,
     CitationInfo,
     OverallStop,
     Packet,
@@ -798,6 +802,9 @@ def build_chat_turn(
 
     # ── Query Processing hook + user message ─────────────────────────────────
     # Skipped on regeneration (parent is USER type): message already exists/was accepted.
+    # True when the persisted user-message row carries real content/files — on
+    # regeneration the parent row already stores them.
+    keeps_content = True
     if parent_message.message_type == MessageType.USER:
         user_message = parent_message
     else:
@@ -980,6 +987,28 @@ def build_chat_turn(
     # TODO(nmgarza5): Once summarization is done, we don't need to load all files from the beginning.
     # Load all files needed for this chat chain into memory.
     files = load_all_chat_files(chat_history, db_session)
+
+    # Measure the documents attached to this message for the timeline step and
+    # persist the numbers on the message's file descriptors so history replay
+    # can show them without re-measuring.
+    current_file_ids = {fd["id"] for fd in new_msg_req.file_descriptors if fd.get("id")}
+    file_context: list[ChatFileContext] = []
+    if current_file_ids:
+        file_context = build_file_context_stats(
+            loaded_files=files,
+            file_ids=current_file_ids,
+            token_counter=get_engine_token_counter(llms[0]),
+        )
+        if keeps_content and file_context:
+            stats_by_id = {stat.file_id: stat for stat in file_context}
+            for fd in user_message.files or []:
+                stat = stats_by_id.get(fd.get("id"))
+                if stat is None:
+                    continue
+                fd["content_bytes"] = stat.content_bytes
+                fd["token_count"] = stat.token_count
+            flag_modified(user_message, "files")
+            db_session.commit()
     # Convert loaded files to ChatFile format for tools like PythonTool
     chat_files_for_tools = _convert_loaded_files_to_chat_files(files)
     chat_files_for_tools.extend(
@@ -1153,6 +1182,7 @@ def build_chat_turn(
         tool_id_to_name_map=tool_id_to_name_map,
         forced_tool_id=forced_tool_id,
         files=files,
+        file_context=file_context,
         chat_files_for_tools=chat_files_for_tools,
         custom_agent_prompt=custom_agent_prompt,
         user_memory_context=user_memory_context,
@@ -1395,6 +1425,18 @@ def _run_models(
         )
         sc = state_containers[model_idx]
         model_llm = setup.llms[model_idx]
+
+        if model_idx == 0:
+            # Document stats come first in the stream: one packet per document
+            # attached to the user's message, grouped at turn -1 so the
+            # timeline renders them before the agent's own steps.
+            for stat in setup.file_context:
+                model_emitter.emit(
+                    Packet(
+                        placement=Placement(turn_index=-1, tab_index=0),
+                        obj=stat,
+                    )
+                )
 
         try:
             # Each function opens short-lived DB sessions on demand.

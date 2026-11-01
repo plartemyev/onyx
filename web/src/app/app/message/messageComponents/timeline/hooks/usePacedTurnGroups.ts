@@ -13,6 +13,7 @@ const PACING_DELAY_MS = 200;
 const TOOL_START_PACKET_TYPES = new Set<PacketType>([
   PacketType.SEARCH_TOOL_START,
   PacketType.FETCH_TOOL_START,
+  PacketType.FILE_CONTEXT,
   PacketType.PYTHON_TOOL_START,
   PacketType.CUSTOM_TOOL_START,
   PacketType.FILE_READER_START,

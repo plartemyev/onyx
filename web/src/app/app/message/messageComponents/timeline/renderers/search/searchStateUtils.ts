@@ -11,8 +11,21 @@ import {
 import { OnyxDocument } from "@/lib/search/interfaces";
 import { getSourceDisplayName, isValidSource } from "@/lib/sources";
 import { ValidSources } from "@/lib/types";
+import { SourceInfo } from "./SearchChipList";
 
 export const MAX_TITLE_LENGTH = 25;
+
+export const documentToSourceInfo = (doc: OnyxDocument): SourceInfo => ({
+  id: doc.document_id,
+  title: doc.semantic_identifier || doc.link || "",
+  sourceType: doc.source_type || ValidSources.Web,
+  sourceUrl: doc.link,
+  description: doc.blurb,
+  metadata: {
+    date: doc.updated_at || undefined,
+    tags: getMetadataTags(doc.metadata),
+  },
+});
 
 export const getMetadataTags = (metadata?: {
   [key: string]: string;

@@ -27,6 +27,7 @@ class StreamingType(Enum):
     OPEN_URL_START = "open_url_start"
     OPEN_URL_URLS = "open_url_urls"
     OPEN_URL_DOCUMENTS = "open_url_documents"
+    CHAT_FILE_CONTEXT = "chat_file_context"
     DOWNLOAD_TOOL_START = "download_tool_start"
     DOWNLOAD_TOOL_FINAL = "download_tool_final"
     ANALYZE_IMAGE_START = "analyze_image_start"
@@ -229,12 +230,47 @@ class OpenUrlUrls(BaseObj):
     urls: list[str]
 
 
+class OpenUrlDocStat(BaseModel):
+    """Per-document size/token stats of the open_url LLM-facing response.
+
+    Keyed by document_id so the frontend can attach numbers to the matching
+    document chip. None stats mean the document did not make it into the
+    response (dropped by the char budget) or measurement was unavailable."""
+
+    document_id: str
+    content_bytes: int | None = None
+    token_count: int | None = None
+
+
 class OpenUrlDocuments(BaseObj):
     """Final documents after crawling completes."""
 
     type: Literal["open_url_documents"] = StreamingType.OPEN_URL_DOCUMENTS.value
 
     documents: list[SearchDoc]
+    # Size and token count of the LLM-facing response built from these
+    # documents. Optional so packets persisted before these fields stay valid.
+    content_bytes: int | None = None
+    token_count: int | None = None
+    # Per-document breakdown for the same response (keyed by document_id).
+    doc_stats: list[OpenUrlDocStat] = []
+
+
+class ChatFileContext(BaseObj):
+    """A document uploaded to the chat that was read into the LLM context.
+
+    Emitted once per text document attached to the user's message, before any
+    agent turn runs. Doubles as the stats carrier on ``ChatTurnSetup``.
+    """
+
+    type: Literal["chat_file_context"] = StreamingType.CHAT_FILE_CONTEXT.value
+
+    file_name: str
+    file_id: str
+    # Size and token count of the text representation fed to the LLM. None
+    # when the content was unavailable at send time (still processing).
+    content_bytes: int | None = None
+    token_count: int | None = None
 
 
 # Download starting, needs to allocate a placeholder block for it on the UI
@@ -520,6 +556,7 @@ PacketObj = Union[
     OpenUrlStart,
     OpenUrlUrls,
     OpenUrlDocuments,
+    ChatFileContext,
     DownloadToolStart,
     DownloadToolFinal,
     AnalyzeImageStart,

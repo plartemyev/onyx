@@ -18,6 +18,9 @@ export interface SearchChipListProps<T> {
   className?: string;
   showDetailsCard?: boolean;
   isQuery?: boolean;
+  /** Optional per-item stat suffix (e.g. "45.2 KiB · 11.3k tokens") rendered
+   * after the chip in small muted text. */
+  getItemStats?: (item: T, index: number) => string | undefined;
 }
 
 type DisplayEntry<T> =
@@ -35,6 +38,7 @@ export function SearchChipList<T>({
   className = "",
   showDetailsCard,
   isQuery,
+  getItemStats,
 }: SearchChipListProps<T>): JSX.Element {
   const t = useTranslations("chat.messages.timeline");
   const [visibleCount, setVisibleCount] = useState(initialCount);
@@ -83,6 +87,10 @@ export function SearchChipList<T>({
         const key = getEntryKey(entry);
         const isNew = !animatedKeysRef.current.has(key);
         const delay = isNew ? newItemCounter++ * ANIMATION_DELAY_MS : 0;
+        const itemStats =
+          entry.type === "chip" && getItemStats
+            ? getItemStats(entry.item, entry.index)
+            : undefined;
 
         return (
           <div
@@ -101,16 +109,25 @@ export function SearchChipList<T>({
             }
           >
             {entry.type === "chip" ? (
-              <SourceTag
-                displayName={toSourceInfo(entry.item, entry.index).title}
-                sources={[toSourceInfo(entry.item, entry.index)]}
-                onSourceClick={onClick ? () => onClick(entry.item) : undefined}
-                showDetailsCard={showDetailsCard}
-                isQuery={isQuery}
-                tooltipText={
-                  isQuery ? t("searchChips.viewFullQuery.tooltip") : undefined
-                }
-              />
+              <span className="inline-flex items-center gap-1.5">
+                <SourceTag
+                  displayName={toSourceInfo(entry.item, entry.index).title}
+                  sources={[toSourceInfo(entry.item, entry.index)]}
+                  onSourceClick={
+                    onClick ? () => onClick(entry.item) : undefined
+                  }
+                  showDetailsCard={showDetailsCard}
+                  isQuery={isQuery}
+                  tooltipText={
+                    isQuery ? t("searchChips.viewFullQuery.tooltip") : undefined
+                  }
+                />
+                {itemStats && (
+                  <span className="shrink-0 text-xs text-text-03">
+                    {itemStats}
+                  </span>
+                )}
+              </span>
             ) : (
               <SourceTag
                 displayName={t("searchChips.showMore.label", {

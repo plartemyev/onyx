@@ -46,20 +46,23 @@ This file provides guidance to AI agents when working with code in this reposito
   rate limits etc. work with no license installed. BOTH vars are required: flipping
   `LICENSE_ENFORCEMENT_ENABLED` to false alone unsets EE entirely (CE main mounts none of the
   `ee/onyx/server/*` routers → the pages 404). `/api/settings` reports `tier: enterprise`.
-- Tool response stats (added 2026-10-28): `open_url` measures its LLM-facing response
-  (bytes + tokens) and streams them in `OpenUrlDocuments` (`content_bytes`/`token_count`),
-  persists them on `tool_call.response_bytes/response_tokens` (migration 690544b34376), and the
-  timeline shows "N KiB · Nk tokens" per step; web-search steps show "N queries · N results";
-  uploaded chat documents stream `chat_file_context` packets at turn -1 (measured in
-  `build_file_context_stats` at send time, persisted on the USER message's `files` JSONB, and
-  replayed via the parent message in `session_loading` — the timeline step shows
-  "Reading documents · N · size · tokens").
+- Tool response stats (added 2026-10-28, per-doc breakdown 2026-11-01): `open_url` measures its
+  LLM-facing response (bytes + tokens) and streams them in `OpenUrlDocuments`
+  (`content_bytes`/`token_count`, plus `doc_stats` — per-document breakdown keyed by
+  `document_id`, aggregated across sections of one page, covering only documents that made it
+  past the char budget). Totals persist on `tool_call.response_bytes/response_tokens`, the
+  breakdown on `tool_call.response_doc_stats` (migration 213895a5526b); the timeline shows
+  "N KiB · Nk tokens" in the step header and per-chip suffixes on expansion; web-search steps
+  show "N queries · N results"; uploaded chat documents stream `chat_file_context` packets at
+  turn -1 (measured in `build_file_context_stats` at send time, persisted on the USER message's
+  `files` JSONB, and replayed via the parent message in `session_loading` — the timeline step
+  shows "Reading documents · N · size · tokens").
   Token counting goes through `onyx/llm/engine_token_counter.py`: it POSTs the chat LLM's own
   engine at `{api_base minus /v1}/tokenize` (llama.cpp; requires the provider `api_key` as
   Bearer — 401 without it, and the endpoint lives at server root, NOT under /v1), memoizing
   availability per base URL, and falls back to `get_llm_token_counter`. UI scripts used for
   verification live in `web/tmp/verify_ui.ts` / `web/tmp/poll_dr.ts` /
-  `web/tmp/verify_file_ui.ts` (untracked).
+  `web/tmp/verify_file_ui.ts` / `web/tmp/verify_docstats_ui.ts` (untracked).
 - To clean up stuck `UPLOADED` user files (verified 2026-10-25): check references first
   (`chat_message.files` JSONB + `project__user_file`), then run the app's own deletion inside the
   container. `docker exec -i onyx-api_server-1 python -` with

@@ -67,7 +67,7 @@ from onyx.prompts.chat_prompts import (
 from onyx.prompts.tool_prompts import TOOL_CALL_FAILURE_PROMPT
 from onyx.server.query_and_chat.chat_utils import mime_type_to_chat_file_type
 from onyx.server.query_and_chat.models import ChatSessionCreationRequest
-from onyx.server.query_and_chat.streaming_models import CitationInfo
+from onyx.server.query_and_chat.streaming_models import ChatFileContext, CitationInfo
 from onyx.tools.models import ChatFile, PythonExecutionFile, ToolCallKickoff
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import run_functions_tuples_in_parallel
@@ -700,6 +700,46 @@ def file_descriptors_from_generated_files(
             )
         )
     return descriptors
+
+
+def build_file_context_stats(
+    loaded_files: list[ChatLoadedFile],
+    file_ids: set[str],
+    token_counter: Callable[[str], int],
+) -> list[ChatFileContext]:
+    """Measure the per-document stats surfaced in the timeline.
+
+    Keeps only text documents among ``file_ids`` (the current message's
+    attachments, in upload order) and measures the extracted text the prompt
+    builder injects: its byte size and token cost. The configured model's
+    engine tokenizer is preferred (matches what the model actually tokenizes);
+    a tokenizer failure falls back to the loaded file's stored/estimated
+    count.
+    """
+    stats: list[ChatFileContext] = []
+    for loaded in loaded_files:
+        if loaded.file_id not in file_ids or not loaded.file_type.is_text_file():
+            continue
+        content_bytes: int | None = None
+        token_count: int | None = None
+        if loaded.content_text:
+            content_bytes = len(loaded.content_text.encode("utf-8"))
+            try:
+                token_count = token_counter(loaded.content_text)
+            except Exception:
+                logger.exception(
+                    "Failed to count tokens for chat file %s", loaded.file_id
+                )
+                token_count = loaded.token_count or None
+        stats.append(
+            ChatFileContext(
+                file_name=loaded.filename or loaded.file_id,
+                file_id=loaded.file_id,
+                content_bytes=content_bytes,
+                token_count=token_count,
+            )
+        )
+    return stats
 
 
 def load_all_chat_files(

@@ -10039,6 +10039,19 @@
         "fetch": {
           "reading": {
             "status": "正在读取"
+          },
+          "summary": {
+            "size": "{size} KiB",
+            "tokens": "{tokens} 个 token"
+          }
+        },
+        "fileContext": {
+          "reading": {
+            "status": "正在读取文档"
+          },
+          "summary": {
+            "files": "{count, plural, one {# 个文档} other {# 个文档}}",
+            "tokens": "{tokens} 个 token"
           }
         },
         "fileReader": {
@@ -10236,6 +10249,10 @@
         "webSearch": {
           "searching": {
             "status": "正在搜索网页"
+          },
+          "summary": {
+            "queries": "{count, plural, one {# 个查询} other {# 个查询}}",
+            "results": "{count, plural, one {# 个结果} other {# 个结果}}"
           }
         }
       },

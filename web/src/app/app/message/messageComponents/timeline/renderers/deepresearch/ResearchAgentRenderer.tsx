@@ -16,6 +16,7 @@ import {
 } from "@/app/app/message/messageComponents/interfaces";
 import { getToolName } from "@/app/app/message/messageComponents/toolDisplayHelpers";
 import { StepContainer } from "@/app/app/message/messageComponents/timeline/StepContainer";
+import { stepDefaultsCollapsed } from "@/app/app/message/messageComponents/timeline/packetHelpers";
 import {
   TimelineRendererComponent,
   TimelineRendererOutput,
@@ -326,7 +327,7 @@ export const ResearchAgentRenderer: MessageRenderer<
               chatState={state}
               animate={!stopPacketSeen && !group.isComplete}
               stopPacketSeen={stopPacketSeen}
-              defaultExpanded={true}
+              defaultExpanded={!stepDefaultsCollapsed(group.packets)}
               isLastStep={isLastNestedStep}
               isHover={isHover}
             >

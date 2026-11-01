@@ -29,6 +29,7 @@ from onyx.db.models import User
 from onyx.document_index.interfaces_new import DocumentIndex, DocumentSectionRequest
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
+    OpenUrlDocStat,
     OpenUrlDocuments,
     OpenUrlStart,
     OpenUrlUrls,
@@ -367,7 +368,8 @@ def _convert_sections_to_llm_string_with_citations(
     existing_citation_mapping: dict[str, int],
     citation_start: int,
     max_document_chars: int = MAX_CHARS_ACROSS_URLS,
-) -> tuple[str, dict[int, str]]:
+    token_counter: Callable[[str], int] | None = None,
+) -> tuple[str, dict[int, str], list[OpenUrlDocStat]]:
     """Convert InferenceSections to LLM string, reusing existing citations where available.
 
     Args:
@@ -377,10 +379,15 @@ def _convert_sections_to_llm_string_with_citations(
         citation_start: Starting citation number for new citations.
         max_document_chars: Maximum total characters from document fields.
             Content will be truncated to fit within this budget.
+        token_counter: Optional counter used to measure each document's token
+            cost for the timeline's per-URL stats.
 
     Returns:
-        Tuple of (JSON string for LLM, citation_mapping dict).
-        The citation_mapping maps citation_id -> document_id.
+        Tuple of (JSON string for LLM, citation_mapping dict, per-document
+        stats). The citation_mapping maps citation_id -> document_id. Stats
+        cover only the documents that made it into the string (the char
+        budget can drop trailing ones); token_count is None when
+        unmeasurable.
     """
     # Build document_id to citation_id mapping, reusing existing citations
     document_id_to_citation_id: dict[str, int] = {}
@@ -407,6 +414,7 @@ def _convert_sections_to_llm_string_with_citations(
 
     # Second pass: build results, respecting max_document_chars budget
     results = []
+    result_doc_ids: list[str] = []
     total_chars = 0
 
     for section in sections:
@@ -458,10 +466,42 @@ def _convert_sections_to_llm_string_with_citations(
 
         result_chars = _estimate_result_chars(result)
         results.append(result)
+        result_doc_ids.append(document_id)
         total_chars += result_chars
 
+    # Per-document stats for the timeline: measure each document's exact
+    # representation within the final string, keyed by document_id (a page
+    # can contribute multiple sections; their stats are summed).
+    doc_stat_totals: dict[str, OpenUrlDocStat] = {}
+    for result, document_id in zip(results, result_doc_ids, strict=True):
+        result_str = json.dumps(result, indent=2, ensure_ascii=False)
+        content_bytes = len(result_str.encode("utf-8"))
+        token_count: int | None = None
+        if token_counter is not None:
+            try:
+                token_count = token_counter(result_str)
+            except Exception:
+                logger.exception("Failed to count tokens for an open_url document")
+        total = doc_stat_totals.get(document_id)
+        if total is None:
+            doc_stat_totals[document_id] = OpenUrlDocStat(
+                document_id=document_id,
+                content_bytes=content_bytes,
+                token_count=token_count,
+            )
+        else:
+            total.content_bytes = (total.content_bytes or 0) + content_bytes
+            if total.token_count is not None and token_count is not None:
+                total.token_count += token_count
+            else:
+                total.token_count = None
+
     output = {"results": results}
-    return json.dumps(output, indent=2, ensure_ascii=False), citation_mapping
+    return (
+        json.dumps(output, indent=2, ensure_ascii=False),
+        citation_mapping,
+        list(doc_stat_totals.values()),
+    )
 
 
 class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
@@ -802,10 +842,13 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
         # Note that with this call, some contents may be truncated or dropped so what the LLM sees may not be the entire set
         # That said, it is still the best experience to show all the docs that were fetched, even if the LLM on rare
         # occasions only actually sees a subset.
-        docs_str, citation_mapping = _convert_sections_to_llm_string_with_citations(
-            sections=inference_sections,
-            existing_citation_mapping=override_kwargs.citation_mapping,
-            citation_start=override_kwargs.starting_citation_num,
+        docs_str, citation_mapping, doc_stats = (
+            _convert_sections_to_llm_string_with_citations(
+                sections=inference_sections,
+                existing_citation_mapping=override_kwargs.citation_mapping,
+                citation_start=override_kwargs.starting_citation_num,
+                token_counter=self._token_counter,
+            )
         )
 
         # Measure the LLM-facing response so the UI can show its cost
@@ -819,6 +862,7 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
                     documents=search_docs,
                     content_bytes=response_bytes,
                     token_count=response_tokens,
+                    doc_stats=doc_stats,
                 ),
             )
         )
@@ -831,6 +875,7 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             llm_facing_response=docs_str,
             response_bytes=response_bytes,
             response_tokens=response_tokens,
+            doc_stats=doc_stats,
         )
 
     def _count_tokens(self, text: str) -> int | None:

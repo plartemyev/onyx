@@ -25,6 +25,7 @@ import { isCodingAgentPackets } from "./timeline/packetHelpers";
 import { ReasoningRenderer } from "./timeline/renderers/reasoning/ReasoningRenderer";
 import CustomToolRenderer from "./renderers/CustomToolRenderer";
 import { FileReaderToolRenderer } from "./timeline/renderers/filereader/FileReaderToolRenderer";
+import { FileContextRenderer } from "./timeline/renderers/filecontext/FileContextRenderer";
 import { FetchToolRenderer } from "./timeline/renderers/fetch/FetchToolRenderer";
 import { DownloadToolRenderer } from "./timeline/renderers/download/DownloadToolRenderer";
 import { AnalyzeImageRenderer } from "./timeline/renderers/analyze/AnalyzeImageRenderer";
@@ -78,6 +79,10 @@ function isCustomToolPacket(packet: Packet) {
 
 function isFileReaderToolPacket(packet: Packet) {
   return packet.obj.type === PacketType.FILE_READER_START;
+}
+
+function isFileContextPacket(packet: Packet) {
+  return packet.obj.type === PacketType.FILE_CONTEXT;
 }
 
 function isFetchToolPacket(packet: Packet) {
@@ -165,6 +170,9 @@ export function findRenderer(
   }
   if (groupedPackets.packets.some((packet) => isCustomToolPacket(packet))) {
     return CustomToolRenderer;
+  }
+  if (groupedPackets.packets.some((packet) => isFileContextPacket(packet))) {
+    return FileContextRenderer;
   }
   if (groupedPackets.packets.some((packet) => isFetchToolPacket(packet))) {
     return FetchToolRenderer;

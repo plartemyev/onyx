@@ -20,6 +20,7 @@ from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     CustomToolErrorInfo,
     GeneratedImage,
+    OpenUrlDocStat,
 )
 from onyx.tools.tool_implementations.images.models import FinalImageGenerationResponse
 from onyx.tools.tool_implementations.memory.models import MemoryToolResponse
@@ -107,6 +108,12 @@ class ToolResponse(BaseModel):
     )
     # This is the final string that needs to be wrapped in a tool call response message and concatenated to the history
     llm_facing_response: str
+    # Size and token count of llm_facing_response, measured by tools that
+    # ingest large content (open_url). None = not measured.
+    response_bytes: int | None = None
+    response_tokens: int | None = None
+    # Per-document breakdown of the same response (open_url only).
+    doc_stats: list[OpenUrlDocStat] = []
     # The original tool call that triggered this response - set by tool_runner
     # The response is first created by the tool runner, which does not need to be aware of things like the tool_call_id
     # So this is set after the response is created by the tool runner
@@ -290,6 +297,11 @@ class ToolCallInfo(BaseModel):
     reasoning_tokens: str | None
     tool_call_arguments: dict[str, Any]
     tool_call_response: str
+    # Measured size/token cost of tool_call_response (open_url only today)
+    response_bytes: int | None = None
+    response_tokens: int | None = None
+    # Per-document breakdown of the same response (open_url only)
+    doc_stats: list[OpenUrlDocStat] = []
     search_docs: list[SearchDoc] | None = None
     generated_images: list[GeneratedImage] | None = None
     generated_files: list[PythonExecutionFile] | None = None

@@ -455,8 +455,18 @@ def get_chat_session(
 
     # Every assistant message might have a set of tool calls associated with it, these need to be replayed back for the frontend
     # Each list is the set of tool calls for the given assistant message.
+    messages_by_id = {msg.id: msg for msg in session_messages}
     replay_packet_lists: list[list[Packet]] = [
-        translate_assistant_message_to_packets(chat_message=msg, db_session=db_session)
+        translate_assistant_message_to_packets(
+            chat_message=msg,
+            db_session=db_session,
+            parent_user_files=(
+                parent.files
+                if (parent := messages_by_id.get(msg.parent_message_id or -1))
+                and parent.message_type == MessageType.USER
+                else None
+            ),
+        )
         for msg in session_messages
         if msg.message_type == MessageType.ASSISTANT
     ]

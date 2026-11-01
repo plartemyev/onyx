@@ -3,6 +3,7 @@ import {
   FetchToolPacket,
   FetchToolUrls,
   FetchToolDocuments,
+  OpenUrlDocStat,
 } from "@/app/app/services/streamingModels";
 import { OnyxDocument } from "@/lib/search/interfaces";
 
@@ -17,6 +18,12 @@ export interface FetchState {
   hasStarted: boolean;
   isLoading: boolean;
   isComplete: boolean;
+  /** Byte size of the LLM-facing response, when the backend measured it */
+  contentBytes: number | null;
+  /** Token cost of the LLM-facing response, when the backend measured it */
+  tokenCount: number | null;
+  /** Per-document stats keyed by document_id (may be empty) */
+  docStats: Record<string, OpenUrlDocStat>;
 }
 
 /** Constructs the current fetch state from fetch tool packets. */
@@ -43,6 +50,21 @@ export const constructCurrentFetchState = (
   const hasStarted = Boolean(startPacket);
   const isLoading = hasStarted && !documentsPacket;
   const isComplete = Boolean(startPacket && sectionEnd);
+  const contentBytes = documentsPacket?.content_bytes ?? null;
+  const tokenCount = documentsPacket?.token_count ?? null;
+  const docStats: Record<string, OpenUrlDocStat> = {};
+  for (const stat of documentsPacket?.doc_stats ?? []) {
+    docStats[stat.document_id] = stat;
+  }
 
-  return { urls, documents, hasStarted, isLoading, isComplete };
+  return {
+    urls,
+    documents,
+    hasStarted,
+    isLoading,
+    isComplete,
+    contentBytes,
+    tokenCount,
+    docStats,
+  };
 };

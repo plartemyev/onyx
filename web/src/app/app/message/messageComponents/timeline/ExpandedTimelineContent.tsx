@@ -19,6 +19,7 @@ import {
   isSearchToolPackets,
   isPythonToolPackets,
   isCodingAgentPackets,
+  stepDefaultsCollapsed,
 } from "@/app/app/message/messageComponents/timeline/packetHelpers";
 
 // =============================================================================
@@ -81,7 +82,10 @@ const TimelineStep = React.memo(function TimelineStep({
       animate={!stopPacketSeen}
       stopPacketSeen={stopPacketSeen}
       stopReason={stopReason}
-      defaultExpanded={isStreaming || (isSingleStep && !isPythonTool)}
+      defaultExpanded={
+        (isStreaming || (isSingleStep && !isPythonTool)) &&
+        !stepDefaultsCollapsed(step.packets)
+      }
       isLastStep={isLastStep}
     >
       {renderStep}

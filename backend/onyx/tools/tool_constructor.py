@@ -23,6 +23,7 @@ from onyx.db.search_settings import get_current_search_settings
 from onyx.db.tools import get_builtin_tool
 from onyx.document_index.factory import get_default_document_index
 from onyx.image_gen.interfaces import ImageGenerationProviderCredentials
+from onyx.llm.engine_token_counter import get_engine_token_counter
 from onyx.llm.interfaces import LLM, LLMConfig
 from onyx.onyxbot.slack.models import SlackContext
 from onyx.server.features.mcp.credentials import (
@@ -345,6 +346,7 @@ def _construct_tools_impl(
                             document_index=document_index,
                             user=user,
                             web_fetch_disabled=open_url_web_fetch_disabled,
+                            token_counter=get_engine_token_counter(llm),
                         )
                     ]
                 except RuntimeError as e:

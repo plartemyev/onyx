@@ -2039,6 +2039,9 @@ def run_llm_loop(
                     reasoning_tokens=llm_step_result.reasoning,  # All tool calls from this loop share the same reasoning
                     tool_call_arguments=tool_call.tool_args,
                     tool_call_response=saved_response,
+                    response_bytes=tool_response.response_bytes,
+                    response_tokens=tool_response.response_tokens,
+                    doc_stats=tool_response.doc_stats,
                     search_docs=displayed_docs or search_docs,
                     generated_images=generated_images,
                     generated_files=generated_files,

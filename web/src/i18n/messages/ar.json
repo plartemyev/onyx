@@ -10039,6 +10039,19 @@
         "fetch": {
           "reading": {
             "status": "جارٍ القراءة"
+          },
+          "summary": {
+            "size": "{size} KiB",
+            "tokens": "{tokens} رمز"
+          }
+        },
+        "fileContext": {
+          "reading": {
+            "status": "جارٍ قراءة المستندات"
+          },
+          "summary": {
+            "files": "{count, plural, one {# مستند} other {# مستندات}}",
+            "tokens": "{tokens} رمز"
           }
         },
         "fileReader": {
@@ -10236,6 +10249,10 @@
         "webSearch": {
           "searching": {
             "status": "جارٍ البحث في الويب"
+          },
+          "summary": {
+            "queries": "{count, plural, one {# استعلام} other {# استعلامات}}",
+            "results": "{count, plural, one {# نتيجة} other {# نتائج}}"
           }
         }
       },

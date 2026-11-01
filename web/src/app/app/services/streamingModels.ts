@@ -28,6 +28,7 @@ export enum PacketType {
   FETCH_TOOL_START = "open_url_start",
   FETCH_TOOL_URLS = "open_url_urls",
   FETCH_TOOL_DOCUMENTS = "open_url_documents",
+  FILE_CONTEXT = "chat_file_context",
   DOWNLOAD_TOOL_START = "download_tool_start",
   DOWNLOAD_TOOL_FINAL = "download_tool_final",
   ANALYZE_IMAGE_START = "analyze_image_start",
@@ -222,6 +223,30 @@ export interface FetchToolUrls extends BaseObj {
 export interface FetchToolDocuments extends BaseObj {
   type: "open_url_documents";
   documents: OnyxDocument[];
+  // Byte size and token count of the LLM-facing response built from these
+  // documents. Absent on packets persisted before these fields existed.
+  content_bytes?: number | null;
+  token_count?: number | null;
+  // Per-document breakdown of the same response, keyed by document_id.
+  doc_stats?: OpenUrlDocStat[] | null;
+}
+
+export interface OpenUrlDocStat {
+  document_id: string;
+  content_bytes?: number | null;
+  token_count?: number | null;
+}
+
+// A document uploaded to the chat that was read into the LLM context.
+// One packet per document, grouped at turn -1 before the agent's own steps.
+export interface ChatFileContext extends BaseObj {
+  type: "chat_file_context";
+  file_name: string;
+  file_id: string;
+  // Size and token count of the text representation fed to the LLM. Null
+  // when the content was unavailable at send time (still processing).
+  content_bytes?: number | null;
+  token_count?: number | null;
 }
 
 export interface DownloadToolStart extends BaseObj {
@@ -452,6 +477,7 @@ export type FetchToolObj =
   | FetchToolDocuments
   | SectionEnd
   | PacketError;
+export type FileContextObj = ChatFileContext | SectionEnd | PacketError;
 export type DownloadToolObj =
   | DownloadToolStart
   | DownloadToolFinal
@@ -484,6 +510,7 @@ export type NewToolObj =
   | ImageGenerationToolObj
   | PythonToolObj
   | FetchToolObj
+  | FileContextObj
   | DownloadToolObj
   | AnalyzeImageObj
   | CustomToolObj
@@ -588,6 +615,11 @@ export interface PythonToolPacket {
 export interface FetchToolPacket {
   placement: Placement;
   obj: FetchToolObj;
+}
+
+export interface FileContextPacket {
+  placement: Placement;
+  obj: FileContextObj;
 }
 
 export interface DownloadToolPacket {
