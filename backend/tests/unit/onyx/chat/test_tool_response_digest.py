@@ -2,6 +2,7 @@
 
 import json
 import time
+from collections.abc import Iterator
 from unittest.mock import MagicMock
 
 import pytest
@@ -136,6 +137,18 @@ def _mock_llm(summary: str | None = None, delay: float = 0.0) -> MagicMock:
 def _no_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tool_response_digest, "llm_generation_span", MagicMock())
     monkeypatch.setattr(tool_response_digest, "record_llm_response", MagicMock())
+
+
+@pytest.fixture(autouse=True)
+def _clear_digest_state() -> Iterator[None]:
+    """Isolate the process-wide digest state between tests."""
+    with tool_response_digest._DIGEST_STATE_LOCK:
+        tool_response_digest._DIGEST_STORE.clear()
+        tool_response_digest._INFLIGHT_DIGEST_UPGRADES.clear()
+    yield
+    with tool_response_digest._DIGEST_STATE_LOCK:
+        tool_response_digest._DIGEST_STORE.clear()
+        tool_response_digest._INFLIGHT_DIGEST_UPGRADES.clear()
 
 
 def test_summary_used_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -440,6 +453,12 @@ def test_upgrade_replaces_cached_extractive_with_summary(
         "tc_1", _search_docs_payload(num_results=8), cache, llm
     )
     assert cache["tc_1"] == "Pantip threads about mangrove fires; 87k members."
+    # The upgrade also lands in the cross-turn store, so later turns replay
+    # the summary without re-summarizing.
+    assert (
+        tool_response_digest._stored_digest("tc_1")
+        == "Pantip threads about mangrove fires; 87k members."
+    )
 
 
 def test_upgrade_failure_keeps_a_digest_in_place(
@@ -491,6 +510,61 @@ def test_summary_input_capped_for_huge_payloads(
     content = llm.invoke.call_args[0][0][0].content
     assert len(content) < len(text)
     assert tool_response_digest._SUMMARY_INPUT_CUT_MARKER in content
+
+
+# cross-turn digest store
+
+
+def test_digest_store_reused_across_caches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tool_response_digest, "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", True
+    )
+    scheduled: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        tool_response_digest,
+        "_schedule_digest_upgrade",
+        lambda *args: scheduled.append(args),
+    )
+    payload = _search_docs_payload(num_results=8)
+    first: dict[str, str] = {}
+    stub_message_for(
+        tool_call_id="tc_1",
+        original_message=payload,
+        cache=first,
+        token_counter=_counter,
+        llm=None,
+    )
+    assert "Result title 1" in first["tc_1"]
+    # A later turn with a fresh per-turn cache reuses the stored digest and
+    # does not schedule another upgrade for it.
+    second: dict[str, str] = {}
+    stub = stub_message_for(
+        tool_call_id="tc_1",
+        original_message=payload,
+        cache=second,
+        token_counter=_counter,
+        llm=_mock_llm(),
+    )
+    assert stub is not None
+    assert second["tc_1"] == first["tc_1"]
+    # Exactly one upgrade was requested — from the first call (the full
+    # miss); the store hit on the second call must not re-request it.
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == "tc_1"
+
+
+def test_digest_store_evicts_oldest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tool_response_digest, "_DIGEST_STORE_MAX_ENTRIES", 2)
+    tool_response_digest._store_digest("a", "digest-a")
+    tool_response_digest._store_digest("b", "digest-b")
+    tool_response_digest._store_digest("c", "digest-c")
+    assert tool_response_digest._stored_digest("a") is None
+    assert tool_response_digest._stored_digest("b") == "digest-b"
+    assert tool_response_digest._stored_digest("c") == "digest-c"
 
 
 # stub_message_for: what compaction actually replays

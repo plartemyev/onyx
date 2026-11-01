@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Callable
@@ -277,10 +278,32 @@ def compute_tool_response_digest(text: str, llm: LLM | None = None) -> str | Non
 # cap, stubs keep the deterministic digest (it already fits the budget).
 _MAX_INFLIGHT_DIGEST_UPGRADES = 4
 
-# Guard for the in-flight set and the shared digest caches that the
-# background upgrades write into.
+# Guard for the in-flight set, the shared digest caches that the
+# background upgrades write into, and the cross-turn store below.
 _DIGEST_STATE_LOCK = threading.Lock()
 _INFLIGHT_DIGEST_UPGRADES: set[str] = set()
+
+# Cross-turn digest store: a response stubbed in an earlier turn replays its
+# digest in later turns instead of re-deriving (or, with tier 2, re-summarizing)
+# it. Bounded and in-process — a restart just re-derives on demand.
+_DIGEST_STORE_MAX_ENTRIES = 1024
+_DIGEST_STORE: OrderedDict[str, str] = OrderedDict()
+
+
+def _stored_digest(tool_call_id: str) -> str | None:
+    with _DIGEST_STATE_LOCK:
+        digest = _DIGEST_STORE.get(tool_call_id)
+        if digest is not None:
+            _DIGEST_STORE.move_to_end(tool_call_id)
+        return digest
+
+
+def _store_digest(tool_call_id: str, digest: str) -> None:
+    with _DIGEST_STATE_LOCK:
+        _DIGEST_STORE[tool_call_id] = digest
+        _DIGEST_STORE.move_to_end(tool_call_id)
+        while len(_DIGEST_STORE) > _DIGEST_STORE_MAX_ENTRIES:
+            _DIGEST_STORE.popitem(last=False)
 
 
 def _run_digest_upgrade(
@@ -296,6 +319,7 @@ def _run_digest_upgrade(
         if summary is not None:
             with _DIGEST_STATE_LOCK:
                 cache[tool_call_id] = summary
+            _store_digest(tool_call_id, summary)
             logger.info(
                 "Tool response digest: background summary replaced the "
                 "deterministic digest for %s",
@@ -365,10 +389,11 @@ def stub_message_for(
     counter would undercount and overflow the real window).
 
     On a cache miss the digest is derived on the fly (deterministic tier 1)
-    and stored so later cycles reuse it; with tier-2 summarization enabled
-    and an ``llm`` provided, a background call then replaces the cached
-    digest with the LLM summary — later re-compactions pick it up. The
-    request that triggered the stub never waits on the LLM.
+    and stored — both in the caller's cache and in the process-wide cross-turn
+    store — so later cycles and later turns reuse it; with tier-2
+    summarization enabled and an ``llm`` provided, a background call then
+    replaces the cached digest with the LLM summary — later re-compactions
+    pick it up. The request that triggered the stub never waits on the LLM.
     """
     if (
         not GEN_AI_TOOL_RESPONSE_DIGESTS
@@ -379,12 +404,18 @@ def stub_message_for(
         return None
     digest = (cache or {}).get(tool_call_id)
     if digest is None:
+        digest = _stored_digest(tool_call_id)
+        if digest is not None and cache is not None:
+            with _DIGEST_STATE_LOCK:
+                cache[tool_call_id] = digest
+    if digest is None:
         digest = extractive_digest(original_message)
         if not digest:
             return None
         if cache is not None:
             with _DIGEST_STATE_LOCK:
                 cache[tool_call_id] = digest
+        _store_digest(tool_call_id, digest)
         _schedule_digest_upgrade(tool_call_id, original_message, cache, llm)
     message = TOOL_CALL_RESPONSE_COMPACTED_DIGEST.format(digest=digest)
     return message, token_counter(message)

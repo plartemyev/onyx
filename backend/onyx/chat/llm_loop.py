@@ -544,19 +544,19 @@ def count_message_replay_tokens(
     return max(0, msg.token_count - msg.image_token_count) + num_images * marker_tokens
 
 
-def _group_in_turn_exchanges(
+def _group_exchanges(
     messages: list[ChatMessageSimple],
 ) -> list[list[ChatMessageSimple]]:
-    """Group the in-turn tail into exchanges.
+    """Group messages into exchange units for compaction.
 
-    An exchange starts at an ASSISTANT message (the tool-call carrier) and
-    spans every message that follows it (its TOOL_CALL_RESPONSE messages).
-    Keeping exchanges intact when compacting means a tool response is never
-    separated from the assistant message that carries its tool_call_id.
+    USER and ASSISTANT messages start a new group; TOOL_CALL_RESPONSE
+    messages attach to the current group. Keeping exchanges intact when
+    compacting means a tool response is never separated from the assistant
+    message that carries its tool_call_id.
     """
     groups: list[list[ChatMessageSimple]] = []
     for msg in messages:
-        if msg.message_type == MessageType.ASSISTANT or not groups:
+        if not groups or msg.message_type in (MessageType.USER, MessageType.ASSISTANT):
             groups.append([msg])
         else:
             groups[-1].append(msg)
@@ -640,7 +640,7 @@ def _compact_in_turn_tail(
     if total_tokens <= available_tokens:
         return messages_after_last_user
 
-    groups = _group_in_turn_exchanges(messages_after_last_user)
+    groups = _group_exchanges(messages_after_last_user)
     group_tokens = [sum(replay_count(msg) for msg in group) for group in groups]
 
     # Keep the newest run of exchanges that fits raw. When even the newest
@@ -692,6 +692,87 @@ def _compact_in_turn_tail(
         for group in stubbed_prefix[first_kept:] + groups[raw_start:]
         for msg in group
     ]
+
+
+def _fit_history_before_last_user(
+    history_before_last_user: list[ChatMessageSimple],
+    *,
+    remaining_budget: int,
+    replay_count: Callable[[ChatMessageSimple], int],
+    token_counter: Callable[[str], int] | None,
+    tool_response_digests: dict[str, str] | None = None,
+    llm: LLM | None = None,
+) -> tuple[list[ChatMessageSimple], int]:
+    """Fit the history before the last user message into the budget.
+
+    The newest messages stay raw for as long as they fit, kept whole as an
+    exchange so the cut never separates a tool-call carrier from its
+    responses. Older exchanges give up their tool-response content — stubbed
+    with a digest, exactly like the in-turn tail — before anything is
+    dropped wholesale. Returns the kept messages (a suffix of the input)
+    and their total token count. Never mutates the input messages.
+    """
+    total_tokens = sum(replay_count(msg) for msg in history_before_last_user)
+    if total_tokens <= remaining_budget:
+        for msg in history_before_last_user:
+            msg.should_cache = True
+        return history_before_last_user, total_tokens
+
+    groups = _group_exchanges(history_before_last_user)
+    group_tokens = [sum(replay_count(msg) for msg in group) for group in groups]
+
+    # Keep the newest run of exchanges that fits raw. When even the newest
+    # exchange alone does not fit, nothing is kept raw and the whole
+    # history is stubbed below.
+    raw_start = len(groups)
+    raw_tokens = 0
+    while (
+        raw_start > 0 and raw_tokens + group_tokens[raw_start - 1] <= remaining_budget
+    ):
+        raw_start -= 1
+        raw_tokens += group_tokens[raw_start]
+
+    # Older exchanges: stub their tool responses first (least destructive),
+    # then drop the oldest stubbed exchanges until the history fits.
+    remaining_tokens = remaining_budget - raw_tokens
+    stubbed_prefix = [
+        [
+            _stub_tool_response(msg, token_counter, tool_response_digests, llm)
+            if msg.message_type == MessageType.TOOL_CALL_RESPONSE
+            else msg
+            for msg in group
+        ]
+        for group in groups[:raw_start]
+    ]
+    stubbed_tokens = [
+        sum(replay_count(msg) for msg in group) for group in stubbed_prefix
+    ]
+    kept_stubbed = 0
+    kept_tokens = 0
+    for tokens in reversed(stubbed_tokens):
+        if kept_tokens + tokens > remaining_tokens:
+            break
+        kept_tokens += tokens
+        kept_stubbed += 1
+    first_kept = len(stubbed_tokens) - kept_stubbed
+
+    logger.info(
+        "Compacted history before the last user message: kept %d raw, "
+        "stubbed %d, dropped %d of %d exchanges to fit into %d tokens",
+        len(groups) - raw_start,
+        kept_stubbed,
+        raw_start - first_kept,
+        len(groups),
+        remaining_budget,
+    )
+    kept = [
+        msg
+        for group in stubbed_prefix[first_kept:] + groups[raw_start:]
+        for msg in group
+    ]
+    for msg in kept:
+        msg.should_cache = True
+    return kept, kept_tokens + raw_tokens
 
 
 def construct_message_history(
@@ -830,22 +911,17 @@ def construct_message_history(
     # Calculate remaining budget for history before the last user message
     remaining_budget = history_token_budget - last_user_tokens - after_user_tokens
 
-    # Truncate history_before_last_user from the top to fit in remaining budget.
-    # Track dropped file messages so we can provide their metadata to the
-    # FileReaderTool instead.
-    truncated_history_before: list[ChatMessageSimple] = []
-    current_token_count = 0
-
-    for msg in reversed(history_before_last_user):
-        msg_tokens = _replay_token_count(msg)
-        if current_token_count + msg_tokens <= remaining_budget:
-            msg.should_cache = True
-            truncated_history_before.insert(0, msg)
-            current_token_count += msg_tokens
-        else:
-            # Can't fit this message, stop truncating.
-            # This message and everything older is dropped.
-            break
+    # Fit history_before_last_user: newest messages raw, older exchanges
+    # stubbed with their digest, oldest dropped — and track dropped file
+    # messages so we can provide their metadata to the FileReaderTool.
+    truncated_history_before, current_token_count = _fit_history_before_last_user(
+        history_before_last_user,
+        remaining_budget=remaining_budget,
+        replay_count=_replay_token_count,
+        token_counter=token_counter,
+        tool_response_digests=tool_response_digests,
+        llm=llm,
+    )
 
     # Collect file_ids from ALL dropped messages (those not in
     # truncated_history_before). The truncation loop above keeps the most
@@ -1039,19 +1115,47 @@ def _cycle_history_token_budget(
 def _drop_orphaned_tool_call_responses(
     messages: list[ChatMessageSimple],
 ) -> list[ChatMessageSimple]:
-    """Drop tool response messages whose tool_call_id is not in prior assistant tool calls.
+    """Drop tool-call halves that lost their partner.
 
-    This can happen when history truncation drops an ASSISTANT tool-call message but
-    leaves a later TOOL_CALL_RESPONSE message in context. Some providers (e.g. Ollama)
-    reject such history with an "unexpected tool call id" error.
+    Two orphan shapes, both rejected by providers (e.g. Ollama): a
+    TOOL_CALL_RESPONSE whose tool_call_id has no prior assistant tool call
+    (history truncation dropped the carrier), and an assistant carrier
+    whose tool_call_ids have no following response (the forgotten-files
+    eviction can pop a response while its carrier stays).
     """
     known_tool_call_ids: set[str] = set()
-    sanitized: list[ChatMessageSimple] = []
+    answered_tool_call_ids: set[str] = set()
 
     for msg in messages:
         if msg.message_type == MessageType.ASSISTANT and msg.tool_calls:
             for tool_call in msg.tool_calls:
                 known_tool_call_ids.add(tool_call.tool_call_id)
+            continue
+
+        if (
+            msg.message_type == MessageType.TOOL_CALL_RESPONSE
+            and msg.tool_call_id
+            and msg.tool_call_id in known_tool_call_ids
+        ):
+            answered_tool_call_ids.add(msg.tool_call_id)
+
+    sanitized: list[ChatMessageSimple] = []
+    for msg in messages:
+        if msg.message_type == MessageType.ASSISTANT and msg.tool_calls:
+            if not all(
+                tool_call.tool_call_id in answered_tool_call_ids
+                for tool_call in msg.tool_calls
+            ):
+                logger.debug(
+                    "Dropping assistant tool-call carrier with unanswered "
+                    "tool_call_ids=%s while constructing message history",
+                    [
+                        tool_call.tool_call_id
+                        for tool_call in msg.tool_calls
+                        if tool_call.tool_call_id not in answered_tool_call_ids
+                    ],
+                )
+                continue
             sanitized.append(msg)
             continue
 

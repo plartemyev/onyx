@@ -284,9 +284,15 @@ class TestConstructMessageHistory:
         user_msg1 = create_message("First", MessageType.USER, 5)
         user_msg2 = create_message("Second", MessageType.USER, 5)
         assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        tool_response = create_tool_response("tc_1", "Result", 5)
         custom_agent = create_message("Custom", MessageType.USER, 10)
 
-        simple_chat_history = [user_msg1, user_msg2, assistant_with_tool]
+        simple_chat_history = [
+            user_msg1,
+            user_msg2,
+            assistant_with_tool,
+            tool_response,
+        ]
         context_files = create_context_files(num_files=1, tokens_per_file=50)
 
         result = construct_message_history(
@@ -298,8 +304,9 @@ class TestConstructMessageHistory:
             available_tokens=1000,
         )
 
-        # Should have: system, user1, custom_agent, context_files, user2, assistant_with_tool
-        assert len(result) == 6
+        # Should have: system, user1, custom_agent, context_files, user2,
+        # assistant_with_tool, tool_response
+        assert len(result) == 7
         assert result[0] == system_prompt
         assert result[1] == user_msg1
         assert result[2] == custom_agent  # Before last user message
@@ -307,6 +314,7 @@ class TestConstructMessageHistory:
         assert "documents" in result[3].message
         assert result[4] == user_msg2  # Last user message
         assert result[5] == assistant_with_tool  # After last user message
+        assert result[6] == tool_response
 
     def test_construct_message_history_does_not_duplicate_project_images(
         self,
@@ -891,6 +899,81 @@ class TestConstructMessageHistory:
         assert result[-1] == tool_response
         assert tool_response.message == "Result"
         assert tool_response.token_count == 15
+
+    def test_old_history_tool_exchange_stubbed_not_dropped(self) -> None:
+        """A tool exchange from an earlier turn that no longer fits raw is
+        kept in stubbed form instead of being dropped wholesale."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg1 = create_message("First", MessageType.USER, 10)
+        assistant_1 = create_assistant_with_tool_call("tc_1", "tool", 5)
+        response_1 = create_tool_response("tc_1", "Result 1", 70)
+        user_msg2 = create_message("Second", MessageType.USER, 10)
+
+        simple_chat_history = [
+            user_msg1,
+            assistant_1,
+            response_1,
+            user_msg2,
+        ]
+
+        # Budget: 90; after the system prompt, 80; after the last user
+        # message, 70. The exchange raw (75) does not fit; its stub
+        # (5 + 58 = 63) does. The user message before it (10) does not fit
+        # next to the stub (73 > 70) and is dropped.
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=create_context_files(),
+            available_tokens=90,
+        )
+
+        assert len(result) == 4
+        assert result[1] == assistant_1
+        assert result[2].message == TOOL_CALL_RESPONSE_COMPACTED
+        assert result[2].tool_call_id == "tc_1"
+        assert result[3] == user_msg2
+        # The raw response content is gone from the request, but the input
+        # history is untouched.
+        assert simple_chat_history[2].message == "Result 1"
+
+    def test_old_history_raw_cutoff_keeps_exchange_intact(self) -> None:
+        """The raw cutoff never splits a tool exchange: the carrier and its
+        response are kept or dropped together."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg1 = create_message("First", MessageType.USER, 10)
+        assistant_1 = create_assistant_with_tool_call("tc_1", "tool", 5)
+        response_1 = create_tool_response("tc_1", "Result 1", 70)
+        user_msg2 = create_message("Second", MessageType.USER, 40)
+
+        simple_chat_history = [
+            user_msg1,
+            assistant_1,
+            response_1,
+            user_msg2,
+        ]
+
+        # Budget: 130; after the system prompt, 120; after the last user
+        # message (40), 80 remain. Message-granular truncation would keep
+        # the response (70) and orphan its carrier; exchange granularity
+        # keeps the pair (75) and drops user_msg1 (10) instead: 75 + 10 =
+        # 85 > 80.
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=create_context_files(),
+            available_tokens=130,
+        )
+
+        assert len(result) == 4
+        assert result[1] == assistant_1
+        assert result[2] is response_1
+        assert result[2].message == "Result 1"
+        assert result[3] == user_msg2
+        assert all(msg is not user_msg1 for msg in result)
 
     def test_not_enough_tokens_for_last_user_and_messages_after(self) -> None:
         """A tail that exceeds the budget no longer kills the turn: it is
