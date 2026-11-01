@@ -754,6 +754,55 @@ def unwrap_google_translate_url(url: str) -> str:
     )
 
 
+# Telegram hosts serving channel pages. The bare ``t.me/<channel>`` URL is
+# an app hand-off stub rendered by JS, while the readable public history of
+# the same channel lives at ``t.me/s/<channel>``; telegram.me mirrors t.me.
+_TELEGRAM_HOSTS = {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}
+# Single-segment t.me paths that are not channel names (share links,
+# instant-view proxies, static pages); rewriting those to /s/ is nonsense.
+_TELEGRAM_NON_CHANNEL_SEGMENTS = {"s", "share", "iv", "proxy", "contact", "tos", "faq"}
+
+
+def telegram_channel_preview_url(url: str) -> str:
+    """Map ``t.me/<channel>`` to its public web preview ``t.me/s/<channel>``.
+
+    The bare channel URL only hands off to the Telegram apps; the ``/s/``
+    path serves the channel history as HTML. Mirrors the SearXNG crawl
+    pipeline's transparent rewrite so Onyx can recognize pages served under
+    it. Post links (``t.me/<channel>/<post>``), the preview itself, utility
+    paths and non-Telegram URLs come back unchanged.
+    """
+    parts = urlparse(url or "")
+    if (parts.hostname or "").lower() not in _TELEGRAM_HOSTS:
+        return url
+    segments = [s for s in parts.path.split("/") if s]
+    if len(segments) != 1 or segments[0].lower() in _TELEGRAM_NON_CHANNEL_SEGMENTS:
+        return url
+    return urlunparse(("https", "t.me", "/s/" + segments[0], "", parts.query, ""))
+
+
+def unwrap_telegram_preview_url(final_url: str, requested_url: str) -> str:
+    """Keep the requested URL as a fetched page's link when the content was
+    served by Telegram's transparent ``/s/`` preview rewrite.
+
+    A crawl of the bare ``t.me/<channel>`` URL is served from
+    ``t.me/s/<channel>``; open_url matches fetched content back to the
+    requested URL, so the rewrite must not become the page's identity. Any
+    other final URL comes back unchanged.
+    """
+    preview = telegram_channel_preview_url(requested_url)
+    if preview == requested_url:
+        return final_url
+    final_parts = urlparse(final_url or "")
+    preview_parts = urlparse(preview)
+    if (
+        (final_parts.hostname or "").lower() == (preview_parts.hostname or "").lower()
+        and final_parts.path == preview_parts.path
+    ):
+        return requested_url
+    return final_url
+
+
 def normalize_url(url: str) -> str:
     """
     Normalize a URL by removing query parameters and fragments.

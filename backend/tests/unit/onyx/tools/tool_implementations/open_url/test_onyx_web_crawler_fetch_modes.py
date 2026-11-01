@@ -276,6 +276,64 @@ def test_fallback_respects_max_html_size(
 
 
 # ---------------------------------------------------------------------------
+# Transparent Telegram preview: a crawl of the bare t.me/<channel> URL is
+# served from t.me/s/<channel>; the WebContent link must stay the URL that
+# was requested, or open_url's merge drops the fetched content.
+# ---------------------------------------------------------------------------
+
+TELEGRAM_CHANNEL_HTML = (
+    "<html><head><title>Channel — Telegram</title></head><body>"
+    '<div class="tgme_widget_message_text">Recent post text from the channel '
+    "history, long enough to parse as real page content.</div>"
+    "</body></html>"
+)
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_content_bytes")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_playwright_mode_telegram_preview_keeps_requested_url(
+    mock_get: MagicMock, mock_render: MagicMock, mock_fetch_bytes: MagicMock
+) -> None:
+    mock_render.return_value = RenderedPage(
+        html=TELEGRAM_CHANNEL_HTML,
+        final_url="https://t.me/s/thinkaboutism",
+        status=200,
+    )
+
+    result = OnyxWebCrawler(fetch_mode="playwright")._fetch_url(
+        "https://t.me/thinkaboutism"
+    )
+
+    mock_get.assert_not_called()
+    mock_fetch_bytes.assert_not_called()
+    assert result.scrape_successful
+    assert result.link == "https://t.me/thinkaboutism"
+
+
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.fetch_rendered_html")
+@patch("onyx.tools.tool_implementations.open_url.onyx_web_crawler.ssrf_safe_get")
+def test_playwright_fallback_telegram_preview_keeps_requested_url(
+    mock_get: MagicMock, mock_render: MagicMock
+) -> None:
+    """Same identity rule on the auto-mode fallback path (unparseable 200
+    from the requests fast path, rescued by the browser)."""
+    mock_get.return_value = _mock_response(status_code=200, content=EMPTY_HTML.encode())
+    mock_get.return_value.url = "https://t.me/thinkaboutism"
+    mock_render.return_value = RenderedPage(
+        html=TELEGRAM_CHANNEL_HTML,
+        final_url="https://t.me/s/thinkaboutism",
+        status=200,
+    )
+
+    result = OnyxWebCrawler()._fetch_url("https://t.me/thinkaboutism")
+
+    assert result is not None
+    assert result.scrape_successful
+    assert result.link == "https://t.me/thinkaboutism"
+
+
+# ---------------------------------------------------------------------------
 # Cloudflare challenge body detection: when Playwright DOES render but the
 # rendered HTML is still the CF challenge interstitial, we must NOT pass
 # garbage like "Just a moment..." back to the LLM as if it were the page.

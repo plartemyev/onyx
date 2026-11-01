@@ -43,7 +43,12 @@ from onyx.utils.playwright_fetch import (
     looks_like_cloudflare_challenge,
 )
 from onyx.utils.request_pacer import Pacer, get_default_pacer, provider_key
-from onyx.utils.url import SSRFException, ssrf_safe_get, unwrap_google_translate_url
+from onyx.utils.url import (
+    SSRFException,
+    ssrf_safe_get,
+    unwrap_google_translate_url,
+    unwrap_telegram_preview_url,
+)
 from onyx.utils.web_content import (
     decode_html_bytes,
     extract_pdf_text,
@@ -575,9 +580,9 @@ class OnyxWebCrawler(WebContentProvider):
             )
             return _failed_result(url, FailureReason.CLOUDFLARE_CHALLENGE)
 
-        result = _parse_html_to_web_content(
-            unwrap_google_translate_url(rendered.final_url) or url, rendered.html
-        )
+        page_url = unwrap_google_translate_url(rendered.final_url) or url
+        page_url = unwrap_telegram_preview_url(page_url, url)
+        result = _parse_html_to_web_content(page_url, rendered.html)
         if result.scrape_successful:
             return result
 
@@ -1049,9 +1054,9 @@ class OnyxWebCrawler(WebContentProvider):
             _remember_challenger(url)
             return _failed_result(url, FailureReason.CLOUDFLARE_CHALLENGE)
 
-        result = _parse_html_to_web_content(
-            unwrap_google_translate_url(rendered.final_url) or url, rendered.html
-        )
+        page_url = unwrap_google_translate_url(rendered.final_url) or url
+        page_url = unwrap_telegram_preview_url(page_url, url)
+        result = _parse_html_to_web_content(page_url, rendered.html)
         if not result.scrape_successful:
             return None
         logger.info("Playwright fallback succeeded for %s", url)
