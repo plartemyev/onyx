@@ -732,7 +732,7 @@ class TestConstructMessageHistory:
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
         user_msg = create_message("User question", MessageType.USER, 10)
         assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
-        big_tool_response = create_tool_response("tc_1", "Huge result", 60)
+        big_tool_response = create_tool_response("tc_1", "Huge result", 200)
 
         simple_chat_history = [user_msg, assistant_with_tool, big_tool_response]
         result = construct_message_history(
@@ -741,7 +741,10 @@ class TestConstructMessageHistory:
             simple_chat_history=simple_chat_history,
             reminder_message=None,
             context_files=create_context_files(),
-            available_tokens=84,
+            # Raw tail = 215 > 128, so the response is stubbed: bare notice
+            # (58-token fallback) plus the note's 64-token fallback, with
+            # the carrier 5 + 122 = 127 <= 128.
+            available_tokens=148,
             indexed_file_notes={
                 "tc_1": (
                     "The full text of this fetch was saved as searchable "

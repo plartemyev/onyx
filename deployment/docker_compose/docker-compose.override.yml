@@ -212,14 +212,14 @@ services:
       - SEARXNG_CRAWL_MAX_BYTES=524288000
       - WEB_BROWSER_TIMEZONE=Asia/Bangkok
       # Per-URL char budget of web page text fed to the model (web search
-      # results + open_url scrapes). Raised from the 15000 default: the
-      # cleaned page body carries inline media links, so the useful text
-      # inside the budget is smaller than the raw count.
-      - WEB_CONTENT_MAX_CHARS_PER_URL=60000
-      # Batch ceiling for open_url (default 3x per-URL). 180k chars is
-      # ~50k tokens worst case for one tool call — sized for 200k-context
-      # models; tighten before raising further.
-      - WEB_CONTENT_MAX_CHARS_ACROSS_URLS=180000
+      # results + open_url scrapes). Raised x3 with the indexed-page path:
+      # the full text lands in the searchable copy, and indexed pages inline
+      # only their head excerpt, so the context payload stays bounded.
+      - WEB_CONTENT_MAX_CHARS_PER_URL=180000
+      # Batch ceiling for open_url (x3 the per-URL budget). The context
+      # payload stays bounded by the per-page excerpts; the budget bounds
+      # fetching and indexing instead.
+      - WEB_CONTENT_MAX_CHARS_ACROSS_URLS=540000
       # Model-facing page bodies as GitHub-flavored Markdown (Firecrawl-
       # shaped: ATX headings, pipe tables, fenced code, links). Links stay
       # full [text](url); flip to WEB_CONTENT_MD_LINKS=bare to keep only
@@ -294,8 +294,8 @@ services:
       - WEB_BROWSER_TIMEZONE=Asia/Bangkok
       # Same web content budgets as api_server: scheduled Craft runs fetch
       # pages through the same tools.
-      - WEB_CONTENT_MAX_CHARS_PER_URL=60000
-      - WEB_CONTENT_MAX_CHARS_ACROSS_URLS=180000
+      - WEB_CONTENT_MAX_CHARS_PER_URL=180000
+      - WEB_CONTENT_MAX_CHARS_ACROSS_URLS=540000
       - WEB_CONTENT_FORMAT=markdown
       - WEB_CONTENT_MD_LINKS=full
       - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons

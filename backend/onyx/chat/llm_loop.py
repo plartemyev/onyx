@@ -1817,16 +1817,26 @@ def run_llm_loop(
                 indexed_file_notes=indexed_file_notes,
             )
 
+            request_tokens = tool_token_budget + sum(
+                count_message_replay_tokens(
+                    msg,
+                    image_files_replayed_as_markers=image_files_replayed_as_markers,
+                    token_counter=token_counter,
+                )
+                for msg in truncated_message_history
+            )
             max_output_tokens = token_budget.output_allowance(
-                estimated_input_tokens=tool_token_budget
-                + sum(
-                    count_message_replay_tokens(
-                        msg,
-                        image_files_replayed_as_markers=image_files_replayed_as_markers,
-                        token_counter=token_counter,
-                    )
-                    for msg in truncated_message_history
-                ),
+                estimated_input_tokens=request_tokens,
+            )
+            logger.info(
+                "Cycle %d budgets: available=%d tools=%d cycle_history=%d "
+                "request=%d output_cap=%s",
+                llm_cycle_count,
+                available_tokens,
+                tool_token_budget,
+                cycle_history_budget,
+                request_tokens,
+                max_output_tokens,
             )
 
             # This calls the LLM, yields packets (reasoning, answers, etc.) and returns the result

@@ -1301,6 +1301,12 @@ OPEN_URL_DOC_INDEXING = os.environ.get(
 )
 # Pages whose cleaned text reaches this many characters get indexed.
 OPEN_URL_INDEX_MIN_CHARS = int(os.environ.get("OPEN_URL_INDEX_MIN_CHARS") or 6000)
+# Indexed pages inline only this many leading characters into the tool
+# response; the rest is reachable via internal search / read_file. Keeps a
+# raised fetch budget from flooding the context window.
+OPEN_URL_INDEXED_EXCERPT_CHARS = int(
+    os.environ.get("OPEN_URL_INDEXED_EXCERPT_CHARS") or 4000
+)
 
 # Body format of model-facing web page content (web search results + open_url
 # scrapes; OnyxWebCrawler only — connector indexing always extracts text).

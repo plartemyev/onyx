@@ -1614,6 +1614,10 @@ configMap:
   # Pages whose cleaned text reaches this many characters get indexed
   # (default 6000).
   OPEN_URL_INDEX_MIN_CHARS: ""
+  # Indexed pages inline only this many leading characters into the tool
+  # response; the rest is reachable via internal search / read_file
+  # (default 4000).
+  OPEN_URL_INDEXED_EXCERPT_CHARS: ""
   # Code Interpreter sandbox sessions (require code-interpreter >= 0.5.0).
   # When on, each chat runs in one persistent sandbox: workspace files and
   # installed packages survive across run_python calls and chat turns.

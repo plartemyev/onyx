@@ -9,6 +9,7 @@ from typing_extensions import override
 from onyx.chat.emitter import Emitter
 from onyx.configs.app_configs import (
     DISABLE_VECTOR_DB,
+    OPEN_URL_INDEXED_EXCERPT_CHARS,
     WEB_CONTENT_MAX_CHARS_ACROSS_URLS,
 )
 from onyx.context.search.models import (
@@ -367,6 +368,27 @@ def _llm_facing_image_urls(image_urls: list[str]) -> list[str]:
     return kept
 
 
+def _inline_content_for_section(
+    section: InferenceSection,
+    indexed_name: str | None,
+) -> str:
+    """The content one section contributes inline.
+
+    Indexed pages above the excerpt size inline only their head; the rest
+    stays reachable via internal search / read_file, so a raised fetch
+    budget cannot flood the context window. Everything else contributes
+    its full text.
+    """
+    content = section.combined_content
+    if indexed_name is not None and len(content) > OPEN_URL_INDEXED_EXCERPT_CHARS:
+        return (
+            content[:OPEN_URL_INDEXED_EXCERPT_CHARS]
+            + f"\n[… full text saved as searchable document '{indexed_name}' "
+            + "— use internal_search for details …]"
+        )
+    return content
+
+
 def _convert_sections_to_llm_string_with_citations(
     sections: list[InferenceSection],
     existing_citation_mapping: dict[str, int],
@@ -457,9 +479,14 @@ def _convert_sections_to_llm_string_with_citations(
         # Calculate chars used by metadata fields (everything except content)
         metadata_chars = _estimate_result_chars(result)
 
+        # The excerpt cut happens before the budget arithmetic: an indexed
+        # page costs the batch its excerpt, not its full length.
+        content = _inline_content_for_section(
+            section, (indexed_names or {}).get(document_id)
+        )
+
         # Calculate remaining budget for content
         remaining_budget = max_document_chars - total_chars - metadata_chars
-        content = section.combined_content
 
         # Check if we have enough budget for meaningful content
         if remaining_budget < MIN_CONTENT_CHARS:

@@ -69,10 +69,12 @@ class TestDocumentNumberTitlePrefix:
             _make_section(_make_chunk("doc-a", semantic_identifier="Левада: Рейтинги")),
             _make_section(_make_chunk("doc-b", semantic_identifier="Forum thread")),
         ]
-        docs_str, citation_mapping = _convert_sections_to_llm_string_with_citations(
-            sections=sections,
-            existing_citation_mapping={},
-            citation_start=1,
+        docs_str, citation_mapping, _doc_stats = (
+            _convert_sections_to_llm_string_with_citations(
+                sections=sections,
+                existing_citation_mapping={},
+                citation_start=1,
+            )
         )
         payload = json.loads(docs_str)
         titles = [r["title"] for r in payload["results"]]
@@ -81,14 +83,78 @@ class TestDocumentNumberTitlePrefix:
 
     def test_existing_citation_number_is_reused_in_prefix(self) -> None:
         section = _make_section(_make_chunk("doc-a", semantic_identifier="Thread"))
-        docs_str, citation_mapping = _convert_sections_to_llm_string_with_citations(
-            sections=[section],
-            existing_citation_mapping={"doc-a": 114},
-            citation_start=200,
+        docs_str, citation_mapping, _doc_stats = (
+            _convert_sections_to_llm_string_with_citations(
+                sections=[section],
+                existing_citation_mapping={"doc-a": 114},
+                citation_start=200,
+            )
         )
         payload = json.loads(docs_str)
         assert payload["results"][0]["title"] == "[document 114] Thread"
         assert citation_mapping == {114: "doc-a"}
+
+
+class TestIndexedPageExcerpt:
+    def _long_chunk(self, document_id: str, chars: int) -> InferenceSection:
+        chunk = _make_chunk(document_id)
+        return InferenceSection(
+            center_chunk=chunk,
+            chunks=[chunk],
+            combined_content="x" * chars,
+        )
+
+    def test_indexed_page_inlines_excerpt_with_pointer(self) -> None:
+        from onyx.tools.tool_implementations.open_url import open_url_tool
+
+        section = self._long_chunk("doc-a", chars=50_000)
+        docs_str, _citation_mapping, _doc_stats = (
+            _convert_sections_to_llm_string_with_citations(
+                sections=[section],
+                existing_citation_mapping={},
+                citation_start=1,
+                indexed_names={"doc-a": "Thread.md"},
+            )
+        )
+        payload = json.loads(docs_str)
+        content = payload["results"][0]["content"]
+        # The inline content is the excerpt plus the pointer, far below the
+        # page's full length.
+        assert len(content) < open_url_tool.OPEN_URL_INDEXED_EXCERPT_CHARS + 300
+        assert "full text saved as searchable document 'Thread.md'" in content
+        assert "internal_search" in content
+        assert payload["results"][0]["indexed_as"] == "Thread.md"
+
+    def test_small_indexed_page_stays_full(self) -> None:
+        section = self._long_chunk("doc-b", chars=500)
+        docs_str, _citation_mapping, _doc_stats = (
+            _convert_sections_to_llm_string_with_citations(
+                sections=[section],
+                existing_citation_mapping={},
+                citation_start=1,
+                indexed_names={"doc-b": "Small.md"},
+            )
+        )
+        payload = json.loads(docs_str)
+        content = payload["results"][0]["content"]
+        assert content == "x" * 500
+        assert payload["results"][0]["indexed_as"] == "Small.md"
+
+    def test_unindexed_page_keeps_full_content(self) -> None:
+        # 40k chars: above the excerpt size, below the test-environment batch
+        # budget (45k default), so the full content survives.
+        section = self._long_chunk("doc-c", chars=40_000)
+        docs_str, _citation_mapping, _doc_stats = (
+            _convert_sections_to_llm_string_with_citations(
+                sections=[section],
+                existing_citation_mapping={},
+                citation_start=1,
+            )
+        )
+        payload = json.loads(docs_str)
+        content = payload["results"][0]["content"]
+        assert len(content) >= 40_000
+        assert "indexed_as" not in payload["results"][0]
 
 
 def test_prefix_handles_missing_title() -> None:
