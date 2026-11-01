@@ -315,7 +315,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -350,7 +350,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -377,7 +377,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -407,7 +407,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -434,7 +434,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -464,7 +464,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -493,7 +493,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -527,7 +527,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -563,7 +563,7 @@ class TestRunModels:
                 side_effect=lambda *_, **__: completion_called.set(),
             ),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -608,7 +608,7 @@ class TestRunModels:
                 side_effect=mark_persisted,
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -643,7 +643,7 @@ class TestRunModels:
                 "onyx.chat.process_message.llm_loop_completion_handle"
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -673,7 +673,7 @@ class TestRunModels:
                 "onyx.chat.process_message.llm_loop_completion_handle"
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -700,7 +700,7 @@ class TestRunModels:
                 "onyx.chat.process_message.llm_loop_completion_handle"
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -739,7 +739,7 @@ class TestRunModels:
                 side_effect=lambda *_, **__: completion_called.set(),
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -794,7 +794,7 @@ class TestRunModels:
                 return_value=session_ctx,
             ) as mock_get_session,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -842,7 +842,7 @@ class TestRunModels:
                 side_effect=lambda *_, **__: completion_called.set(),
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -896,7 +896,7 @@ class TestRunModels:
                 side_effect=mark_persisted,
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -944,7 +944,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -991,7 +991,7 @@ class TestRunModels:
                 side_effect=lambda *_, **__: model_1_persisted.set(),
             ) as mock_handle,
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -1018,7 +1018,7 @@ class TestRunModels:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):
@@ -1048,7 +1048,7 @@ def test_worker_traceback_only_reaches_development_clients() -> None:
             patch("onyx.chat.process_message.construct_tools", return_value={}),
             patch("onyx.chat.process_message.llm_loop_completion_handle"),
             patch(
-                "onyx.chat.process_message.get_llm_token_counter",
+                "onyx.chat.process_message.get_engine_token_counter",
                 return_value=lambda _: 0,
             ),
         ):

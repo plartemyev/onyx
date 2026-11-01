@@ -120,7 +120,7 @@ from onyx.hooks.points.query_processing import (
 )
 from onyx.llm.engine_token_counter import get_engine_token_counter
 from onyx.llm.exceptions import ClassifiedLLMError, LLMStreamCancelled
-from onyx.llm.factory import get_llm_for_persona, get_llm_token_counter
+from onyx.llm.factory import get_llm_for_persona
 from onyx.llm.interfaces import LLM, LLMUserIdentity
 from onyx.llm.models import LLMErrorInfo, ReasoningEffort
 from onyx.llm.override_models import LLMOverride
@@ -746,7 +746,7 @@ def build_chat_turn(
         )
         llms.append(llm)
         model_display_names.append(_build_model_display_name(override, llm))
-    token_counter = get_llm_token_counter(llms[0])
+    token_counter = get_engine_token_counter(llms[0])
 
     # Verify that the user-specified files actually belong to the user
     verify_user_files(
@@ -1512,7 +1512,7 @@ def _run_models(
                     tools=model_tools,
                     custom_agent_prompt=setup.custom_agent_prompt,
                     llm=model_llm,
-                    token_counter=get_llm_token_counter(model_llm),
+                    token_counter=get_engine_token_counter(model_llm),
                     reasoning_effort=setup.reasoning_effort,
                     skip_clarification=setup.skip_clarification,
                     user_identity=setup.user_identity,
@@ -1532,7 +1532,7 @@ def _run_models(
                     persona=setup.persona,
                     user_memory_context=setup.user_memory_context,
                     llm=model_llm,
-                    token_counter=get_llm_token_counter(model_llm),
+                    token_counter=get_engine_token_counter(model_llm),
                     forced_tool_id=setup.forced_tool_id,
                     user_identity=setup.user_identity,
                     chat_session_id=str(setup.chat_session_id),

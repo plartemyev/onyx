@@ -88,7 +88,7 @@ from onyx.federated_connectors.federated_retrieval import (
     FederatedRetrievalInfo,
     get_federated_retrieval_functions,
 )
-from onyx.llm.factory import get_llm_token_counter
+from onyx.llm.engine_token_counter import get_engine_token_counter
 from onyx.llm.interfaces import LLM
 from onyx.natural_language_processing.search_nlp_models import EmbeddingModel
 from onyx.onyxbot.slack.models import SlackContext
@@ -1254,7 +1254,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
             or (llm_queries[0] if llm_queries else "")
         )
 
-        token_counter = get_llm_token_counter(self.llm)
+        token_counter = get_engine_token_counter(self.llm)
 
         # Trim sections to fit within token budget before LLM selection
         # This is to account for very short chunks flooding the search context

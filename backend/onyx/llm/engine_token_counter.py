@@ -6,6 +6,7 @@ no local tokenizer can match. The counter below prefers that endpoint and falls
 back to Onyx's local tokenizer when the engine does not provide one.
 """
 
+import time
 from typing import Callable
 
 import requests
@@ -21,10 +22,18 @@ logger = setup_logger()
 _CONNECT_TIMEOUT_SECONDS = 2
 _READ_TIMEOUT_SECONDS = 15
 
-# api_base (normalized, without /v1) -> endpoint usability. Negative caching
-# keeps a non-llama.cpp provider (e.g. hosted OpenAI) from being probed on
-# every open_url call.
-_tokenize_availability: dict[str, bool] = {}
+# How long a failed probe keeps the counter on the local tokenizer before the
+# engine endpoint is probed again. Bounds both the probe cost for providers
+# without /tokenize (e.g. hosted OpenAI) and the fallback time when the engine
+# is temporarily down: the exact tokenizer returns within a minute of the
+# engine coming back.
+_NEGATIVE_CACHE_TTL_SECONDS = 60.0
+
+# api_base (normalized, without /v1) -> probe state. True: the endpoint
+# answered /tokenize and is used directly until a call fails. A float is the
+# monotonic time until which the endpoint is negative-cached; after that the
+# next call probes again. Absent: not probed yet.
+_tokenize_state: dict[str, bool | float] = {}
 
 
 def _engine_tokenize_endpoint(api_base: str) -> str | None:
@@ -79,23 +88,28 @@ def get_engine_token_counter(llm: LLM) -> Callable[[str], int]:
         headers["Authorization"] = f"Bearer {llm.config.api_key}"
 
     def counter(text: str) -> int:
-        if _tokenize_availability.get(endpoint) is False:
+        state = _tokenize_state.get(endpoint)
+        if isinstance(state, float) and time.monotonic() < state:
             return fallback_counter(text)
         count = _count_via_engine(endpoint, text, headers)
         if count is not None:
-            if not _tokenize_availability.get(endpoint):
+            if state is not True:
                 logger.info("Using engine tokenizer at %s", endpoint)
-            _tokenize_availability[endpoint] = True
+            _tokenize_state[endpoint] = True
             return count
-        if _tokenize_availability.get(endpoint):
-            # Engine went away mid-session; stop probing it.
-            _tokenize_availability[endpoint] = False
+        _tokenize_state[endpoint] = time.monotonic() + _NEGATIVE_CACHE_TTL_SECONDS
+        if state is True:
+            logger.info(
+                "Engine tokenizer at %s stopped answering; using the local "
+                "tokenizer for the next %ss",
+                endpoint,
+                int(_NEGATIVE_CACHE_TTL_SECONDS),
+            )
         else:
             logger.info(
                 "No engine tokenizer at %s; falling back to local tokenizer",
                 endpoint,
             )
-            _tokenize_availability[endpoint] = False
         return fallback_counter(text)
 
     return counter

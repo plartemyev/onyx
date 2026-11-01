@@ -59,8 +59,11 @@ This file provides guidance to AI agents when working with code in this reposito
   shows "Reading documents · N · size · tokens").
   Token counting goes through `onyx/llm/engine_token_counter.py`: it POSTs the chat LLM's own
   engine at `{api_base minus /v1}/tokenize` (llama.cpp; requires the provider `api_key` as
-  Bearer — 401 without it, and the endpoint lives at server root, NOT under /v1), memoizing
-  availability per base URL, and falls back to `get_llm_token_counter`. UI scripts used for
+  Bearer — 401 without it, and the endpoint lives at server root, NOT under /v1), and falls
+  back to `get_llm_token_counter` (local tiktoken) as a last resort. Since 2026-11-01 every
+  call site builds the counter via `get_engine_token_counter` (chat/DR loops, session naming,
+  search chunk selection, coding agent, persona sizing, open_url/file stats); a failed probe
+  is negative-cached per base URL for 60s, then re-probed. UI scripts used for
   verification live in `web/tmp/verify_ui.ts` / `web/tmp/poll_dr.ts` /
   `web/tmp/verify_file_ui.ts` / `web/tmp/verify_docstats_ui.ts` (untracked).
 - To clean up stuck `UPLOADED` user files (verified 2026-10-25): check references first

@@ -104,7 +104,8 @@ from onyx.llm.context_budgets import (
     TOKENS_RESERVED_PER_TOOL,
     scale,
 )
-from onyx.llm.factory import get_llm_for_persona, get_llm_token_counter
+from onyx.llm.engine_token_counter import get_engine_token_counter
+from onyx.llm.factory import get_llm_for_persona
 from onyx.llm.models import (
     USER_SELECTABLE_REASONING_EFFORTS,
     ReasoningEffort,
@@ -188,7 +189,7 @@ def _get_available_tokens_for_persona(
         )
 
     llm = get_llm_for_persona(persona=persona, user=user, llm_override=llm_override)
-    token_counter = get_llm_token_counter(llm)
+    token_counter = get_engine_token_counter(llm)
 
     if persona.replace_base_system_prompt and persona.system_prompt:
         # User has opted to replace the base system prompt entirely
@@ -550,7 +551,7 @@ def _generate_or_fallback_chat_session_name(
                 llm_provider_api_key=llm.config.api_key,
             )
 
-        token_counter = get_llm_token_counter(llm)
+        token_counter = get_engine_token_counter(llm)
         # History cap for the naming call, relative to the model's window.
         max_tokens_for_naming = scale(
             llm.config.max_input_tokens, SESSION_NAMING_HISTORY

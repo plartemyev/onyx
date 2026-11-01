@@ -11,7 +11,7 @@ from onyx.coding_agent.mock_tools import (
     CODING_AGENT_REPO_KEY,
     CODING_AGENT_TOOL_NAME,
 )
-from onyx.llm.factory import get_llm_token_counter
+from onyx.llm.engine_token_counter import get_engine_token_counter
 from onyx.llm.interfaces import LLM
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import CodingAgentStart, Packet
@@ -163,7 +163,7 @@ class CodingAgentTool(Tool[CodingAgentToolOverrideKwargs]):
             placement=placement,
         )
 
-        token_counter = get_llm_token_counter(self._llm)
+        token_counter = get_engine_token_counter(self._llm)
 
         result = run_coding_agent_call(
             coding_agent_call=synthetic_call,
