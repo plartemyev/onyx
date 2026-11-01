@@ -235,6 +235,17 @@ services:
       # ("*message*170*add_box*10"). Applies to web content extraction
       # and connector indexing alike.
       - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons,material-icons
+      # Timeout for the secondary LLM flows (query rephrase/expansion,
+      # document selection, section-relevance classification, time filter,
+      # scope, session naming, memory update). Sized for the secondary 9B
+      # engine's ~34 tok/s prefill: 900s lets even the ~25.6k-token
+      # document-selection prompt complete (~12.5 min) instead of timing
+      # out into fallbacks. Bounded from above by CHAT_TURN_BUDGET_SECONDS.
+      - SECONDARY_LLM_FLOW_TIMEOUT_S=900
+      # open_url saves fetched pages into the searchable copy only when the
+      # text reaches this many chars (default 6000); smaller pages stay
+      # chat-context-only.
+      - OPEN_URL_INDEX_MIN_CHARS=20000
       # Self-hosted EE without a license: unlocks the admin Usage/Analytics
       # pages (tier resolves to ENTERPRISE, tier_gate stops 402ing
       # /analytics/admin/*, /admin/token-rate-limits, ...). BOTH vars are
@@ -299,6 +310,10 @@ services:
       - WEB_CONTENT_FORMAT=markdown
       - WEB_CONTENT_MD_LINKS=full
       - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons
+      # Secondary-flow timeout and open_url index floor (see api_server
+      # above); scheduled Craft runs exercise the same flows and tools.
+      - SECONDARY_LLM_FLOW_TIMEOUT_S=900
+      - OPEN_URL_INDEX_MIN_CHARS=20000
       # Same EE-without-license combo as api_server above: workers resolve
       # the tier too (tier_gate, EE beat tasks, usage reporting).
       - ENABLE_PAID_ENTERPRISE_EDITION_FEATURES=true
