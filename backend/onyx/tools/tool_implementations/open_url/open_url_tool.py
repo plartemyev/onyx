@@ -42,6 +42,10 @@ from onyx.tools.models import (
     ToolCallException,
     ToolResponse,
 )
+from onyx.tools.tool_implementations.open_url.doc_indexing import (
+    index_crawled_pages,
+    section_link,
+)
 from onyx.tools.tool_implementations.open_url.models import (
     FailedFetch,
     WebContentProvider,
@@ -369,6 +373,7 @@ def _convert_sections_to_llm_string_with_citations(
     citation_start: int,
     max_document_chars: int = MAX_CHARS_ACROSS_URLS,
     token_counter: Callable[[str], int] | None = None,
+    indexed_names: dict[str, str] | None = None,
 ) -> tuple[str, dict[int, str], list[OpenUrlDocStat]]:
     """Convert InferenceSections to LLM string, reusing existing citations where available.
 
@@ -381,6 +386,9 @@ def _convert_sections_to_llm_string_with_citations(
             Content will be truncated to fit within this budget.
         token_counter: Optional counter used to measure each document's token
             cost for the timeline's per-URL stats.
+        indexed_names: document_id -> saved-document name for pages that were
+            indexed as chat-searchable files; surfaced per result so the model
+            knows it can search the full text instead of re-fetching.
 
     Returns:
         Tuple of (JSON string for LLM, citation_mapping dict, per-document
@@ -468,6 +476,11 @@ def _convert_sections_to_llm_string_with_citations(
         results.append(result)
         result_doc_ids.append(document_id)
         total_chars += result_chars
+
+        # Mark pages saved as chat-searchable files: the model can pull
+        # details via internal search / read_file instead of re-fetching.
+        if indexed_names and document_id in indexed_names:
+            result["indexed_as"] = indexed_names[document_id]
 
     # Per-document stats for the timeline: measure each document's exact
     # representation within the final string, keyed by document_id (a page
@@ -821,6 +834,16 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
                 failed_web_fetches,
             )
 
+            # Save large fetched pages as indexed, chat-searchable files so
+            # later turns can search (or read) the full text instead of
+            # re-fetching the URL.
+            indexed_files = index_crawled_pages(
+                sections=inference_sections,
+                user=self._user,
+                db_session=db_session,
+                token_counter=self._token_counter,
+            )
+
         if not inference_sections:
             failure_msg = _build_failure_message(
                 missing_document_ids=indexed_result.missing_document_ids,
@@ -842,12 +865,22 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
         # Note that with this call, some contents may be truncated or dropped so what the LLM sees may not be the entire set
         # That said, it is still the best experience to show all the docs that were fetched, even if the LLM on rare
         # occasions only actually sees a subset.
+        indexed_names: dict[str, str] = {}
+        for section in inference_sections:
+            link = section_link(section)
+            if not link:
+                continue
+            normalized = normalize_web_content_url(link)
+            for ref in indexed_files:
+                if ref.url == normalized:
+                    indexed_names[section.center_chunk.document_id] = ref.name
         docs_str, citation_mapping, doc_stats = (
             _convert_sections_to_llm_string_with_citations(
                 sections=inference_sections,
                 existing_citation_mapping=override_kwargs.citation_mapping,
                 citation_start=override_kwargs.starting_citation_num,
                 token_counter=self._token_counter,
+                indexed_names=indexed_names,
             )
         )
 
@@ -876,6 +909,7 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             response_bytes=response_bytes,
             response_tokens=response_tokens,
             doc_stats=doc_stats,
+            indexed_files=indexed_files,
         )
 
     def _count_tokens(self, text: str) -> int | None:

@@ -121,6 +121,10 @@ _NON_VISION_MARKER_TOKEN_FALLBACK = 40
 # without one the bare notice is used.
 _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK = 58
 
+# Same idea for the indexed-file note appended to a stub: intentionally
+# generous so budgeting stays conservative.
+_INDEXED_FILE_NOTE_TOKEN_FALLBACK = 64
+
 # Model servers tokenize the prompt themselves, so their count can exceed
 # Onyx's estimate even inside the safety margin (chat-template overhead,
 # tool-output tokenization drift). When the server rejects a cycle's prompt
@@ -568,6 +572,7 @@ def _stub_tool_response(
     token_counter: Callable[[str], int] | None,
     tool_response_digests: dict[str, str] | None = None,
     llm: LLM | None = None,
+    indexed_file_notes: dict[str, str] | None = None,
 ) -> ChatMessageSimple:
     """Copy a tool response with its content replaced by the compaction stub.
 
@@ -581,6 +586,8 @@ def _stub_tool_response(
     fixed fallback below only sizes the bare notice. With an ``llm`` and
     tier-2 summarization on, a cache miss schedules a background LLM-summary
     upgrade into the digest cache (see ``onyx.chat.tool_response_digest``).
+    Responses whose pages were saved as chat-searchable files also carry the
+    indexed-file note so the model searches instead of re-fetching.
     """
     stubbed = stub_message_for(
         tool_call_id=msg.tool_call_id,
@@ -589,20 +596,28 @@ def _stub_tool_response(
         token_counter=token_counter,
         llm=llm,
     )
+    note = (indexed_file_notes or {}).get(msg.tool_call_id or "")
     if stubbed is None:
+        message = TOOL_CALL_RESPONSE_COMPACTED
+        if note:
+            message = f"{message}\n\n{note}"
         return msg.model_copy(
             update={
-                "message": TOOL_CALL_RESPONSE_COMPACTED,
+                "message": message,
                 "token_count": (
-                    token_counter(TOOL_CALL_RESPONSE_COMPACTED)
+                    token_counter(message)
                     if token_counter
                     else _COMPACTED_TOOL_RESPONSE_TOKEN_FALLBACK
+                    + (_INDEXED_FILE_NOTE_TOKEN_FALLBACK if note else 0)
                 ),
                 "image_files": None,
                 "image_token_count": 0,
             }
         )
     stub_message, stub_tokens = stubbed
+    if note:
+        stub_message = f"{stub_message}\n\n{note}"
+        stub_tokens = token_counter(stub_message) if token_counter else stub_tokens + 64
     return msg.model_copy(
         update={
             "message": stub_message,
@@ -621,6 +636,7 @@ def _compact_in_turn_tail(
     token_counter: Callable[[str], int] | None,
     tool_response_digests: dict[str, str] | None = None,
     llm: LLM | None = None,
+    indexed_file_notes: dict[str, str] | None = None,
 ) -> list[ChatMessageSimple]:
     """Fit the in-turn tail (messages after the last user message) into the
     budget by compacting oldest-first, or return it unchanged when it fits.
@@ -659,7 +675,13 @@ def _compact_in_turn_tail(
     remaining_tokens = available_tokens - raw_tokens
     stubbed_prefix = [
         [
-            _stub_tool_response(msg, token_counter, tool_response_digests, llm)
+            _stub_tool_response(
+                msg,
+                token_counter,
+                tool_response_digests,
+                llm,
+                indexed_file_notes,
+            )
             if msg.message_type == MessageType.TOOL_CALL_RESPONSE
             else msg
             for msg in group
@@ -702,6 +724,7 @@ def _fit_history_before_last_user(
     token_counter: Callable[[str], int] | None,
     tool_response_digests: dict[str, str] | None = None,
     llm: LLM | None = None,
+    indexed_file_notes: dict[str, str] | None = None,
 ) -> tuple[list[ChatMessageSimple], int]:
     """Fit the history before the last user message into the budget.
 
@@ -737,7 +760,13 @@ def _fit_history_before_last_user(
     remaining_tokens = remaining_budget - raw_tokens
     stubbed_prefix = [
         [
-            _stub_tool_response(msg, token_counter, tool_response_digests, llm)
+            _stub_tool_response(
+                msg,
+                token_counter,
+                tool_response_digests,
+                llm,
+                indexed_file_notes,
+            )
             if msg.message_type == MessageType.TOOL_CALL_RESPONSE
             else msg
             for msg in group
@@ -800,6 +829,10 @@ def construct_message_history(
     # response whose digest is not cached yet (see tool_response_digest).
     # Purely optional; None keeps stubs deterministic-only.
     llm: LLM | None = None,
+    # Per-tool-call notes for responses whose pages were saved as indexed,
+    # chat-searchable files; appended to their compaction stubs (see
+    # open_url doc indexing). Purely optional.
+    indexed_file_notes: dict[str, str] | None = None,
 ) -> list[ChatMessageSimple]:
     if last_n_user_messages is not None:
         if last_n_user_messages <= 0:
@@ -903,6 +936,7 @@ def construct_message_history(
         token_counter=token_counter,
         tool_response_digests=tool_response_digests,
         llm=llm,
+        indexed_file_notes=indexed_file_notes,
     )
     after_user_tokens = sum(
         _replay_token_count(msg) for msg in messages_after_last_user
@@ -921,6 +955,7 @@ def construct_message_history(
         token_counter=token_counter,
         tool_response_digests=tool_response_digests,
         llm=llm,
+        indexed_file_notes=indexed_file_notes,
     )
 
     # Collect file_ids from ALL dropped messages (those not in
@@ -1438,6 +1473,10 @@ def run_llm_loop(
         # Stubs derive the deterministic digest on the fly; a background
         # LLM-summary upgrade may replace it between cycles.
         tool_response_digests: dict[str, str] = {}
+        # Per-tool-call notes for responses whose pages were saved as
+        # indexed, chat-searchable files (open_url): appended to compaction
+        # stubs so the model searches the saved text instead of refetching.
+        indexed_file_notes: dict[str, str] = {}
 
         # Initialize citation processor for handling citations dynamically
         # When include_citations is True, use HYPERLINK mode to format citations as [[1]](url)
@@ -1775,6 +1814,7 @@ def run_llm_loop(
                 available_tool_names={tool.name for tool in final_tools},
                 tool_response_digests=tool_response_digests,
                 llm=llm,
+                indexed_file_notes=indexed_file_notes,
             )
 
             max_output_tokens = token_budget.output_allowance(
@@ -2176,6 +2216,7 @@ def run_llm_loop(
                     response_bytes=tool_response.response_bytes,
                     response_tokens=tool_response.response_tokens,
                     doc_stats=tool_response.doc_stats,
+                    indexed_files=tool_response.indexed_files,
                     search_docs=displayed_docs or search_docs,
                     generated_images=generated_images,
                     generated_files=generated_files,
@@ -2222,6 +2263,16 @@ def run_llm_loop(
                         )
                     )
                     response_texts.append(tool_response.llm_facing_response)
+                    if tool_response.indexed_files:
+                        names = ", ".join(
+                            ref.name for ref in tool_response.indexed_files
+                        )
+                        indexed_file_notes[tc.tool_call_id] = (
+                            "The full text of this fetch was saved as "
+                            f"searchable document(s): {names}. Use "
+                            "internal_search (or read_file) for specific "
+                            "details instead of re-opening the URL."
+                        )
                     response_image_files = _tool_response_image_files(
                         tool_response, llm
                     )

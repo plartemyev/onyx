@@ -29,6 +29,15 @@ TOOL_CALL_MSG_FUNC_NAME = "function_name"
 TOOL_CALL_MSG_ARGUMENTS = "arguments"
 
 
+class IndexedPageRef(BaseModel):
+    """A crawled page saved as an indexed, chat-searchable user file."""
+
+    url: str
+    user_file_id: str
+    file_id: str
+    name: str
+
+
 class ToolCallException(Exception):
     """Exception raised for errors during tool calls."""
 
@@ -118,6 +127,8 @@ class ToolResponse(BaseModel):
     # The response is first created by the tool runner, which does not need to be aware of things like the tool_call_id
     # So this is set after the response is created by the tool runner
     tool_call: ToolCallKickoff | None = None
+    # Crawled pages saved as indexed, chat-searchable user files (open_url).
+    indexed_files: list[IndexedPageRef] = []
 
 
 class ParallelToolCallResponse(BaseModel):
@@ -307,6 +318,10 @@ class ToolCallInfo(BaseModel):
     generated_files: list[PythonExecutionFile] | None = None
     # File-store ids of blobs custom tools saved during the call.
     generated_file_ids: list[str] | None = None
+    # Crawled pages saved as indexed, chat-searchable user files (open_url).
+    # Saved onto the assistant message's file descriptors so later turns'
+    # scoped internal search and read_file reach the full text.
+    indexed_files: list[IndexedPageRef] = []
 
 
 CHAT_SESSION_ID_PLACEHOLDER = "CHAT_SESSION_ID"

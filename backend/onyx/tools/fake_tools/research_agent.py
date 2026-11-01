@@ -702,6 +702,7 @@ def run_research_agent_call(
                             tool_call_response=tool_response.llm_facing_response,
                             search_docs=displayed_docs or search_docs,
                             generated_images=None,
+                            indexed_files=tool_response.indexed_files,
                             generated_files=tool_response_generated_files(
                                 tool_response
                             ),
@@ -909,7 +910,8 @@ if __name__ == "__main__":
     from onyx.db.engine.sql_engine import SqlEngine, get_session_with_current_tenant
     from onyx.db.models import User
     from onyx.db.persona import get_default_behavior_persona
-    from onyx.llm.factory import get_default_llm, get_llm_token_counter
+    from onyx.llm.engine_token_counter import get_engine_token_counter
+    from onyx.llm.factory import get_default_llm
     from onyx.llm.model_capabilities import model_is_reasoning_model
     from onyx.server.query_and_chat.placement import Placement
     from onyx.tools.models import ToolCallKickoff
@@ -923,7 +925,7 @@ if __name__ == "__main__":
 
     with get_session_with_current_tenant() as db_session:
         llm = get_default_llm()
-        token_counter = get_llm_token_counter(llm)
+        token_counter = get_engine_token_counter(llm)
         is_reasoning = model_is_reasoning_model(
             llm.config.model_name,
             llm.config.model_provider,

@@ -18,7 +18,7 @@ from onyx.db.chat import (
 )
 from onyx.db.models import ChatMessage, ToolCall
 from onyx.db.tools import create_tool_call_no_commit
-from onyx.file_store.models import FileDescriptor
+from onyx.file_store.models import ChatFileType, FileDescriptor
 from onyx.natural_language_processing.utils import BaseTokenizer, get_tokenizer
 from onyx.tools.models import ToolCallInfo
 from onyx.utils.logger import setup_logger
@@ -414,6 +414,33 @@ def save_chat_turn(
         if referenced:
             existing_files = assistant_message.files or []
             assistant_message.files = existing_files + referenced
+
+    # 9. Attach crawled pages saved as indexed, chat-searchable files
+    # (open_url): the user_file_id on the descriptor is what scopes this
+    # session's internal search to include the saved full text, and
+    # read_file can load it directly.
+    indexed_descriptors = [
+        FileDescriptor(
+            id=ref.file_id,
+            type=ChatFileType.PLAIN_TEXT,
+            name=ref.name,
+            user_file_id=ref.user_file_id,
+        )
+        for tool_call_info in tool_calls
+        for ref in tool_call_info.indexed_files
+    ]
+    if indexed_descriptors:
+        existing_user_file_ids = {
+            fd.get("user_file_id") for fd in (assistant_message.files or [])
+        }
+        new_descriptors = [
+            fd
+            for fd in indexed_descriptors
+            if fd["user_file_id"] not in existing_user_file_ids
+        ]
+        if new_descriptors:
+            existing_files = assistant_message.files or []
+            assistant_message.files = existing_files + new_descriptors
 
     # Finally save the messages, tool calls, and docs
     db_session.commit()

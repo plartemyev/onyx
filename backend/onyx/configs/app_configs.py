@@ -1287,6 +1287,21 @@ if WEB_CONTENT_MAX_CHARS_ACROSS_URLS < WEB_CONTENT_MAX_CHARS_PER_URL:
         "WEB_CONTENT_MAX_CHARS_ACROSS_URLS must be >= WEB_CONTENT_MAX_CHARS_PER_URL"
     )
 
+# Index large crawled pages as chat-searchable user files: the full cleaned
+# text is saved and queued for the standard user-file pipeline, so the model
+# can pull details via internal search / read_file later instead of
+# re-opening the URL. Incognito turns never index.
+OPEN_URL_DOC_INDEXING = os.environ.get(
+    "OPEN_URL_DOC_INDEXING", "true"
+).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+# Pages whose cleaned text reaches this many characters get indexed.
+OPEN_URL_INDEX_MIN_CHARS = int(os.environ.get("OPEN_URL_INDEX_MIN_CHARS") or 6000)
+
 # Body format of model-facing web page content (web search results + open_url
 # scrapes; OnyxWebCrawler only — connector indexing always extracts text).
 # "text": the legacy flattened extraction. "markdown": the cleaned page body

@@ -726,6 +726,37 @@ class TestConstructMessageHistory:
         ) or "LLM summary" in result[3].message
         assert result[3].token_count == stub_tokens
 
+    def test_tail_stub_carries_indexed_file_note(self) -> None:
+        """A stubbed response whose pages were saved as searchable files
+        carries the search-instead-of-refetch note."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_with_tool = create_assistant_with_tool_call("tc_1", "tool", 5)
+        big_tool_response = create_tool_response("tc_1", "Huge result", 60)
+
+        simple_chat_history = [user_msg, assistant_with_tool, big_tool_response]
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=create_context_files(),
+            available_tokens=84,
+            indexed_file_notes={
+                "tc_1": (
+                    "The full text of this fetch was saved as searchable "
+                    "document(s): Pantip thread.md. Use internal_search (or "
+                    "read_file) for specific details instead of re-opening "
+                    "the URL."
+                )
+            },
+        )
+
+        assert len(result) == 4
+        assert result[3].tool_call_id == "tc_1"
+        assert "searchable document(s): Pantip thread.md" in result[3].message
+        assert "internal_search" in result[3].message
+
     def test_tail_overflow_stub_does_not_mutate_shared_messages(self) -> None:
         """Stubbing must copy: the same message objects feed later cycles."""
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
