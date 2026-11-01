@@ -103,14 +103,15 @@ GEN_AI_TOOL_RESPONSE_DIGESTS = os.environ.get(
     "GEN_AI_TOOL_RESPONSE_DIGESTS", "true"
 ).strip().lower() in ("1", "true", "yes", "on")
 # Digest size cap, in characters (~4 chars/token). Bounds what one stub can
-# re-consume of the budget it just freed.
+# re-consume of the budget it just freed. Doubled alongside the summary
+# output cap: content-heavy stubs need room for actual findings.
 GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS = int(
-    os.environ.get("GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS") or 1200
+    os.environ.get("GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS") or 2400
 )
 # LLM summarization for digests (off by default: it spends an extra LLM call
-# per large tool response). When enabled, a tool response at or above the
-# eager threshold is summarized by the chat model into a compact digest;
-# any failure or timeout falls back to the deterministic digest.
+# per large stubbed response). When enabled, a stubbed tool response's
+# deterministic digest is upgraded to an LLM summary in the background; any
+# failure or timeout leaves the deterministic digest in place.
 GEN_AI_TOOL_RESPONSE_SUMMARIZATION = os.environ.get(
     "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -120,10 +121,11 @@ GEN_AI_TOOL_RESPONSE_SUMMARIZATION = os.environ.get(
 GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS = float(
     os.environ.get("GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS") or 30
 )
-# Tool responses at or above this size get their digest computed eagerly, at
-# response-creation time, instead of lazily when compaction first needs it.
-GEN_AI_TOOL_RESPONSE_DIGEST_EAGER_MIN_CHARS = int(
-    os.environ.get("GEN_AI_TOOL_RESPONSE_DIGEST_EAGER_MIN_CHARS") or 6000
+# Summarization input cap, in characters: with large fetch caps the payload
+# can approach the context window, and the summary call must stay well inside
+# it. Keeps the head and the tail of the payload, cuts the middle.
+GEN_AI_TOOL_RESPONSE_SUMMARIZATION_MAX_INPUT_CHARS = int(
+    os.environ.get("GEN_AI_TOOL_RESPONSE_SUMMARIZATION_MAX_INPUT_CHARS") or 400_000
 )
 
 GEN_AI_TEMPERATURE = float(os.environ.get("GEN_AI_TEMPERATURE") or 0)

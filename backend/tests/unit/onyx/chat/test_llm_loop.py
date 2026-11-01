@@ -676,9 +676,9 @@ class TestConstructMessageHistory:
         # response alone (1000 tokens) exceeded the whole budget.
         assert result[3].token_count == stub_tokens
 
-    def test_tail_stub_prefers_eager_cached_digest(self) -> None:
-        """A digest computed eagerly at response time (tier 2 summaries
-        among them) is replayed as-is; compaction never re-derives it."""
+    def test_tail_stub_prefers_cached_digest(self) -> None:
+        """A digest already in the cache (a tier-2 summary among them) is
+        replayed as-is; compaction never re-derives it."""
         big_payload = "x" * 4000
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
         user_msg = create_message("User question", MessageType.USER, 10)
@@ -742,14 +742,15 @@ class TestConstructMessageHistory:
     def test_tail_overflow_drops_oldest_exchange_when_stubbing_not_enough(
         self,
     ) -> None:
-        """When stubbed responses still do not fit, whole exchanges are
-        dropped oldest-first and the newest ones are kept."""
+        """When even the newest exchange does not fit raw, everything is
+        stubbed and whole exchanges are dropped oldest-first until the
+        newest stubbed one fits."""
         system_prompt = create_message("System", MessageType.SYSTEM, 10)
-        user_msg = create_message("User question", MessageType.USER, 10)
+        user_msg = create_message("User question", MessageType.USER, 20)
         assistant_1 = create_assistant_with_tool_call("tc_1", "tool", 5)
-        response_1 = create_tool_response("tc_1", "Result 1", 60)
+        response_1 = create_tool_response("tc_1", "Result 1", 70)
         assistant_2 = create_assistant_with_tool_call("tc_2", "tool", 5)
-        response_2 = create_tool_response("tc_2", "Result 2", 60)
+        response_2 = create_tool_response("tc_2", "Result 2", 70)
 
         simple_chat_history = [
             user_msg,
@@ -760,10 +761,10 @@ class TestConstructMessageHistory:
         ]
         context_files = create_context_files()
 
-        # History budget: 100; after the user message, 80 remain. Raw tail
-        # = 2 * (5 + 60) = 130 > 80 and stubbed tail = 2 * (5 + 58) = 126
-        # > 80, so the oldest exchange is dropped entirely; the newest
-        # stubbed exchange (63) is kept.
+        # Budget: 100; after the system prompt, 90; after the user message,
+        # 70. The newest exchange raw (75) does not fit, so both exchanges
+        # are stubbed (63 each = 126 > 70) and the oldest is dropped
+        # entirely; the newest stubbed exchange (63) is kept.
         result = construct_message_history(
             system_prompt=system_prompt,
             custom_agent_prompt=None,
@@ -781,6 +782,92 @@ class TestConstructMessageHistory:
         # The oldest exchange is gone entirely.
         assert all(msg is not assistant_1 for msg in result)
         assert all(msg is not response_1 for msg in result)
+
+    def test_tail_overflow_keeps_newest_exchange_raw(self) -> None:
+        """The newest exchange stays raw even under overflow: the content
+        the model just fetched is the content it is about to read. The
+        older exchange is stubbed, and dropped when even its stub does not
+        fit."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_1 = create_assistant_with_tool_call("tc_1", "tool", 5)
+        response_1 = create_tool_response("tc_1", "Result 1", 70)
+        assistant_2 = create_assistant_with_tool_call("tc_2", "tool", 5)
+        response_2 = create_tool_response("tc_2", "Result 2", 70)
+
+        simple_chat_history = [
+            user_msg,
+            assistant_1,
+            response_1,
+            assistant_2,
+            response_2,
+        ]
+        context_files = create_context_files()
+
+        # Budget: 100; after the user message, 80 remain. Raw tail = 150 >
+        # 80. The newest exchange (75) fits raw; 5 tokens remain — less
+        # than the older exchange's stub (63) — so the older exchange is
+        # dropped entirely.
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=context_files,
+            available_tokens=100,
+        )
+
+        assert len(result) == 4
+        assert result[1] == user_msg
+        assert result[2] == assistant_2
+        # The newest response replays verbatim, untouched.
+        assert result[3] is response_2
+        assert result[3].message == "Result 2"
+        # The older exchange is gone entirely.
+        assert all(msg is not assistant_1 for msg in result)
+        assert all(msg is not response_1 for msg in result)
+
+    def test_tail_overflow_stubs_older_exchange_keeps_newest_raw(self) -> None:
+        """With room for both, the older exchange is stubbed while the
+        newest exchange replays raw — not everything gets stubbed."""
+        system_prompt = create_message("System", MessageType.SYSTEM, 10)
+        user_msg = create_message("User question", MessageType.USER, 10)
+        assistant_1 = create_assistant_with_tool_call("tc_1", "tool", 5)
+        response_1 = create_tool_response("tc_1", "Result 1", 70)
+        assistant_2 = create_assistant_with_tool_call("tc_2", "tool", 5)
+        response_2 = create_tool_response("tc_2", "Result 2", 70)
+
+        simple_chat_history = [
+            user_msg,
+            assistant_1,
+            response_1,
+            assistant_2,
+            response_2,
+        ]
+        context_files = create_context_files()
+
+        # Budget: 160; after the system prompt, 150; after the user
+        # message, 140. Raw tail = 150 > 140, so the newest exchange (75)
+        # stays raw and 65 remain — enough for the older exchange's stub
+        # (5 + 58 = 63), which is kept in place of its content.
+        result = construct_message_history(
+            system_prompt=system_prompt,
+            custom_agent_prompt=None,
+            simple_chat_history=simple_chat_history,
+            reminder_message=None,
+            context_files=context_files,
+            available_tokens=160,
+        )
+
+        assert len(result) == 6
+        assert result[1] == user_msg
+        assert result[2] == assistant_1
+        assert result[3].message == TOOL_CALL_RESPONSE_COMPACTED
+        assert result[3].tool_call_id == "tc_1"
+        assert result[4] == assistant_2
+        # The newest response replays verbatim, untouched.
+        assert result[5] is response_2
+        assert result[5].message == "Result 2"
 
     def test_tail_within_budget_is_not_compacted(self) -> None:
         """No compaction pressure: tool responses replay verbatim (existing

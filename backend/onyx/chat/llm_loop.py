@@ -44,7 +44,7 @@ from onyx.chat.prompt_utils import (
 from onyx.chat.search_receipts import maybe_append_search_receipt
 from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.chat.token_budget import resolve_chat_token_budget
-from onyx.chat.tool_response_digest import maybe_digest_tool_response, stub_message_for
+from onyx.chat.tool_response_digest import stub_message_for
 from onyx.configs.app_configs import INTEGRATION_TESTS_MODE
 from onyx.configs.chat_configs import CHAT_TURN_BUDGET_SECONDS, MAX_LLM_CYCLES
 from onyx.configs.constants import DocumentSource, MessageType
@@ -567,6 +567,7 @@ def _stub_tool_response(
     msg: ChatMessageSimple,
     token_counter: Callable[[str], int] | None,
     tool_response_digests: dict[str, str] | None = None,
+    llm: LLM | None = None,
 ) -> ChatMessageSimple:
     """Copy a tool response with its content replaced by the compaction stub.
 
@@ -575,15 +576,18 @@ def _stub_tool_response(
     images go too: the payload they belonged to is gone.
 
     The stub carries a digest of the removed output when one is available
-    (precomputed by the eager hook, or extracted from the response text on
+    (cached from an earlier cycle, or extracted from the response text on
     the fly); a bare notice otherwise. A digest needs a token counter: the
-    fixed fallback below only sizes the bare notice.
+    fixed fallback below only sizes the bare notice. With an ``llm`` and
+    tier-2 summarization on, a cache miss schedules a background LLM-summary
+    upgrade into the digest cache (see ``onyx.chat.tool_response_digest``).
     """
     stubbed = stub_message_for(
         tool_call_id=msg.tool_call_id,
         original_message=msg.message,
         cache=tool_response_digests,
         token_counter=token_counter,
+        llm=llm,
     )
     if stubbed is None:
         return msg.model_copy(
@@ -616,58 +620,78 @@ def _compact_in_turn_tail(
     replay_count: Callable[[ChatMessageSimple], int],
     token_counter: Callable[[str], int] | None,
     tool_response_digests: dict[str, str] | None = None,
+    llm: LLM | None = None,
 ) -> list[ChatMessageSimple]:
     """Fit the in-turn tail (messages after the last user message) into the
     budget by compacting oldest-first, or return it unchanged when it fits.
 
-    Stage 1 replaces old tool-response content with a short stub — the
-    tool-call arguments and the model's narration stay, since both are
-    information rich and small. The stub carries a digest of the removed
-    output when one is available, so the model keeps the findings instead of
-    re-running the identical call. Stage 2 drops whole exchanges, oldest
-    first, when even stubbed responses do not fit. Never mutates the input
+    The newest exchanges stay raw for as long as they fit — the content the
+    model just fetched is the content it is about to read. Older exchanges
+    give up their content least-destructively first: their tool responses
+    are replaced with a short stub (the tool-call arguments and the model's
+    narration stay — both are information rich and small; the stub carries a
+    digest of the removed output so the model keeps the findings instead of
+    re-running the identical call), and exchanges whose stubbed form still
+    does not fit are dropped entirely, oldest first. Never mutates the input
     list or its messages; each cycle re-compacts from the full history, so
-    the transformation is deterministic.
+    the transformation is deterministic given the digest cache.
     """
     total_tokens = sum(replay_count(msg) for msg in messages_after_last_user)
     if total_tokens <= available_tokens:
         return messages_after_last_user
 
-    # Stage 1: stub every tool response's content.
-    stubbed = [
-        _stub_tool_response(msg, token_counter, tool_response_digests)
-        if msg.message_type == MessageType.TOOL_CALL_RESPONSE
-        else msg
-        for msg in messages_after_last_user
-    ]
-    total_tokens = sum(replay_count(msg) for msg in stubbed)
-    if total_tokens <= available_tokens:
-        logger.info(
-            "Compacted in-turn tool history: stubbed tool responses to fit "
-            "tail into %d tokens",
-            available_tokens,
-        )
-        return stubbed
+    groups = _group_in_turn_exchanges(messages_after_last_user)
+    group_tokens = [sum(replay_count(msg) for msg in group) for group in groups]
 
-    # Stage 2: keep the newest exchanges that fit, drop the rest entirely.
-    groups = _group_in_turn_exchanges(stubbed)
-    kept_groups: list[list[ChatMessageSimple]] = []
+    # Keep the newest run of exchanges that fits raw. When even the newest
+    # exchange alone does not fit, nothing is kept raw and the whole tail is
+    # stubbed below.
+    raw_start = len(groups)
+    raw_tokens = 0
+    while (
+        raw_start > 0 and raw_tokens + group_tokens[raw_start - 1] <= available_tokens
+    ):
+        raw_start -= 1
+        raw_tokens += group_tokens[raw_start]
+
+    # Older exchanges: stub their tool responses first (least destructive),
+    # then drop the oldest stubbed exchanges until the tail fits.
+    remaining_tokens = available_tokens - raw_tokens
+    stubbed_prefix = [
+        [
+            _stub_tool_response(msg, token_counter, tool_response_digests, llm)
+            if msg.message_type == MessageType.TOOL_CALL_RESPONSE
+            else msg
+            for msg in group
+        ]
+        for group in groups[:raw_start]
+    ]
+    stubbed_tokens = [
+        sum(replay_count(msg) for msg in group) for group in stubbed_prefix
+    ]
+    kept_stubbed = 0
     kept_tokens = 0
-    for group in reversed(groups):
-        group_tokens = sum(replay_count(msg) for msg in group)
-        if kept_tokens + group_tokens > available_tokens:
+    for tokens in reversed(stubbed_tokens):
+        if kept_tokens + tokens > remaining_tokens:
             break
-        kept_groups.insert(0, group)
-        kept_tokens += group_tokens
+        kept_tokens += tokens
+        kept_stubbed += 1
+    first_kept = len(stubbed_tokens) - kept_stubbed
 
     logger.info(
-        "Compacted in-turn tool history: dropped %d of %d exchanges to fit "
-        "tail into %d tokens",
-        len(groups) - len(kept_groups),
+        "Compacted in-turn tool history: kept %d raw, stubbed %d, dropped %d "
+        "of %d exchanges to fit the tail into %d tokens",
+        len(groups) - raw_start,
+        kept_stubbed,
+        raw_start - first_kept,
         len(groups),
         available_tokens,
     )
-    return [msg for group in kept_groups for msg in group]
+    return [
+        msg
+        for group in stubbed_prefix[first_kept:] + groups[raw_start:]
+        for msg in group
+    ]
 
 
 def construct_message_history(
@@ -686,12 +710,15 @@ def construct_message_history(
     # notice never names one the model cannot call. Steps exposing neither pass
     # an empty set; leaving it unset also names no tool.
     available_tool_names: set[str] | None = None,
-    # Per-turn digests of tool responses, keyed by tool_call_id (populated
-    # eagerly for large responses; see tool_response_digest). Compaction
-    # stubs replay the digest instead of a bare notice. Purely optional:
-    # callers that don't track digests still get the on-the-fly extractive
-    # digest when compaction stubs a response.
+    # Per-turn digests of tool responses, keyed by tool_call_id (see
+    # tool_response_digest). Compaction stubs replay the digest instead of a
+    # bare notice. Purely optional: callers that don't track digests still
+    # get the on-the-fly extractive digest when compaction stubs a response.
     tool_response_digests: dict[str, str] | None = None,
+    # Enables the background tier-2 digest upgrade when compaction stubs a
+    # response whose digest is not cached yet (see tool_response_digest).
+    # Purely optional; None keeps stubs deterministic-only.
+    llm: LLM | None = None,
 ) -> list[ChatMessageSimple]:
     if last_n_user_messages is not None:
         if last_n_user_messages <= 0:
@@ -794,6 +821,7 @@ def construct_message_history(
         replay_count=_replay_token_count,
         token_counter=token_counter,
         tool_response_digests=tool_response_digests,
+        llm=llm,
     )
     after_user_tokens = sum(
         _replay_token_count(msg) for msg in messages_after_last_user
@@ -1301,9 +1329,10 @@ def run_llm_loop(
         loop_start_time = time.monotonic()
 
         # Digests of this turn's tool responses, keyed by tool_call_id (see
-        # tool_response_digest): large responses are digested eagerly when
-        # they are created, and in-turn compaction replays the digest inside
+        # tool_response_digest): compaction stubs replay the digest inside
         # the stub so the model keeps the findings without the payload.
+        # Stubs derive the deterministic digest on the fly; a background
+        # LLM-summary upgrade may replace it between cycles.
         tool_response_digests: dict[str, str] = {}
 
         # Initialize citation processor for handling citations dynamically
@@ -1641,6 +1670,7 @@ def run_llm_loop(
                 image_files_replayed_as_markers=image_files_replayed_as_markers,
                 available_tool_names={tool.name for tool in final_tools},
                 tool_response_digests=tool_response_digests,
+                llm=llm,
             )
 
             max_output_tokens = token_budget.output_allowance(
@@ -2088,16 +2118,6 @@ def run_llm_loop(
                         )
                     )
                     response_texts.append(tool_response.llm_facing_response)
-                    # Digest large responses now, while nothing is on fire:
-                    # compaction later reuses this instead of extracting (or,
-                    # with summarization enabled, invoking the LLM) under
-                    # context pressure.
-                    maybe_digest_tool_response(
-                        text=tool_response.llm_facing_response,
-                        tool_call_id=tc.tool_call_id,
-                        cache=tool_response_digests,
-                        llm=llm,
-                    )
                     response_image_files = _tool_response_image_files(
                         tool_response, llm
                     )

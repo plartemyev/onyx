@@ -8,27 +8,31 @@ stubs carry a digest of the dropped output instead:
 - Tier 1 (deterministic, default on): for the tools' ``{"results": [...]}``
   shape, the result titles and URLs; for anything else, a head excerpt cut
   at a line boundary. No LLM, no I/O, stable across cycles.
-- Tier 2 (config-gated, off by default): the chat model summarizes the
-  output into a compact digest. Any failure or timeout falls back to tier 1.
+- Tier 2 (config-gated): the chat model summarizes the
+  output into a compact digest. Computed lazily, only for responses that
+  were actually stubbed: the stub carries the tier-1 digest immediately
+  (the fit never waits on an LLM) while a background call replaces the
+  cached digest with the LLM summary — later cycles' re-compaction picks
+  it up. Any failure or timeout leaves the tier-1 digest in place.
 
-Digests are computed at most once per tool call and cached by
-``tool_call_id`` for the rest of the turn (see
-:py:func:`maybe_digest_tool_response`).
+Digests are derived at most once per tool call and cached by
+``tool_call_id`` (see :py:func:`stub_message_for`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Callable
 
 from onyx.configs.model_configs import (
-    GEN_AI_TOOL_RESPONSE_DIGEST_EAGER_MIN_CHARS,
     GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS,
     GEN_AI_TOOL_RESPONSE_DIGESTS,
     GEN_AI_TOOL_RESPONSE_SUMMARIZATION,
+    GEN_AI_TOOL_RESPONSE_SUMMARIZATION_MAX_INPUT_CHARS,
     GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS,
 )
 from onyx.llm.context_budgets import TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT, scale
@@ -152,6 +156,26 @@ def _summary_messages(text: str) -> list[ChatCompletionMessage]:
     ]
 
 
+# Marker placed where the input cap cut the middle of the payload.
+_SUMMARY_INPUT_CUT_MARKER = "\n\n[…middle of the response truncated…]\n\n"
+
+
+def _cap_summary_input(text: str) -> str:
+    """Bound the summarization input.
+
+    With large fetch caps the payload can approach the context window, and
+    the summary call must stay well inside it. Keeps the head and the tail
+    (the informative ends of page/list output) and cuts the middle.
+    """
+    max_chars = GEN_AI_TOOL_RESPONSE_SUMMARIZATION_MAX_INPUT_CHARS
+    if len(text) <= max_chars:
+        return text
+    keep = max_chars - len(_SUMMARY_INPUT_CUT_MARKER)
+    head = keep * 7 // 10
+    tail = keep - head
+    return text[:head] + _SUMMARY_INPUT_CUT_MARKER + text[len(text) - tail :]
+
+
 def _summarize_once(text: str, llm: LLM) -> str:
     """One LLM call summarizing the dropped output.
 
@@ -162,6 +186,7 @@ def _summarize_once(text: str, llm: LLM) -> str:
     :class:`_EmptySummaryError` when the model returns no text) so the
     caller can retry or fall back to the deterministic digest.
     """
+    text = _cap_summary_input(text)
     messages = _summary_messages(text)
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool-digest")
     try:
@@ -248,28 +273,80 @@ def compute_tool_response_digest(text: str, llm: LLM | None = None) -> str | Non
     return extractive_digest(text)
 
 
-def maybe_digest_tool_response(
-    text: str,
-    tool_call_id: str,
-    cache: dict[str, str],
-    llm: LLM | None = None,
-) -> None:
-    """Eagerly digest a large tool response at creation time (the optional
-    refinement): compaction later reuses the cached digest instead of doing
-    the work — for tier 2, an LLM call — under context pressure.
+# At most this many background LLM digest upgrades run at once; past the
+# cap, stubs keep the deterministic digest (it already fits the budget).
+_MAX_INFLIGHT_DIGEST_UPGRADES = 4
 
-    Cheap by construction: below the eager threshold nothing happens, and a
-    tool call is never digested twice.
+# Guard for the in-flight set and the shared digest caches that the
+# background upgrades write into.
+_DIGEST_STATE_LOCK = threading.Lock()
+_INFLIGHT_DIGEST_UPGRADES: set[str] = set()
+
+
+def _run_digest_upgrade(
+    tool_call_id: str,
+    text: str,
+    cache: dict[str, str],
+    llm: LLM,
+) -> None:
+    """Thread body: replace the cached deterministic digest with the LLM
+    summary. Any failure keeps the deterministic digest in place."""
+    try:
+        summary = compute_tool_response_digest(text, llm=llm)
+        if summary is not None:
+            with _DIGEST_STATE_LOCK:
+                cache[tool_call_id] = summary
+            logger.info(
+                "Tool response digest: background summary replaced the "
+                "deterministic digest for %s",
+                tool_call_id,
+            )
+    except Exception:
+        logger.debug(
+            "Tool response digest: background summary failed for %s; "
+            "keeping the deterministic digest",
+            tool_call_id,
+            exc_info=True,
+        )
+    finally:
+        with _DIGEST_STATE_LOCK:
+            _INFLIGHT_DIGEST_UPGRADES.discard(tool_call_id)
+
+
+def _schedule_digest_upgrade(
+    tool_call_id: str,
+    text: str,
+    cache: dict[str, str] | None,
+    llm: LLM | None,
+) -> None:
+    """Queue the tier-2 summary of one stubbed response in the background.
+
+    Fire-and-forget by design: the stub already fits the budget with the
+    deterministic digest, so the upgrade must never hold up a request (and
+    on a single-cache-slot model server it must not jump ahead of the next
+    chat request). No-op when summarization is off, no LLM or cache was
+    provided, or too many upgrades are already running.
     """
-    if not GEN_AI_TOOL_RESPONSE_DIGESTS:
+    if not GEN_AI_TOOL_RESPONSE_SUMMARIZATION or llm is None or cache is None:
         return
-    if len(text) < GEN_AI_TOOL_RESPONSE_DIGEST_EAGER_MIN_CHARS:
-        return
-    if tool_call_id in cache:
-        return
-    digest = compute_tool_response_digest(text, llm=llm)
-    if digest is not None:
-        cache[tool_call_id] = digest
+    with _DIGEST_STATE_LOCK:
+        if tool_call_id in _INFLIGHT_DIGEST_UPGRADES:
+            return
+        if len(_INFLIGHT_DIGEST_UPGRADES) >= _MAX_INFLIGHT_DIGEST_UPGRADES:
+            logger.warning(
+                "Tool response digest: %d upgrades already in flight; "
+                "keeping the deterministic digest for %s",
+                _MAX_INFLIGHT_DIGEST_UPGRADES,
+                tool_call_id,
+            )
+            return
+        _INFLIGHT_DIGEST_UPGRADES.add(tool_call_id)
+    threading.Thread(
+        target=_run_digest_upgrade,
+        args=(tool_call_id, text, cache, llm),
+        name=f"digest-upgrade-{tool_call_id[:8]}",
+        daemon=True,
+    ).start()
 
 
 def stub_message_for(
@@ -277,6 +354,7 @@ def stub_message_for(
     original_message: str,
     cache: dict[str, str] | None,
     token_counter: Callable[[str], int] | None,
+    llm: LLM | None = None,
 ) -> tuple[str, int] | None:
     """The stub text and its token count for one compacted tool response.
 
@@ -285,6 +363,12 @@ def stub_message_for(
     nothing is extractable, or no token counter exists (the fixed fallback
     token count only covers the bare notice, so a sized digest without a
     counter would undercount and overflow the real window).
+
+    On a cache miss the digest is derived on the fly (deterministic tier 1)
+    and stored so later cycles reuse it; with tier-2 summarization enabled
+    and an ``llm`` provided, a background call then replaces the cached
+    digest with the LLM summary — later re-compactions pick it up. The
+    request that triggered the stub never waits on the LLM.
     """
     if (
         not GEN_AI_TOOL_RESPONSE_DIGESTS
@@ -296,8 +380,12 @@ def stub_message_for(
     digest = (cache or {}).get(tool_call_id)
     if digest is None:
         digest = extractive_digest(original_message)
-    if not digest:
-        return None
+        if not digest:
+            return None
+        if cache is not None:
+            with _DIGEST_STATE_LOCK:
+                cache[tool_call_id] = digest
+        _schedule_digest_upgrade(tool_call_id, original_message, cache, llm)
     message = TOOL_CALL_RESPONSE_COMPACTED_DIGEST.format(digest=digest)
     return message, token_counter(message)
 
@@ -305,6 +393,5 @@ def stub_message_for(
 __all__ = [
     "compute_tool_response_digest",
     "extractive_digest",
-    "maybe_digest_tool_response",
     "stub_message_for",
 ]

@@ -61,8 +61,9 @@ TOKENS_RESERVED_PER_TOOL: TokenFraction = (16, 3125)
 TOKENS_RESERVED_FOR_USER_MESSAGE: TokenFraction = (1, 25)
 # Chat-session naming: history fed to the naming call (was 3000).
 SESSION_NAMING_HISTORY: TokenFraction = (3, 50)
-# In-turn compaction digest: LLM summary output cap (was 220).
-TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT: TokenFraction = (11, 2500)
+# In-turn compaction digest: LLM summary output cap (was 220; doubled for
+# content-heavy stubs).
+TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT: TokenFraction = (11, 1250)
 
 
 ###########################################################################
