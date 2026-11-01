@@ -101,6 +101,14 @@ This file provides guidance to AI agents when working with code in this reposito
   (256,776 on the live Qwen3.6-35B); intermediate reports cap at the 1/5 window ratio (51,355),
   final report at 2/5 (102,710); input safety margin is the 0.05 default. `download_file` accepts
   6 URLs per call; `open_url` keeps 6 image URLs per scraped page.
+- Telegram channel crawls and URL identity (2026-11-01): the SearXNG fork transparently serves
+  bare `t.me/<channel>` crawls from the `t.me/s/<channel>` web preview, so `RenderedPage.final_url`
+  carries the `/s/` URL. `open_url` matches fetched content back to the requested URL — a crawled
+  page's `WebContent.link` must stay the requested URL for such transparent rewrites
+  (`unwrap_telegram_preview_url` in `onyx/utils/url.py`, applied in the crawler's two browser
+  paths). When adding more transparent rewrites on the SearXNG side, mirror the identity rule here
+  or `open_url` silently drops the fetched content ("Failed to fetch content from the requested
+  resources.").
 
 ## Project Overview
 
