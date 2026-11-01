@@ -190,6 +190,7 @@ def _collect_available_file_ids(
     loader without a try/except fallback."""
     chat_file_ids: set[UUID] = set()
     user_file_ids: set[UUID] = set()
+    chat_user_file_ids: set[UUID] = set()
 
     for msg in chat_history:
         if not msg.files:
@@ -199,6 +200,15 @@ def _collect_available_file_ids(
                 chat_file_ids.add(UUID(fd["id"]))
             except (ValueError, KeyError):
                 pass
+            # Uploaded attachments carry the user_file they were indexed as;
+            # that id is the document id in the vector DB, so it scopes the
+            # chat's internal search to this session's own files.
+            user_file_id = fd.get("user_file_id")
+            if user_file_id:
+                try:
+                    chat_user_file_ids.add(UUID(user_file_id))
+                except (ValueError, TypeError):
+                    pass
 
     if project_id:
         user_files = get_user_files_from_project(
@@ -212,6 +222,7 @@ def _collect_available_file_ids(
     return AvailableFiles(
         user_file_ids=list(user_file_ids),
         chat_file_ids=list(chat_file_ids),
+        chat_user_file_ids=list(chat_user_file_ids),
     )
 
 
@@ -1452,6 +1463,13 @@ def _run_models(
                     user_selected_filters=setup.new_msg_req.internal_search_filters,
                     project_id_filter=setup.search_params.project_id_filter,
                     persona_id_filter=setup.search_params.persona_id_filter,
+                    # Scope internal search to the documents attached to this
+                    # chat (empty list included — an empty scope must short-
+                    # circuit, not fall through to every indexed user file).
+                    chat_document_ids=[
+                        str(user_file_id)
+                        for user_file_id in setup.available_files.chat_user_file_ids
+                    ],
                     bypass_acl=setup.bypass_acl,
                     slack_context=setup.slack_context,
                     enable_slack_search=_should_enable_slack_search(

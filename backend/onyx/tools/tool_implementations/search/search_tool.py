@@ -303,6 +303,10 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
     NAME = "internal_search"
     DISPLAY_NAME = "Internal Search"
     DESCRIPTION = "Search connected applications for information."
+    # Class-level defaults so instances built bare in tests (via ``__new__``)
+    # still behave: ``__init__`` overrides both for chat-scoped tools.
+    _description_text = DESCRIPTION
+    chat_scoped = False
 
     def __init__(
         self,
@@ -329,6 +333,11 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         # Whether to infer source and time filters from the
         # query. When False, only user/persona-selected filters are applied.
         auto_detect_filters: bool = True,
+        # True when the owning chat restricted this tool to its own attached
+        # documents (chat_document_ids were merged into persona_search_info).
+        # With no knowledge scope at all, the tool then honestly reports
+        # nothing instead of searching every indexed user file.
+        chat_scoped: bool = False,
     ) -> None:
         super().__init__(emitter=emitter)
 
@@ -343,6 +352,16 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
         self.slack_context = slack_context
         self.enable_slack_search = enable_slack_search
         self.auto_detect_filters = auto_detect_filters
+        self.chat_scoped = chat_scoped
+        self._description_text = (
+            (
+                "Search the documents attached to this chat and, when the chat "
+                "belongs to a project, that project's documents. It never "
+                "reaches files attached to other chats."
+            )
+            if chat_scoped
+            else self.DESCRIPTION
+        )
 
         self._search_cycles: list[SearchCycle] = []
         self._cached_expansion: tuple[str | None, list[str]] | None = None
@@ -609,6 +628,27 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
             or check_user_files_exist(db_session)
         )
 
+    def _has_knowledge_scope(self) -> bool:
+        """Mirror of the index layer's knowledge-scope test.
+
+        True when at least one filter in the OR-based knowledge scope can
+        match, so the search stays inside an explicit set of documents. When
+        False, an unscoped search would scan every indexed document the user
+        can access — including files attached to unrelated chats.
+        """
+        persona = self.persona_search_info
+        return bool(
+            persona.attached_document_ids
+            or persona.document_set_names
+            or persona.hierarchy_node_ids
+            or self.project_id_filter is not None
+            or self.persona_id_filter is not None
+            or (
+                self.user_selected_filters is not None
+                and self.user_selected_filters.document_set
+            )
+        )
+
     @property
     def id(self) -> int:
         return self._id
@@ -619,7 +659,7 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
 
     @property
     def description(self) -> str:
-        return self.DESCRIPTION
+        return self._description_text
 
     @property
     def display_name(self) -> str:
@@ -757,6 +797,28 @@ class SearchTool(Tool[SearchToolOverrideKwargs]):
             empty_response, _ = convert_inference_sections_to_llm_string(
                 top_sections=[],
                 note=None,
+            )
+            return ToolResponse(
+                rich_response=SearchDocsResponse(
+                    search_docs=[],
+                    citation_mapping={},
+                    displayed_docs=None,
+                ),
+                llm_facing_response=empty_response,
+            )
+
+        # A chat-scoped tool with nothing in scope must not fall through to an
+        # unfiltered search (the index layer treats an empty id list as "no
+        # scope"), which would surface files attached to unrelated chats.
+        if self.chat_scoped and not self._has_knowledge_scope():
+            note = (
+                "No documents are attached to this chat, so there is nothing "
+                "to search. Ask the user to attach documents, or answer from "
+                "the conversation."
+            )
+            empty_response, _ = convert_inference_sections_to_llm_string(
+                top_sections=[],
+                note=note,
             )
             return ToolResponse(
                 rich_response=SearchDocsResponse(

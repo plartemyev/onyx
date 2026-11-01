@@ -101,6 +101,23 @@ This file provides guidance to AI agents when working with code in this reposito
   (256,776 on the live Qwen3.6-35B); intermediate reports cap at the 1/5 window ratio (51,355),
   final report at 2/5 (102,710); input safety margin is the 0.05 default. `download_file` accepts
   6 URLs per call; `open_url` keeps 6 image URLs per scraped page.
+- Chat-scoped internal search + default-on tool (2026-11-01, local divergence from upstream):
+  web no longer seeds `internal_search` as "disabled" per chat (`withSearchDefault` removed from
+  `web/src/lib/tools/hooks.ts`; mobile never had the seed). The chat send path scopes the tool to
+  the current session's attachments: `SearchToolConfig.chat_document_ids` (user_file ids from
+  `chat_message.files` JSONB) merge into `PersonaSearchInfo.attached_document_ids` → the existing
+  OR-based knowledge filter in OpenSearch (`attached_document_ids`). Empty scope (no attachments,
+  no project/persona knowledge) short-circuits with an honest "nothing to search" response in
+  `SearchTool.run` (`chat_scoped` + `_has_knowledge_scope`) instead of falling through to an
+  unfiltered search that would surface files from unrelated chats. Project/persona scope filters
+  (`project_id_filter`/`persona_id_filter`, set only on context-file overflow) are unchanged.
+  Non-chat `SearchTool` callers (Search UI, Slack) pass no `chat_document_ids` → unrestricted,
+  as before. Verified live: session with no attachments + forced search returns 0 docs
+  (`tool_call` row, empty `tool_call__search_doc`); attached file returned as the only result.
+  Verification script: `tmp/verify_scoped_search.py` (untracked; note `/api/chat/send-chat-message`
+  is the endpoint, and fd `type` must be a `ChatFileType` value like `plain_text`).
+  Live E2E gotcha: the local model server can take 5+ minutes per forced-search turn; poll logs
+  instead of assuming a hang.
 - Telegram channel crawls and URL identity (2026-11-01): the SearXNG fork transparently serves
   bare `t.me/<channel>` crawls from the `t.me/s/<channel>` web preview, so `RenderedPage.final_url`
   carries the `/s/` URL. `open_url` matches fetched content back to the requested URL — a crawled

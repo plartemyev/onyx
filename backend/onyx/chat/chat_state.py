@@ -191,6 +191,9 @@ class AvailableFiles(BaseModel):
     user_file_ids: list[UUID] = []
     # IDs from the ``file_record`` table (chat-attached files).
     chat_file_ids: list[UUID] = []
+    # ``user_file`` IDs referenced by this session's message attachments.
+    # These are the indexed documents the chat's internal search scope covers.
+    chat_user_file_ids: list[UUID] = []
 
 
 @dataclass(frozen=True)

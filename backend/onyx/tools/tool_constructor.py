@@ -75,6 +75,12 @@ class SearchToolConfig(BaseModel):
     # must be found via vector DB search instead.
     project_id_filter: int | None = None
     persona_id_filter: int | None = None
+    # Indexed document ids (``str(user_file.id)``) attached to the chat that
+    # owns this tool. When set (possibly empty), internal search is scoped to
+    # these documents on top of the persona/project scope — it never reaches
+    # user files attached to other chats. None keeps the unrestricted scope
+    # (search UI and other non-chat callers).
+    chat_document_ids: list[str] | None = None
     bypass_acl: bool = False
     additional_context: str | None = None
     slack_context: SlackContext | None = None
@@ -212,10 +218,19 @@ def _construct_tools_impl(
     document_index = get_default_document_index(search_settings, None, db_session)
 
     def _build_search_tool(tool_id: int, config: SearchToolConfig) -> SearchTool:
+        # Chat document ids extend (never replace) the persona's explicit
+        # knowledge: both land in the same OR-based knowledge filter.
+        attached_document_ids = [doc.id for doc in persona.attached_documents]
+        if config.chat_document_ids is not None:
+            attached_document_ids.extend(
+                doc_id
+                for doc_id in config.chat_document_ids
+                if doc_id not in attached_document_ids
+            )
         persona_search_info = PersonaSearchInfo(
             document_set_names=[ds.name for ds in persona.document_sets],
             search_start_date=persona.search_start_date,
-            attached_document_ids=[doc.id for doc in persona.attached_documents],
+            attached_document_ids=attached_document_ids,
             hierarchy_node_ids=[node.id for node in persona.hierarchy_nodes],
         )
         return SearchTool(
@@ -232,6 +247,7 @@ def _construct_tools_impl(
             slack_context=config.slack_context,
             enable_slack_search=config.enable_slack_search,
             auto_detect_filters=config.auto_detect_filters,
+            chat_scoped=config.chat_document_ids is not None,
         )
 
     open_url_web_fetch_disabled = should_disable_open_url_web_fetch(
