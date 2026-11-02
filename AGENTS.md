@@ -85,8 +85,8 @@ This file provides guidance to AI agents when working with code in this reposito
   (2026-11-02): the 9B is vision-capable and holds BOTH the SECONDARY and VISION pointers
   (`supports_image_input=True` + default-vision designation), so indexing image summarization
   (`indexing_pipeline.py`) and the image-analysis tool both run on it; verified live with a
-  real image invoke. The SearXNG `captcha_vision` solver in `searxng/settings.yml` now points
-  at the 9B (8013) too — the fork's solver sends `chat_template_kwargs
+  real image invoke. The SearXNG `captcha_vision` solver in `searxng/settings.yml` stayed on
+  the primary (8011) — the fork's solver sends `chat_template_kwargs
   {"enable_thinking": false}` itself for non-Ollama backends.
 - Tool response stats (added 2026-10-28, per-doc breakdown 2026-11-01): `open_url` measures its
   LLM-facing response (bytes + tokens) and streams them in `OpenUrlDocuments`

@@ -129,16 +129,14 @@ outgoing:
   # layer. The vision call is observation only; clicks stay real X input.
   captcha_vision:
     enabled: true
-    # The 9B secondary engine (vision-capable mmproj, thinking disabled by
-    # the solver's chat_template_kwargs below): cheap rounds on the box that
-    # hosts the primary, prefill phase doesn't throttle it (CPU groups are
-    # split); long decodes still do, hence votes=1 and the caps below.
-    endpoint: 'http://172.29.153.35:8013'
+    # The primary engine (Qwen3.6-35B): 3/3 unanimous in the 2026-10-19
+    # smoke test, ~30s per round with votes=1.
+    endpoint: 'http://172.29.153.35:8011'
     # Bearer token arrives via the CAPTCHA_VISION_API_KEY container env
     # (docker-compose.override.yml interpolates it from the gitignored .env);
     # this file is git-tracked and must not hold the secret.
     api_key: ''
-    model: '/models/Qwen3.5-9B-Q4_K_M.gguf'
+    model: 'Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf'
     # 0 = no num_ctx hint is sent and the backend serves with its own default
     # context ("auto"). The literal string "auto" would crash the int() parse
     # in captcha_vision.py.
