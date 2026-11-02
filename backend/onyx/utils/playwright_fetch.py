@@ -881,7 +881,7 @@ def fetch_content_bytes(
     Runs on the per-provider browser-pool lane, so cookies persist across
     calls for the same provider.
     """
-    from onyx.utils.request_pacer import provider_key
+    from onyx.utils.provider_key import provider_key
     from onyx.utils.url import SSRFException, validate_outbound_http_url
 
     # Never contact the Google Translate service: a wrapper URL is rewritten
@@ -1004,7 +1004,7 @@ def fetch_rendered_html(
         to use the rendered HTML (challenge pages often render real content
         after JS executes despite the original 4xx status code).
     """
-    from onyx.utils.request_pacer import provider_key
+    from onyx.utils.provider_key import provider_key
     from onyx.utils.url import SSRFException, validate_outbound_http_url
 
     # Never contact the Google Translate service: a wrapper URL is rewritten

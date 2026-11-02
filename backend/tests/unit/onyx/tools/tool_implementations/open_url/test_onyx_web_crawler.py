@@ -16,14 +16,6 @@ from onyx.tools.tool_implementations.open_url.onyx_web_crawler import (
     DEFAULT_READ_TIMEOUT_SECONDS,
     OnyxWebCrawler,
 )
-from onyx.utils.request_pacer import NullPacer
-
-
-@pytest.fixture(autouse=True)
-def _disable_request_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep real per-provider sleeps (0.7-5s) out of unit tests. Tests that
-    exercise pacing inject a recording pacer via the crawler constructor."""
-    monkeypatch.setattr(crawler_module, "get_default_pacer", lambda: NullPacer())
 
 
 @pytest.fixture(autouse=True)
@@ -492,78 +484,6 @@ def test_download_file_bytes_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(result, crawler_module.FetchedFile)
     assert result.content == b"\xff\xd8\xff\xe0jpegdata"
     assert result.content_type == "image/jpeg"
-
-
-class _RecordingPacer:
-    def __init__(self) -> None:
-        self.paced_urls: list[str] = []
-
-    def pace(self, url: str) -> None:
-        self.paced_urls.append(url)
-
-
-def test_download_file_bytes_paces_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pacer = _RecordingPacer()
-    crawler = OnyxWebCrawler(playwright_fallback_enabled=False, pacer=pacer)
-    monkeypatch.setattr(
-        crawler_module,
-        "ssrf_safe_get",
-        lambda *args, **kwargs: _jpeg_response(),  # noqa: ARG005
-    )
-
-    crawler.download_file_bytes("https://i.imgur.com/AKVZMd3b.jpg")
-
-    assert pacer.paced_urls == ["https://i.imgur.com/AKVZMd3b.jpg"]
-
-
-def test_download_file_bytes_paces_playwright_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The browser retry is a fresh request to the same provider, so it is
-    paced too."""
-    pacer = _RecordingPacer()
-    crawler = OnyxWebCrawler(playwright_fallback_enabled=True, pacer=pacer)
-    response = FakeResponse(
-        status_code=403,
-        headers={},
-        content=b"blocked",
-    )
-    monkeypatch.setattr(
-        crawler_module,
-        "ssrf_safe_get",
-        lambda *args, **kwargs: response,  # noqa: ARG005
-    )
-    monkeypatch.setattr(
-        crawler_module,
-        "fetch_content_bytes",
-        lambda *args, **kwargs: None,  # noqa: ARG005
-    )
-
-    result = crawler.download_file_bytes("https://i.imgur.com/AKVZMd3b.jpg")
-
-    assert isinstance(result, crawler_module.FailedFetch)
-    assert pacer.paced_urls == ["https://i.imgur.com/AKVZMd3b.jpg"] * 2
-
-
-def test_fetch_url_paces_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    pacer = _RecordingPacer()
-    crawler = OnyxWebCrawler(pacer=pacer)
-    response = FakeResponse(
-        status_code=200,
-        headers={"Content-Type": "text/html; charset=utf-8"},
-        content=b"<html><body><p>Readable text.</p></body></html>",
-    )
-    monkeypatch.setattr(
-        crawler_module,
-        "ssrf_safe_get",
-        lambda *args, **kwargs: response,  # noqa: ARG005
-    )
-
-    crawler._fetch_url("https://example.com/page")
-
-    assert pacer.paced_urls == ["https://example.com/page"]
 
 
 def test_download_file_bytes_rejects_html(

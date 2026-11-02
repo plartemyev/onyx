@@ -42,7 +42,7 @@ from onyx.utils.playwright_fetch import (
     fetch_rendered_html,
     looks_like_cloudflare_challenge,
 )
-from onyx.utils.request_pacer import Pacer, get_default_pacer, provider_key
+from onyx.utils.provider_key import provider_key
 from onyx.utils.url import (
     SSRFException,
     ssrf_safe_get,
@@ -448,7 +448,6 @@ class OnyxWebCrawler(WebContentProvider):
         playwright_fallback_enabled: bool = OPEN_URL_PLAYWRIGHT_FALLBACK_ENABLED,
         fetch_mode: str = OPEN_URL_FETCH_MODE,
         validate_ssrf: bool | None = None,
-        pacer: Pacer | None = None,
     ) -> None:
         if fetch_mode not in _FETCH_MODES:
             raise ValueError(
@@ -463,8 +462,6 @@ class OnyxWebCrawler(WebContentProvider):
         # None => resolve from the admin SSRF Protection setting per fetch (see
         # _should_validate_ssrf); a non-None caller value pins it.
         self._validate_ssrf_override = validate_ssrf
-        # Shared by default so every crawler in the process paces jointly.
-        self._pacer = pacer if pacer is not None else get_default_pacer()
         self._headers = {**DEFAULT_HEADERS, "User-Agent": user_agent}
 
     def _should_validate_ssrf(self) -> bool:
@@ -488,7 +485,6 @@ class OnyxWebCrawler(WebContentProvider):
     ) -> requests.Response:
         """Fast-path GET with one retry on transient network failures
         (connection resets, DNS hiccups — residential links see these).
-        The retry is paced like any other same-provider request.
         """
         try:
             return self._ssrf_safe_get(url, headers, stream=stream)
@@ -500,7 +496,6 @@ class OnyxWebCrawler(WebContentProvider):
                 url,
                 exc.__class__.__name__,
             )
-        self._pacer.pace(url)
         return self._ssrf_safe_get(url, headers, stream=stream)
 
     def _ssrf_safe_get(
@@ -542,7 +537,6 @@ class OnyxWebCrawler(WebContentProvider):
         # A Google Translate wrapper URL is rewritten to the original page
         # locally: the translation service is never contacted by this fetch.
         url = unwrap_google_translate_url(url)
-        self._pacer.pace(url)
         if self._fetch_mode == FETCH_MODE_PLAYWRIGHT:
             return self._fetch_url_via_browser(url)
         return self._fetch_url_requests_then_browser(url)
@@ -805,7 +799,6 @@ class OnyxWebCrawler(WebContentProvider):
         # rejects as HTML_NOT_FILE. Fetch image-like URLs the way a browser
         # <img> load does; those CDNs serve the bytes for that.
         url = unwrap_google_translate_url(url)
-        self._pacer.pace(url)
         if self._fetch_mode == FETCH_MODE_PLAYWRIGHT:
             result = self._download_via_playwright(
                 url, max_file_size_bytes=max_file_size_bytes
@@ -956,9 +949,6 @@ class OnyxWebCrawler(WebContentProvider):
         """One-shot headless-Chromium binary fetch. Returns None when the
         fallback gave no new information (caller keeps its status-based reason).
         """
-        # The browser fetch is a fresh request to the same provider, made
-        # seconds after the fast-path attempt — pace it separately.
-        self._pacer.pace(url)
         rendered_content: DownloadedContent | None = fetch_content_bytes(
             url,
             allow_private_network=not self._should_validate_ssrf(),
@@ -1020,9 +1010,6 @@ class OnyxWebCrawler(WebContentProvider):
               or rendered HTML didn't parse to anything). Caller should fall
               back to its own status-based failure reason.
         """
-        # The browser fetch is a fresh request to the same provider, made
-        # seconds after the fast-path attempt — pace it separately.
-        self._pacer.pace(url)
         rendered: RenderedPage | None = fetch_rendered_html(
             url, allow_private_network=not self._should_validate_ssrf()
         )

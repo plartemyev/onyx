@@ -122,9 +122,7 @@ class DownloadFileTool(Tool[None]):
     fingerprint-blocked (non-browser TLS, default User-Agent). This tool
     fetches from the backend via the Onyx crawler's fast path and falls back
     to a stealth headless browser on bot challenges, then saves the bytes to
-    the file store so they display in chat. URLs are downloaded in parallel,
-    except that requests sharing a provider are serialized and spaced by the
-    shared request pacer.
+    the file store so they display in chat. URLs are downloaded in parallel.
     """
 
     NAME = "download_file"
@@ -227,10 +225,8 @@ class DownloadFileTool(Tool[None]):
         if skipped_url_count:
             urls = urls[:DOWNLOAD_MAX_URLS]
 
-        # Fetch in parallel: different providers download concurrently while
-        # the crawler's shared request pacer serializes same-provider URLs
-        # (no burst against reddit/imgur/...). executor.map keeps the input
-        # order, so results line up with `urls` below.
+        # Fetch in parallel. executor.map keeps the input order, so results
+        # line up with `urls` below.
         max_workers = min(len(urls), DOWNLOAD_MAX_URLS)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             fetched_list = list(executor.map(self._crawler.download_file_bytes, urls))

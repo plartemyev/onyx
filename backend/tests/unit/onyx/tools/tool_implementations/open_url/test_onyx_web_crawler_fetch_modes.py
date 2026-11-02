@@ -22,14 +22,6 @@ from onyx.tools.tool_implementations.open_url.onyx_web_crawler import (
     looks_like_cloudflare_challenge,
 )
 from onyx.utils.playwright_fetch import RenderedPage
-from onyx.utils.request_pacer import NullPacer
-
-
-@pytest.fixture(autouse=True)
-def _disable_request_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep real per-provider sleeps (0.7-5s) out of unit tests. Tests that
-    exercise pacing inject a recording pacer via the crawler constructor."""
-    monkeypatch.setattr(crawler_module, "get_default_pacer", lambda: NullPacer())
 
 
 @pytest.fixture(autouse=True)
