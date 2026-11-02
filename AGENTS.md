@@ -78,7 +78,16 @@ This file provides guidance to AI agents when working with code in this reposito
   configured with `{"chat_template_kwargs": {"enable_thinking": false}}`, verified: flow
   answers in seconds, zero trace; (2) every secondary invoke caps output at
   `SECONDARY_LLM_MAX_OUTPUT_TOKENS` (256) so any thinking model truncates into graceful
-  fallbacks instead of running 15 min.
+  fallbacks instead of running 15 min. Rebalance reevaluation (CPU groups split on .35,
+  2026-11-02): primary is UNAFFECTED while the 9B prefills (~1265 vs ~1277 tok/s), but a 9B
+  DECODE still throttles it ~9x (~137 tok/s) — acceptable only because thinking is off and
+  output is capped, so decode windows are seconds. 9B prefill unchanged (~28 tok/s). Vision
+  (2026-11-02): the 9B is vision-capable and holds BOTH the SECONDARY and VISION pointers
+  (`supports_image_input=True` + default-vision designation), so indexing image summarization
+  (`indexing_pipeline.py`) and the image-analysis tool both run on it; verified live with a
+  real image invoke. The SearXNG `captcha_vision` solver in `searxng/settings.yml` now points
+  at the 9B (8013) too — the fork's solver sends `chat_template_kwargs
+  {"enable_thinking": false}` itself for non-Ollama backends.
 - Tool response stats (added 2026-10-28, per-doc breakdown 2026-11-01): `open_url` measures its
   LLM-facing response (bytes + tokens) and streams them in `OpenUrlDocuments`
   (`content_bytes`/`token_count`, plus `doc_stats` — per-document breakdown keyed by
