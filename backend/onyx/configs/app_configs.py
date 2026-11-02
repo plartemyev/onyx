@@ -1307,6 +1307,12 @@ OPEN_URL_INDEX_MIN_CHARS = int(os.environ.get("OPEN_URL_INDEX_MIN_CHARS") or 600
 OPEN_URL_INDEXED_EXCERPT_CHARS = int(
     os.environ.get("OPEN_URL_INDEXED_EXCERPT_CHARS") or 4000
 )
+# open_url holds its answer until freshly saved pages finish indexing, so
+# the response's "searchable document" note is true and the model can
+# actually search the full text in the same turn. Bounded by this budget
+# (polling the user_file pipeline); on expiry the response falls back to a
+# "still indexing" note. 0 disables the wait.
+OPEN_URL_INDEX_WAIT_SECONDS = float(os.environ.get("OPEN_URL_INDEX_WAIT_SECONDS") or 90)
 
 # Body format of model-facing web page content (web search results + open_url
 # scrapes; OnyxWebCrawler only — connector indexing always extracts text).

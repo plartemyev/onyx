@@ -14,7 +14,7 @@ from onyx.chat.chat_utils import (
 )
 from onyx.chat.save_chat import _extract_referenced_file_descriptors
 from onyx.file_store.models import ChatFileType
-from onyx.tools.models import PythonExecutionFile, ToolCallInfo
+from onyx.tools.models import IndexedPageRef, PythonExecutionFile, ToolCallInfo
 
 
 def _make_tool_call_info(
@@ -460,3 +460,62 @@ def test_save_chat_turn_rewrites_placeholder_and_attaches_file(
     assert len(mock_msg.files) == 1
     assert mock_msg.files[0]["id"] == "abc-123"
     assert mock_msg.files[0]["name"] == "chart.png"
+
+
+def _indexed_tool_call(user_file_id: str, file_id: str, name: str) -> ToolCallInfo:
+    return ToolCallInfo(
+        parent_tool_call_id=None,
+        turn_index=0,
+        tab_index=0,
+        tool_name="open_url",
+        tool_call_id="tc_1",
+        tool_id=1,
+        reasoning_tokens=None,
+        tool_call_arguments={"urls": ["https://example.com/page"]},
+        tool_call_response="{}",
+        generated_files=None,
+        indexed_files=[
+            IndexedPageRef(
+                url="https://example.com/page",
+                user_file_id=user_file_id,
+                file_id=file_id,
+                name=name,
+            )
+        ],
+    )
+
+
+def test_save_chat_turn_dedupes_indexed_file_descriptors(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Repeated open_url calls in one turn re-emit refs for the same saved
+    page (URL dedup reuses the user file); the message must end up with one
+    descriptor per user_file_id."""
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.encode.return_value = [1, 2, 3]
+    monkeypatch.setattr(save_chat, "get_tokenizer", lambda *_a, **_kw: mock_tokenizer)
+
+    mock_msg = MagicMock()
+    mock_msg.id = 1
+    mock_msg.chat_session_id = "test"
+    mock_msg.files = None
+
+    mock_session = MagicMock()
+
+    save_chat.save_chat_turn(
+        message_text="done",
+        reasoning_tokens=None,
+        tool_calls=[
+            _indexed_tool_call("uf-a", "file-a", "Page A.md"),
+            _indexed_tool_call("uf-a", "file-a", "Page A.md"),
+            _indexed_tool_call("uf-b", "file-b", "Page B.md"),
+        ],
+        citation_to_doc={},
+        all_search_docs={},
+        db_session=mock_session,
+        assistant_message=mock_msg,
+    )
+
+    assert mock_msg.files is not None
+    assert len(mock_msg.files) == 2
+    assert {fd["user_file_id"] for fd in mock_msg.files} == {"uf-a", "uf-b"}

@@ -14,14 +14,18 @@ must not leave searchable artifacts behind.
 
 from __future__ import annotations
 
-import logging
+import time
 from io import BytesIO
 from typing import Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
-from onyx.configs.app_configs import OPEN_URL_DOC_INDEXING, OPEN_URL_INDEX_MIN_CHARS
+from onyx.configs.app_configs import (
+    OPEN_URL_DOC_INDEXING,
+    OPEN_URL_INDEX_MIN_CHARS,
+    OPEN_URL_INDEX_WAIT_SECONDS,
+)
 from onyx.configs.constants import (
     CELERY_USER_FILE_PROCESSING_TASK_EXPIRES,
     FileOrigin,
@@ -34,13 +38,52 @@ from onyx.db.enums import UserFileStatus
 from onyx.db.models import User, UserFile
 from onyx.file_store.utils import get_default_file_store
 from onyx.tools.models import IndexedPageRef
+from onyx.utils.logger import setup_logger
 from onyx.utils.url import normalize_url
 from shared_configs.contextvars import (
     get_current_incognito_record_mode,
     get_current_tenant_id,
 )
 
-logger = logging.getLogger(__name__)
+logger = setup_logger()
+
+# How often the hold loop re-reads user_file statuses.
+_OPEN_URL_INDEX_POLL_SECONDS = 2.0
+# Terminal statuses the wait stops waiting on (a failed file never becomes
+# searchable; the response falls back to the not-ready note for it).
+_SEARCH_TERMINAL = (
+    UserFileStatus.COMPLETED,
+    UserFileStatus.FAILED,
+    UserFileStatus.DELETING,
+)
+
+
+def _wait_until_searchable(
+    db_session: Session, user_file_ids: list[UUID], budget_seconds: float
+) -> None:
+    """Hold until every user file reaches a terminal indexing state (or the
+    budget runs out). Bounded, so a busy queue can stall the tool response by
+    at most `budget_seconds`."""
+    if budget_seconds <= 0:
+        return
+    deadline = time.monotonic() + budget_seconds
+    pending = set(user_file_ids)
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(_OPEN_URL_INDEX_POLL_SECONDS, remaining))
+        db_session.expire_all()
+        statuses = dict(
+            db_session.query(UserFile.id, UserFile.status)
+            .filter(UserFile.id.in_(pending))
+            .all()
+        )
+        pending = {
+            user_file_id
+            for user_file_id, status in statuses.items()
+            if status not in _SEARCH_TERMINAL
+        }
 
 
 def section_link(section: InferenceSection) -> str | None:
@@ -137,6 +180,7 @@ def index_crawled_pages(
                         user_file_id=str(existing.id),
                         file_id=existing.file_id,
                         name=existing.name,
+                        search_ready=existing.status == UserFileStatus.COMPLETED,
                     )
                 )
                 continue
@@ -177,10 +221,32 @@ def index_crawled_pages(
                     user_file_id=str(user_file.id),
                     file_id=file_id,
                     name=name,
+                    # Freshly queued: the searchable copy does not exist yet.
+                    search_ready=False,
                 )
             )
         except Exception:
             logger.exception(
                 "Failed to index a crawled page; continuing without the searchable copy"
             )
+
+    # Hold the tool answer until the saved pages are actually searchable, so
+    # the response's pointer note is true and internal_search works in the
+    # same turn. Bounded by OPEN_URL_INDEX_WAIT_SECONDS.
+    ref_ids = [UUID(ref.user_file_id) for ref in refs]
+    _wait_until_searchable(db_session, ref_ids, OPEN_URL_INDEX_WAIT_SECONDS)
+    db_session.expire_all()
+    final_statuses = (
+        dict(
+            db_session.query(UserFile.id, UserFile.status)
+            .filter(UserFile.id.in_(ref_ids))
+            .all()
+        )
+        if ref_ids
+        else {}
+    )
+    for ref in refs:
+        ref.search_ready = (
+            final_statuses.get(UUID(ref.user_file_id)) == UserFileStatus.COMPLETED
+        )
     return refs

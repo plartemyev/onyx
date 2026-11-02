@@ -418,29 +418,30 @@ def save_chat_turn(
     # 9. Attach crawled pages saved as indexed, chat-searchable files
     # (open_url): the user_file_id on the descriptor is what scopes this
     # session's internal search to include the saved full text, and
-    # read_file can load it directly.
-    indexed_descriptors = [
-        FileDescriptor(
-            id=ref.file_id,
-            type=ChatFileType.PLAIN_TEXT,
-            name=ref.name,
-            user_file_id=ref.user_file_id,
-        )
-        for tool_call_info in tool_calls
-        for ref in tool_call_info.indexed_files
+    # read_file can load it directly. Several calls in one turn can carry
+    # the same ref (URL dedup reuses the file), so dedup by user_file_id
+    # within the batch before checking what is already on the message.
+    indexed_by_user_file_id: dict[str, FileDescriptor] = {}
+    for tool_call_info in tool_calls:
+        for ref in tool_call_info.indexed_files:
+            if ref.user_file_id not in indexed_by_user_file_id:
+                indexed_by_user_file_id[ref.user_file_id] = FileDescriptor(
+                    id=ref.file_id,
+                    type=ChatFileType.PLAIN_TEXT,
+                    name=ref.name,
+                    user_file_id=ref.user_file_id,
+                )
+    existing_user_file_ids = {
+        fd.get("user_file_id") for fd in (assistant_message.files or [])
+    }
+    new_descriptors = [
+        fd
+        for user_file_id, fd in indexed_by_user_file_id.items()
+        if user_file_id not in existing_user_file_ids
     ]
-    if indexed_descriptors:
-        existing_user_file_ids = {
-            fd.get("user_file_id") for fd in (assistant_message.files or [])
-        }
-        new_descriptors = [
-            fd
-            for fd in indexed_descriptors
-            if fd["user_file_id"] not in existing_user_file_ids
-        ]
-        if new_descriptors:
-            existing_files = assistant_message.files or []
-            assistant_message.files = existing_files + new_descriptors
+    if new_descriptors:
+        existing_files = assistant_message.files or []
+        assistant_message.files = existing_files + new_descriptors
 
     # Finally save the messages, tool calls, and docs
     db_session.commit()

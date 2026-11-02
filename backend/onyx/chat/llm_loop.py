@@ -81,6 +81,7 @@ from onyx.tools.models import (
     ChatFile,
     CustomToolCallSummary,
     CustomToolUserFileSnapshot,
+    IndexedPageRef,
     MemoryToolResponseSnapshot,
     PythonToolRichResponse,
     ToolCallInfo,
@@ -1417,6 +1418,24 @@ def _tool_response_image_files(
     ]
 
 
+def _extend_search_scope_with_indexed_files(
+    tools: list[Tool], indexed_files: list[IndexedPageRef]
+) -> None:
+    """Add this turn's newly indexed pages to the chat-scoped internal
+    search's id list. The scope was fixed at send time, before open_url
+    saved these files; without this, an in-turn search cannot see them
+    (the persisted files JSONB only lands at save time)."""
+    user_file_ids = [ref.user_file_id for ref in indexed_files]
+    for tool in tools:
+        if isinstance(tool, SearchTool) and tool.chat_scoped:
+            attached = tool.persona_search_info.attached_document_ids
+            attached.extend(
+                user_file_id
+                for user_file_id in user_file_ids
+                if user_file_id not in attached
+            )
+
+
 def run_llm_loop(
     emitter: Emitter,
     state_container: ChatStateContainer,
@@ -2065,6 +2084,13 @@ def run_llm_loop(
 
                 tool_call = tool_response.tool_call
                 tab_index = tool_call.placement.tab_index
+
+                if tool_response.indexed_files:
+                    # open_url saved + indexed pages this cycle; make them
+                    # visible to this turn's internal search immediately.
+                    _extend_search_scope_with_indexed_files(
+                        final_tools, tool_response.indexed_files
+                    )
 
                 # Track if search tool was called (for skipping query expansion on subsequent calls)
                 if tool_call.tool_name == SearchTool.NAME:

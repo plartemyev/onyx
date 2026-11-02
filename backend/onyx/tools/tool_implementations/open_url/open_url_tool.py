@@ -39,6 +39,7 @@ from onyx.server.query_and_chat.streaming_models import (
 from onyx.tools.interface import Tool
 from onyx.tools.models import (
     OPEN_URL_MAX_URLS,
+    IndexedPageRef,
     OpenURLToolOverrideKwargs,
     ToolCallException,
     ToolResponse,
@@ -370,21 +371,28 @@ def _llm_facing_image_urls(image_urls: list[str]) -> list[str]:
 
 def _inline_content_for_section(
     section: InferenceSection,
-    indexed_name: str | None,
+    indexed_ref: IndexedPageRef | None,
 ) -> str:
     """The content one section contributes inline.
 
     Indexed pages above the excerpt size inline only their head; the rest
     stays reachable via internal search / read_file, so a raised fetch
     budget cannot flood the context window. Everything else contributes
-    its full text.
+    its full text. The pointer note only promises internal_search once the
+    saved file has actually finished indexing.
     """
     content = section.combined_content
-    if indexed_name is not None and len(content) > OPEN_URL_INDEXED_EXCERPT_CHARS:
+    if indexed_ref is not None and len(content) > OPEN_URL_INDEXED_EXCERPT_CHARS:
+        if indexed_ref.search_ready:
+            return (
+                content[:OPEN_URL_INDEXED_EXCERPT_CHARS]
+                + f"\n[… full text saved as searchable document '{indexed_ref.name}' "
+                + "— use internal_search for details …]"
+            )
         return (
             content[:OPEN_URL_INDEXED_EXCERPT_CHARS]
-            + f"\n[… full text saved as searchable document '{indexed_name}' "
-            + "— use internal_search for details …]"
+            + f"\n[… full text saved as searchable document '{indexed_ref.name}' "
+            + "— still indexing; internal_search will find it shortly …]"
         )
     return content
 
@@ -395,7 +403,7 @@ def _convert_sections_to_llm_string_with_citations(
     citation_start: int,
     max_document_chars: int = MAX_CHARS_ACROSS_URLS,
     token_counter: Callable[[str], int] | None = None,
-    indexed_names: dict[str, str] | None = None,
+    indexed_refs: dict[str, IndexedPageRef] | None = None,
 ) -> tuple[str, dict[int, str], list[OpenUrlDocStat]]:
     """Convert InferenceSections to LLM string, reusing existing citations where available.
 
@@ -408,9 +416,10 @@ def _convert_sections_to_llm_string_with_citations(
             Content will be truncated to fit within this budget.
         token_counter: Optional counter used to measure each document's token
             cost for the timeline's per-URL stats.
-        indexed_names: document_id -> saved-document name for pages that were
+        indexed_refs: document_id -> IndexedPageRef for pages that were
             indexed as chat-searchable files; surfaced per result so the model
-            knows it can search the full text instead of re-fetching.
+            knows it can search the full text instead of re-fetching (the
+            pointer note only promises that once the file finished indexing).
 
     Returns:
         Tuple of (JSON string for LLM, citation_mapping dict, per-document
@@ -482,7 +491,7 @@ def _convert_sections_to_llm_string_with_citations(
         # The excerpt cut happens before the budget arithmetic: an indexed
         # page costs the batch its excerpt, not its full length.
         content = _inline_content_for_section(
-            section, (indexed_names or {}).get(document_id)
+            section, (indexed_refs or {}).get(document_id)
         )
 
         # Calculate remaining budget for content
@@ -506,8 +515,8 @@ def _convert_sections_to_llm_string_with_citations(
 
         # Mark pages saved as chat-searchable files: the model can pull
         # details via internal search / read_file instead of re-fetching.
-        if indexed_names and document_id in indexed_names:
-            result["indexed_as"] = indexed_names[document_id]
+        if indexed_refs and document_id in indexed_refs:
+            result["indexed_as"] = indexed_refs[document_id].name
 
     # Per-document stats for the timeline: measure each document's exact
     # representation within the final string, keyed by document_id (a page
@@ -892,7 +901,7 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
         # Note that with this call, some contents may be truncated or dropped so what the LLM sees may not be the entire set
         # That said, it is still the best experience to show all the docs that were fetched, even if the LLM on rare
         # occasions only actually sees a subset.
-        indexed_names: dict[str, str] = {}
+        indexed_refs: dict[str, IndexedPageRef] = {}
         for section in inference_sections:
             link = section_link(section)
             if not link:
@@ -900,14 +909,14 @@ class OpenURLTool(Tool[OpenURLToolOverrideKwargs]):
             normalized = normalize_web_content_url(link)
             for ref in indexed_files:
                 if ref.url == normalized:
-                    indexed_names[section.center_chunk.document_id] = ref.name
+                    indexed_refs[section.center_chunk.document_id] = ref
         docs_str, citation_mapping, doc_stats = (
             _convert_sections_to_llm_string_with_citations(
                 sections=inference_sections,
                 existing_citation_mapping=override_kwargs.citation_mapping,
                 citation_start=override_kwargs.starting_citation_num,
                 token_counter=self._token_counter,
-                indexed_names=indexed_names,
+                indexed_refs=indexed_refs,
             )
         )
 

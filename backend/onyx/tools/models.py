@@ -36,6 +36,9 @@ class IndexedPageRef(BaseModel):
     user_file_id: str
     file_id: str
     name: str
+    # Whether the user file has finished indexing (COMPLETED) and is actually
+    # reachable through internal search yet. Freshly saved pages start False.
+    search_ready: bool = False
 
 
 class ToolCallException(Exception):

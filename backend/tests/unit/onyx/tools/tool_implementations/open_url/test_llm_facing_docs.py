@@ -5,7 +5,7 @@ import json
 
 from onyx.configs.constants import DocumentSource
 from onyx.context.search.models import InferenceChunk, InferenceSection
-from onyx.tools.models import OPEN_URL_MAX_URLS
+from onyx.tools.models import OPEN_URL_MAX_URLS, IndexedPageRef
 from onyx.tools.tool_implementations.open_url.open_url_tool import (
     _convert_sections_to_llm_string_with_citations,
     _over_limit_note,
@@ -104,6 +104,16 @@ class TestIndexedPageExcerpt:
             combined_content="x" * chars,
         )
 
+    @staticmethod
+    def _ref(name: str, search_ready: bool) -> IndexedPageRef:
+        return IndexedPageRef(
+            url="https://example.com/page",
+            user_file_id="00000000-0000-0000-0000-000000000000",
+            file_id="file-id",
+            name=name,
+            search_ready=search_ready,
+        )
+
     def test_indexed_page_inlines_excerpt_with_pointer(self) -> None:
         from onyx.tools.tool_implementations.open_url import open_url_tool
 
@@ -113,7 +123,7 @@ class TestIndexedPageExcerpt:
                 sections=[section],
                 existing_citation_mapping={},
                 citation_start=1,
-                indexed_names={"doc-a": "Thread.md"},
+                indexed_refs={"doc-a": self._ref("Thread.md", search_ready=True)},
             )
         )
         payload = json.loads(docs_str)
@@ -122,7 +132,29 @@ class TestIndexedPageExcerpt:
         # page's full length.
         assert len(content) < open_url_tool.OPEN_URL_INDEXED_EXCERPT_CHARS + 300
         assert "full text saved as searchable document 'Thread.md'" in content
-        assert "internal_search" in content
+        assert "use internal_search for details" in content
+        assert payload["results"][0]["indexed_as"] == "Thread.md"
+
+    def test_indexing_page_does_not_promise_internal_search(self) -> None:
+        """Until the saved file finishes indexing, the note must not send the
+        model to internal_search — the tool returns nothing yet."""
+        from onyx.tools.tool_implementations.open_url import open_url_tool
+
+        section = self._long_chunk("doc-a", chars=50_000)
+        docs_str, _citation_mapping, _doc_stats = (
+            _convert_sections_to_llm_string_with_citations(
+                sections=[section],
+                existing_citation_mapping={},
+                citation_start=1,
+                indexed_refs={"doc-a": self._ref("Thread.md", search_ready=False)},
+            )
+        )
+        payload = json.loads(docs_str)
+        content = payload["results"][0]["content"]
+        assert len(content) < open_url_tool.OPEN_URL_INDEXED_EXCERPT_CHARS + 300
+        assert "full text saved as searchable document 'Thread.md'" in content
+        assert "still indexing" in content
+        assert "use internal_search" not in content
         assert payload["results"][0]["indexed_as"] == "Thread.md"
 
     def test_small_indexed_page_stays_full(self) -> None:
@@ -132,7 +164,7 @@ class TestIndexedPageExcerpt:
                 sections=[section],
                 existing_citation_mapping={},
                 citation_start=1,
-                indexed_names={"doc-b": "Small.md"},
+                indexed_refs={"doc-b": self._ref("Small.md", search_ready=True)},
             )
         )
         payload = json.loads(docs_str)
