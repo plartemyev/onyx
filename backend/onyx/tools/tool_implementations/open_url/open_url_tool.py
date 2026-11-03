@@ -76,8 +76,8 @@ logger = setup_logger()
 
 URLS_FIELD = "urls"
 
-# 2 minute timeout for parallel URL fetching to prevent indefinite hangs
-OPEN_URL_TIMEOUT_SECONDS = 2 * 60
+# 4 minute timeout for parallel URL fetching to prevent indefinite hangs
+OPEN_URL_TIMEOUT_SECONDS = 4 * 60
 
 # Sometimes the LLM will ask for a lot of URLs, so we need to limit the total number of characters
 # otherwise this alone will completely flood the context and degrade experience.
