@@ -1418,7 +1418,7 @@ def _tool_response_image_files(
     ]
 
 
-def _extend_search_scope_with_indexed_files(
+def extend_search_scope_with_indexed_files(
     tools: list[Tool], indexed_files: list[IndexedPageRef]
 ) -> None:
     """Add this turn's newly indexed pages to the chat-scoped internal
@@ -2088,7 +2088,7 @@ def run_llm_loop(
                 if tool_response.indexed_files:
                     # open_url saved + indexed pages this cycle; make them
                     # visible to this turn's internal search immediately.
-                    _extend_search_scope_with_indexed_files(
+                    extend_search_scope_with_indexed_files(
                         final_tools, tool_response.indexed_files
                     )
 

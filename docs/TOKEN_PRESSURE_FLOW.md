@@ -154,12 +154,52 @@ stop
 | Piece | Location |
 | --- | --- |
 | Cycle budget + ledger, compaction, history fit | `backend/onyx/chat/llm_loop.py` |
-| Mid-turn search-scope extension (`_extend_search_scope_with_indexed_files`) | `backend/onyx/chat/llm_loop.py` |
+| Mid-turn search-scope extension (`extend_search_scope_with_indexed_files`, shared with DR sub-agents) | `backend/onyx/chat/llm_loop.py` |
 | Digest cache/store, lazy tier-2 upgrade | `backend/onyx/chat/tool_response_digest.py` |
 | Crawled-page indexing + hold-until-searchable | `backend/onyx/tools/tool_implementations/open_url/doc_indexing.py` (`_wait_until_searchable`) |
 | Excerpt, pointer note gating, `indexed_as` | `backend/onyx/tools/tool_implementations/open_url/open_url_tool.py` (`_inline_content_for_section`) |
 | Assistant-message file descriptors (batch dedup) | `backend/onyx/chat/save_chat.py` (step 9) |
 | Ratios and caps | `backend/onyx/llm/context_budgets.py`, `backend/onyx/configs/app_configs.py` |
+| DR orchestrator / final report (digests wired through) | `backend/onyx/deep_research/dr_loop.py` |
+| DR research sub-agent (digests, indexed-file notes, run-wide scope extension) | `backend/onyx/tools/fake_tools/research_agent.py` |
+
+## Deep Research under the same rules
+
+The DR orchestrator and its research sub-agents run their own cycles but
+build every request through the same `construct_message_history`, so the
+compaction machinery applies there too. Wired and live-verified
+2026-11-04 (run with a temporary 16k sub-agent cap: 4 compaction rounds,
+tier-1 digests on stubs, tier-2 upgrades attempting with deterministic
+fallback):
+
+- The orchestrator keeps one digest cache per run; the final report and
+  every orchestrator cycle replay digested sub-agent reports instead of
+  bare notices when the history overflows. A 48h run (the deployment's
+  `DR_FORCE_REPORT_S`) overflows many times — digests are what survive.
+- Sub-agents keep per-call digest + note caches; their own overflow
+  stubs carry digests and the indexed-file note.
+- Pages a sub-agent saves via `open_url` extend the run-wide search
+  scope immediately, so later sub-agents retrieve them instead of
+  re-fetching the same URLs.
+
+Also live-verified 2026-11-04: thinking models can end the intermediate
+report step with an empty answer at `finish_reason=stop` (the report
+lands in the reasoning trace, sometimes with further searches planned
+that the tool-less step cannot run). The retry now appends an explicit
+report nudge (`RESEARCH_REPORT_RETRY_NUDGE`) alongside the doubled
+generation budget; run 2 wrote both intermediate reports and a cited
+final answer without triggering it. Regression test:
+`backend/tests/unit/onyx/deep_research/test_dr_compaction_wiring.py`.
+
+Known limitations:
+- Tier-2 digest upgrades run on the primary engine and race the DR loop
+  for it; under load they time out into the deterministic fallback (by
+  design). Routing them to the secondary model is the follow-up.
+- A compacted sub-agent report can lose its citation markers, so the
+  final report may under-cite documents that stayed in
+  `final_documents`. The citation ledger idea (marker -> doc + one-line
+  claim, compacted last) is the follow-up if live runs show
+  under-citing.
 
 ## Live values (this deployment)
 

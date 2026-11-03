@@ -249,6 +249,23 @@ This file provides guidance to AI agents when working with code in this reposito
   reset the same-cursor streak before expecting the scheduler to re-enqueue. With KV hits
   (~97% cached tokens observed via the fork's /metrics) decode is the sole bottleneck:
   ~8-13s per chunk context, ~48 min for a 290-chunk unit.
+- Deep Research token-pressure wiring (2026-11-04, deployed and live-verified):
+  DR's `construct_message_history` call sites now pass `token_counter` +
+  per-run digest caches + `llm` (dr_loop.py, research_agent.py), so
+  orchestrator/sub-agent compaction stubs carry digests instead of bare
+  notices — at `DR_FORCE_REPORT_S=172800` (48h) a run overflows the window
+  many times and digests are what keeps findings alive. Sub-agent
+  `open_url` responses extend the run-wide search scope immediately
+  (`extend_search_scope_with_indexed_files`, renamed public from
+  `_extend_search_scope_with_indexed_files`). Thinking-model empty-report
+  fix: the intermediate report retry appends `RESEARCH_REPORT_RETRY_NUDGE`
+  (run 1 failed with reasoning-only output at finish_reason=stop; run 2
+  with the fix wrote both reports + a cited final answer). Regression
+  test: `backend/tests/unit/onyx/deep_research/test_dr_compaction_wiring.py`;
+  runbook docs in `docs/TOKEN_PRESSURE_FLOW.md`. Known follow-ups: tier-2
+  digest upgrades race the DR loop on the primary engine (deterministic
+  fallback is safe; route to the secondary model later), citation markers
+  can be lost when a report compacts (ledger idea in the doc).
 - Telegram channel crawls and URL identity (2026-11-01): the SearXNG fork transparently serves
   bare `t.me/<channel>` crawls from the `t.me/s/<channel>` web preview, so `RenderedPage.final_url`
   carries the `/s/` URL. `open_url` matches fetched content back to the requested URL — a crawled

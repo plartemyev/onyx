@@ -134,6 +134,7 @@ def generate_final_report(
     pre_answer_processing_time: float | None = None,
     all_injected_file_metadata: dict[str, FileToolMetadata] | None = None,
     should_abort: Callable[[], bool] | None = None,
+    tool_response_digests: dict[str, str] | None = None,
 ) -> bool:
     """Generate the final research report.
 
@@ -177,6 +178,11 @@ def generate_final_report(
                 llm.config.max_input_tokens * (1 - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN)
             ),
             all_injected_file_metadata=all_injected_file_metadata,
+            token_counter=token_counter,
+            # The report replays the whole research history; compacted
+            # sub-agent reports carry their digests so findings survive.
+            tool_response_digests=tool_response_digests,
+            llm=llm,
             # The final report runs with no tools at all.
             available_tool_names=set(),
         )
@@ -233,6 +239,9 @@ def generate_final_report(
                     llm.config.max_input_tokens * (1 - GEN_AI_INPUT_TOKEN_SAFETY_MARGIN)
                 ),
                 all_injected_file_metadata=all_injected_file_metadata,
+                token_counter=token_counter,
+                tool_response_digests=tool_response_digests,
+                llm=llm,
                 available_tool_names=set(),
             )
             llm_step_result, has_reasoned_retry = run_llm_step(
@@ -347,6 +356,14 @@ def run_deep_research_llm_loop(
 
         llm_step_result: LlmStepResult | None = None
 
+        # Digests of stubbed tool responses (sub-agent reports, prior-turn
+        # tool output), keyed by tool_call_id — the same lazy tier-1/tier-2
+        # machinery the regular chat loop uses. A 48h run with hundreds of
+        # orchestrator cycles overflows the window many times over; without
+        # this, compaction stubs old reports as bare notices and the model
+        # loses every finding the dropped reports carried.
+        tool_response_digests: dict[str, str] = {}
+
         # Research agents get every tool available to this chat: built-in tools,
         # custom (OpenAPI) tools, and MCP tools. The orchestrator itself only
         # calls research_agent / think / generate_report.
@@ -388,6 +405,9 @@ def run_deep_research_llm_loop(
                     available_tokens=available_tokens,
                     last_n_user_messages=MAX_USER_MESSAGES_FOR_CONTEXT,
                     all_injected_file_metadata=all_injected_file_metadata,
+                    token_counter=token_counter,
+                    tool_response_digests=tool_response_digests,
+                    llm=llm,
                     # These steps expose only mock control tools.
                     available_tool_names=set(),
                 )
@@ -457,6 +477,9 @@ def run_deep_research_llm_loop(
                 available_tokens=available_tokens,
                 last_n_user_messages=MAX_USER_MESSAGES_FOR_CONTEXT + 1,
                 all_injected_file_metadata=all_injected_file_metadata,
+                token_counter=token_counter,
+                tool_response_digests=tool_response_digests,
+                llm=llm,
                 # Plan generation runs with no tools.
                 available_tool_names=set(),
             )
@@ -603,6 +626,7 @@ def run_deep_research_llm_loop(
                         language_section=language_section,
                         pre_answer_processing_time=elapsed_seconds,
                         all_injected_file_metadata=all_injected_file_metadata,
+                        tool_response_digests=tool_response_digests,
                         should_abort=should_abort_from_connected(check_is_connected),
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
@@ -642,6 +666,9 @@ def run_deep_research_llm_loop(
                     available_tokens=available_tokens,
                     last_n_user_messages=MAX_USER_MESSAGES_FOR_CONTEXT,
                     all_injected_file_metadata=all_injected_file_metadata,
+                    token_counter=token_counter,
+                    tool_response_digests=tool_response_digests,
+                    llm=llm,
                     # These steps expose only mock control tools.
                     available_tool_names=set(),
                 )
@@ -768,6 +795,7 @@ def run_deep_research_llm_loop(
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
                         all_injected_file_metadata=all_injected_file_metadata,
+                        tool_response_digests=tool_response_digests,
                         should_abort=should_abort_from_connected(check_is_connected),
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
@@ -793,6 +821,7 @@ def run_deep_research_llm_loop(
                         pre_answer_processing_time=time.monotonic()
                         - processing_start_time,
                         all_injected_file_metadata=all_injected_file_metadata,
+                        tool_response_digests=tool_response_digests,
                         should_abort=should_abort_from_connected(check_is_connected),
                     )
                     final_turn_index = report_turn_index + (1 if report_reasoned else 0)
@@ -869,6 +898,7 @@ def run_deep_research_llm_loop(
                             pre_answer_processing_time=time.monotonic()
                             - processing_start_time,
                             all_injected_file_metadata=all_injected_file_metadata,
+                            tool_response_digests=tool_response_digests,
                             should_abort=should_abort_from_connected(
                                 check_is_connected
                             ),

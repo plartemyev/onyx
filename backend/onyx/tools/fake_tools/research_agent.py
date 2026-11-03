@@ -18,7 +18,10 @@ from onyx.chat.citation_utils import (
     update_citation_processor_from_tool_response,
 )
 from onyx.chat.emitter import Emitter
-from onyx.chat.llm_loop import construct_message_history
+from onyx.chat.llm_loop import (
+    construct_message_history,
+    extend_search_scope_with_indexed_files,
+)
 from onyx.chat.llm_step import run_llm_step, run_llm_step_pkt_generator
 from onyx.chat.models import ChatMessageSimple, LlmStepResult, ToolCallSimple
 from onyx.chat.prompt_utils import build_language_section, with_language_section
@@ -67,6 +70,7 @@ from onyx.prompts.deep_research.research_agent import (
     RESEARCH_AGENT_PROMPT,
     RESEARCH_AGENT_PROMPT_REASONING,
     RESEARCH_REPORT_PROMPT,
+    RESEARCH_REPORT_RETRY_NUDGE,
     USER_REPORT_QUERY,
 )
 from onyx.prompts.prompt_utils import get_current_llm_day_time
@@ -189,6 +193,8 @@ def generate_intermediate_report(
     is_reasoning_model: bool,
     reasoning_effort: ReasoningEffort = ReasoningEffort.LOW,
     should_abort: Callable[[], bool] | None = None,
+    tool_response_digests: dict[str, str] | None = None,
+    indexed_file_notes: dict[str, str] | None = None,
 ) -> str:
     # NOTE: This step outputs a lot of tokens and has been observed to run for more than 10 minutes in a nontrivial percentage of
     # research tasks. This is also model / inference provider dependent.
@@ -241,6 +247,13 @@ def generate_intermediate_report(
             reminder_message=reminder_message,
             context_files=None,
             available_tokens=_subagent_context_tokens(llm),
+            token_counter=token_counter,
+            # A long research history overflows here too; compacted tool
+            # responses carry their digests (and indexed-page notes) so the
+            # report keeps findings instead of bare compaction notices.
+            tool_response_digests=tool_response_digests,
+            llm=llm,
+            indexed_file_notes=indexed_file_notes,
         )
 
         def _start_report_step(
@@ -271,16 +284,26 @@ def generate_intermediate_report(
 
         final_report = llm_step_result.answer
         if not final_report or not final_report.strip():
-            # Thinking models can spend the whole generation cap on native
-            # reasoning before any answer token (finish_reason=length, empty
-            # answer). One retry with a doubled budget instead of failing the
-            # call and losing everything the sub-agent gathered.
+            # Two observed empty-answer shapes, both losing everything the
+            # sub-agent gathered: (a) thinking models spending the whole
+            # generation cap on native reasoning before any answer token
+            # (finish_reason=length) and (b) thinking models ending the
+            # reasoning trace at finish_reason=stop with an empty answer,
+            # often with further searches planned that this tool-less step
+            # cannot run. One retry with an explicit report nudge plus a
+            # doubled budget covers both instead of failing the call.
             logger.warning(
                 "Intermediate report step produced no answer for task "
-                "(finish_reason=%s); retrying with a doubled generation budget",
+                "(finish_reason=%s); retrying with an explicit report nudge",
                 llm_step_result.finish_reason,
             )
             state_container = ChatStateContainer()
+            nudge_msg = ChatMessageSimple(
+                message=RESEARCH_REPORT_RETRY_NUDGE,
+                token_count=token_counter(RESEARCH_REPORT_RETRY_NUDGE),
+                message_type=MessageType.USER,
+            )
+            research_history = [*research_history, nudge_msg]
             llm_step_result = _pump_intermediate_report_packets(
                 _start_report_step(generation_max_tokens * 2), emitter, placement
             )
@@ -309,6 +332,33 @@ def generate_intermediate_report(
             )
 
         return final_report
+
+
+def _record_indexed_files(
+    tool_response: ToolResponse,
+    tools: list[Tool],
+    indexed_file_notes: dict[str, str],
+) -> None:
+    """Share one open_url response's indexed pages with the rest of the run.
+
+    Pages the call saved + indexed become visible to the whole run's
+    internal search right away — sibling sub-agents share these tool
+    instances (the orchestrator fans out serially on this deployment). The
+    note rides on the response's compaction stub if the history overflows
+    later. Callers pass only responses with a valid tool_call reference.
+    """
+    if not tool_response.indexed_files:
+        return
+    extend_search_scope_with_indexed_files(tools, tool_response.indexed_files)
+    tc = tool_response.tool_call
+    assert tc is not None  # Already filtered above
+    names = ", ".join(ref.name for ref in tool_response.indexed_files)
+    indexed_file_notes[tc.tool_call_id] = (
+        "The full text of this fetch was saved as "
+        f"searchable document(s): {names}. Use "
+        "internal_search (or read_file) for specific "
+        "details instead of re-opening the URL."
+    )
 
 
 def run_research_agent_call(
@@ -366,6 +416,14 @@ def run_research_agent_call(
                 message_type=MessageType.USER,
             )
             msg_history: list[ChatMessageSimple] = [initial_user_message]
+
+            # Compaction plumbing for this sub-agent's history (see
+            # tool_response_digest): stubbed tool responses carry digests,
+            # and responses whose pages were indexed as searchable files
+            # carry the search-instead-of-refetch note. Per-call dicts are
+            # thread-safe here: each sub-agent owns its own.
+            tool_response_digests: dict[str, str] = {}
+            indexed_file_notes: dict[str, str] = {}
 
             citation_mapping: dict[int, str] = {}
             most_recent_reasoning: str | None = None
@@ -453,6 +511,10 @@ def run_research_agent_call(
                         0,
                         _subagent_context_tokens(llm) - tool_token_budget,
                     ),
+                    token_counter=token_counter,
+                    tool_response_digests=tool_response_digests,
+                    llm=llm,
+                    indexed_file_notes=indexed_file_notes,
                 )
 
                 # Use think tool processor for non-reasoning models to convert
@@ -537,6 +599,8 @@ def run_research_agent_call(
                             tab_index=tab_index,
                         ),
                         should_abort=should_abort_from_connected(check_is_connected),
+                        tool_response_digests=tool_response_digests,
+                        indexed_file_notes=indexed_file_notes,
                     )
                     span.span_data.output = final_report or None
                     return ResearchAgentCallResult(
@@ -656,6 +720,10 @@ def run_research_agent_call(
                         assert tc is not None  # Already filtered above
                         tool_call_tab_index = tc.placement.tab_index
 
+                        _record_indexed_files(
+                            tool_response, current_tools, indexed_file_notes
+                        )
+
                         tool = tools_by_name.get(tc.tool_name)
                         if not tool:
                             raise ValueError(
@@ -731,6 +799,8 @@ def run_research_agent_call(
                     tab_index=tab_index,
                 ),
                 should_abort=should_abort_from_connected(check_is_connected),
+                tool_response_digests=tool_response_digests,
+                indexed_file_notes=indexed_file_notes,
             )
             span.span_data.output = final_report or None
             return ResearchAgentCallResult(

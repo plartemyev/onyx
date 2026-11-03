@@ -284,6 +284,10 @@ services:
       - CONTEXTUAL_RAG_FULL_DOC_INCLUSION=1/4
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
       - MAX_LLM_CYCLES=22
+      # Tier-2 digest upgrades for compaction stubs (see api_server): deep
+      # research also runs here via scheduled Craft runs.
+      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION=true
+      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=520
       # DR temperature experiment dropped (see api_server block).
       - MAX_CHUNKS_FED_TO_CHAT=10
       - CODE_INTERPRETER_SESSIONS_ENABLED=true

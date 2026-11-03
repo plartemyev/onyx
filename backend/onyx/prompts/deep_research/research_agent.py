@@ -66,6 +66,18 @@ Cite inline as opposed to leaving all citations until the very end of the respon
 """
 
 
+# Second attempt for the intermediate report when the first produced no
+# usable answer. Thinking models have been observed ending their reasoning
+# trace with an empty answer (finish_reason=stop) — sometimes with further
+# searches planned that this tool-less step can never run. Name the
+# expected output shape explicitly.
+RESEARCH_REPORT_RETRY_NUDGE = """
+Your previous response contained no report text. Do not plan further searches and do not call tools - \
+you have no tools here and no more research cycles. Respond with the report itself now, as plain text: \
+the facts gathered in the research history, each with its [n] citation.
+""".strip()
+
+
 USER_REPORT_QUERY = """
 Please write me a report on the research topic given the context above. As a reminder, the original topic was:
 {research_topic}
