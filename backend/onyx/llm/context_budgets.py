@@ -17,10 +17,28 @@ a 50,000-token window reproduces each former absolute exactly.
 This module must stay import-light (config constants only, no DB / litellm).
 """
 
+import os
+
 from onyx.configs.model_configs import GEN_AI_NUM_RESERVED_OUTPUT_TOKENS
 
 # (numerator, denominator); denominator must be positive.
 TokenFraction = tuple[int, int]
+
+
+def _fraction_from_env(env_name: str, default: TokenFraction) -> TokenFraction:
+    """Read a TokenFraction from an env var formatted as 'numerator/denominator'."""
+    raw = os.environ.get(env_name)
+    if not raw:
+        return default
+    try:
+        numerator, denominator = raw.split("/")
+        fraction = (int(numerator), int(denominator))
+    except ValueError as e:
+        raise ValueError(
+            f"{env_name} must be formatted as 'numerator/denominator' "
+            f"(e.g. '1/4'), got {raw!r}"
+        ) from e
+    return fraction
 
 
 def scale(window_tokens: int, fraction: TokenFraction) -> int:
@@ -113,8 +131,11 @@ LLM_PROBE_OUTPUT: TokenFraction = (1, 1000)
 # Per-chunk context / per-document summary generation cap (was 100).
 CONTEXTUAL_RAG_SUMMARY_OUTPUT: TokenFraction = (1, 500)
 # Documents at or below this share of the window are embedded in full
-# instead of summarized (was 4096).
-CONTEXTUAL_RAG_FULL_DOC_INCLUSION: TokenFraction = (256, 3125)
+# instead of summarized (was 4096). Override via env as 'numerator/denominator',
+# e.g. CONTEXTUAL_RAG_FULL_DOC_INCLUSION=1/4.
+CONTEXTUAL_RAG_FULL_DOC_INCLUSION: TokenFraction = _fraction_from_env(
+    "CONTEXTUAL_RAG_FULL_DOC_INCLUSION", (256, 3125)
+)
 
 
 ###########################################################################

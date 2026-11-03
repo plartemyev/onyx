@@ -11,6 +11,7 @@ SUCCESS/CANCELED are left alone).
 """
 
 import logging
+import os
 import time
 from collections.abc import Callable, MutableMapping
 from datetime import datetime, timedelta, timezone
@@ -101,7 +102,12 @@ _PORT_BATCH_MAX_RETRIES = 5
 _PORT_BATCH_RETRY_SLEEP_S = 2
 
 
-_PORT_STALL_THRESHOLD_SECONDS = 30 * 60  # 30 minutes
+# 30 minutes by default. A slow-but-live attempt can legitimately stay silent
+# far longer: serial contextual-RAG enrichment of one huge doc is heartbeat-less
+# until the whole doc's page is re-embedded (slow-decode CPU model servers).
+_PORT_STALL_THRESHOLD_SECONDS = int(
+    os.environ.get("PORT_STALL_THRESHOLD_SECONDS") or "1800"
+)
 
 # Backoff before recreating a FAILED port stuck at the same cursor (durable error:
 # bad/over-quota embed key, deleted model) so it doesn't recreate + re-embed every

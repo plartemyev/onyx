@@ -1,3 +1,4 @@
+import os
 import time
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterator
@@ -123,7 +124,13 @@ from shared_configs.configs import MULTI_TENANT
 
 logger = setup_logger()
 
-MAX_CONTEXTUAL_RAG_WORKERS = 128  # Assume 8mb of memory per worker
+MAX_CONTEXTUAL_RAG_WORKERS = int(
+    os.environ.get("MAX_CONTEXTUAL_RAG_WORKERS") or "128"
+)  # Assume 8mb of memory per worker
+# Retries for the fallback document summary in add_chunk_summaries (initial
+# attempt + this many retries) before a doc's chunk contexts are left empty.
+FALLBACK_DOC_SUMMARY_RETRIES = 2
+FALLBACK_DOC_SUMMARY_RETRY_SLEEP_S = 5
 MAX_IMAGE_WORKERS = 16
 CONTEXTUAL_RAG_ENRICHMENT_NAME = "contextual RAG"
 IMAGE_SUMMARIZATION_ENRICHMENT_NAME = "image summarization"
@@ -972,20 +979,31 @@ def add_document_summaries(
         llm.config.max_input_tokens, CONTEXTUAL_RAG_SUMMARY_OUTPUT
     )
 
+    doc_summary = ""
     with llm_generation_span(
         llm=llm,
         flow=LLMFlow.CONTEXTUAL_RAG_DOC_SUMMARY,
         input_messages=[prompt_msg],
         content_mode=TraceContentMode.METADATA_ONLY,
     ) as span_generation:
-        response = llm.invoke(
-            prompt_msg,
-            max_tokens=summary_max_tokens,
-            reasoning_effort=CONTEXTUAL_RAG_REASONING_EFFORT,
-            total_timeout_override=CONTEXTUAL_RAG_LLM_TIMEOUT,
-        )
-        record_llm_response(span_generation, response)
-    doc_summary = llm_response_to_string(response)
+        try:
+            response = llm.invoke(
+                prompt_msg,
+                max_tokens=summary_max_tokens,
+                reasoning_effort=CONTEXTUAL_RAG_REASONING_EFFORT,
+                total_timeout_override=CONTEXTUAL_RAG_LLM_TIMEOUT,
+            )
+            record_llm_response(span_generation, response)
+        except LLMRateLimitError as e:
+            # Mirrors assign_context: degrade to no summary instead of failing
+            # the whole batch — one slow/limited call must not kill the unit.
+            logger.exception(
+                "Rate limit generating document summary: %s", e, exc_info=e
+            )
+        except Exception as e:
+            logger.exception("Error generating document summary: %s", e, exc_info=e)
+        else:
+            doc_summary = llm_response_to_string(response)
 
     for chunk in chunks_by_doc:
         chunk.doc_summary = doc_summary
@@ -1030,25 +1048,56 @@ def add_chunk_summaries(
         else chunks_by_doc[0].doc_summary
     )
     if not doc_info:
-        # This happens if the document is too long AND document summaries are turned off
-        # In this case we compute a doc summary using the LLM
+        # The document summary is missing: either USE_DOCUMENT_SUMMARY is off, or
+        # the guarded primary call above failed. Retry a couple of times before
+        # giving up on this document's chunk contexts — a transient blip (model
+        # server restart, brief contention) should not cost the doc its enrichment.
         fallback_prompt = UserMessage(
             content=DOCUMENT_SUMMARY_PROMPT.format(document=doc_content)
         )
-        with llm_generation_span(
-            llm=llm,
-            flow=LLMFlow.CONTEXTUAL_RAG_DOC_SUMMARY,
-            input_messages=[fallback_prompt],
-            content_mode=TraceContentMode.METADATA_ONLY,
-        ) as span_generation:
-            response = llm.invoke(
-                fallback_prompt,
-                max_tokens=context_max_tokens,
-                reasoning_effort=CONTEXTUAL_RAG_REASONING_EFFORT,
-                total_timeout_override=CONTEXTUAL_RAG_LLM_TIMEOUT,
-            )
-            record_llm_response(span_generation, response)
-        doc_info = llm_response_to_string(response)
+        max_attempts = 1 + FALLBACK_DOC_SUMMARY_RETRIES
+        for attempt in range(1, max_attempts + 1):
+            with llm_generation_span(
+                llm=llm,
+                flow=LLMFlow.CONTEXTUAL_RAG_DOC_SUMMARY,
+                input_messages=[fallback_prompt],
+                content_mode=TraceContentMode.METADATA_ONLY,
+            ) as span_generation:
+                try:
+                    response = llm.invoke(
+                        fallback_prompt,
+                        max_tokens=context_max_tokens,
+                        reasoning_effort=CONTEXTUAL_RAG_REASONING_EFFORT,
+                        total_timeout_override=CONTEXTUAL_RAG_LLM_TIMEOUT,
+                    )
+                    record_llm_response(span_generation, response)
+                except LLMRateLimitError as e:
+                    logger.exception(
+                        "Rate limit generating fallback document summary "
+                        "(attempt %d/%d): %s",
+                        attempt,
+                        max_attempts,
+                        e,
+                        exc_info=e,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Error generating fallback document summary (attempt %d/%d): %s",
+                        attempt,
+                        max_attempts,
+                        e,
+                        exc_info=e,
+                    )
+                else:
+                    doc_info = llm_response_to_string(response)
+            if doc_info:
+                break
+            if attempt < max_attempts:
+                time.sleep(FALLBACK_DOC_SUMMARY_RETRY_SLEEP_S)
+        if not doc_info:
+            # All attempts failed or came back empty — leave this document's
+            # chunk contexts empty rather than failing the batch.
+            return
 
     from onyx.llm.prompt_cache.processor import process_with_prompt_cache
 
