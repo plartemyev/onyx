@@ -108,6 +108,38 @@ This file provides guidance to AI agents when working with code in this reposito
   is negative-cached per base URL for 60s, then re-probed. UI scripts used for
   verification live in `web/tmp/verify_ui.ts` / `web/tmp/poll_dr.ts` /
   `web/tmp/verify_file_ui.ts` / `web/tmp/verify_docstats_ui.ts` (untracked).
+- Indexed-crawl live E2E green (2026-11-02/03, phase-5 runbook
+  `tmp/phase5-live-e2e-runbook.md`): open_url holds its response until saved
+  pages finish indexing (`_wait_until_searchable`, `OPEN_URL_INDEX_WAIT_SECONDS=90`,
+  2s polls, 0=off), then stamps `IndexedPageRef.search_ready` from the final
+  status; the LLM-facing pointer note gates on it — "use internal_search for
+  details" only when searchable, "still indexing..." on hold timeout or failure.
+  `llm_loop._extend_search_scope_with_indexed_files` adds same-turn
+  `indexed_files` to the chat-search scope, so in-turn internal_search sees the
+  pages before the files JSONB save lands. `save_chat.py` step 9 dedups indexed
+  descriptors by user_file_id within the batch (repeated open_url calls used to
+  append one descriptor per call). `doc_indexing.py` uses `setup_logger()` —
+  plain stdlib loggers are invisible in docker logs. Verified live: 3 pages
+  indexed (~30s hold), truthful notes, scoped search returning only the saved
+  files, exact mid-article quote retrieval, dedup reuse on re-open. Diagrams:
+  `docs/TOKEN_PRESSURE_FLOW.md`; investigation: `docs/INDEXED_DOC_EMPTY_CONTEXTS.md`.
+- Effective search knobs on this deployment (2026-11-03): `MAX_CHUNKS_FED_TO_CHAT=10`
+  (at 512-tok chunks this — not the secondary model window — bounds the selection
+  prompt; 50 made the ~25.6k-token selection prefill take 13-20 min on CPU and
+  tombstone at the 1200s `TOOL_EXECUTION_TIMEOUT_SECONDS` with empty results),
+  `SECONDARY_LLM_FLOW_TIMEOUT_S=600`, `TOOL_EXECUTION_TIMEOUT_SECONDS=1200`.
+  Cycle-0 "tool args" latency is the main model's think-trace decode (~19 tok/s
+  avg): trace length varies run to run — 74s to 10.5 min with no code change;
+  do not misattribute it to search/index phases.
+- OpenSearch during the PRESENT→FUTURE migration: two indices exist
+  (`danswer_chunk_<model>` = PRESENT, `...__danswer_alt_index` = FUTURE); chat
+  search reads FUTURE, the port re-embeds PRESENT→FUTURE create-only, and
+  deleted files' PRESENT copies linger until the port's orphan sweep. Query the
+  right index before concluding chunks are missing — live checks must count
+  `__danswer_alt_index` for anything indexed after the migration started.
+  User-file chunks currently carry empty `chunk_context`/`doc_summary` (no
+  contextual enrichment) — investigation + repro in
+  `docs/INDEXED_DOC_EMPTY_CONTEXTS.md`.
 - To clean up stuck `UPLOADED` user files (verified 2026-10-25): check references first
   (`chat_message.files` JSONB + `project__user_file`), then run the app's own deletion inside the
   container. `docker exec -i onyx-api_server-1 python -` with
@@ -170,6 +202,53 @@ This file provides guidance to AI agents when working with code in this reposito
   (`needsConnectors` in ToolLineItem, the Basic-user visibility filter in ToolsPopover) now use
   the backend's own availability listing (`/api/tool`, filtered by `SearchTool.is_available`,
   which counts user files). Verified headless: row renders enabled with zero connectors.
+- Contextual-RAG reindex incident (2026-11-02): switching the Context Retrieval LLM to the
+  THINKING Qwen3.6-35B (model_configuration 27, provider `simple-llm`, no extra_body) made user-file
+  port units fail 2h+ each: `add_document_summaries` (indexing_pipeline.py) sends the FULL document
+  (n_ctx 262144 → docs up to 256k tokens, 21.5k full-doc-inclusion threshold) and is the ONLY
+  unguarded contextual call — one `CONTEXTUAL_RAG_LLM_TIMEOUT` (180s, env-tunable on background)
+  breach fails the batch → 5× in-task retries → port attempt FAILED → scheduler retry. Chunk
+  contexts (`assign_context`) swallow all errors into `chunk_context=""` silently. Prefill measured
+  235 tok/s under load vs ~1265 idle → a 60k-token summary prompt = 255s loaded / 48s idle: the
+  180s budget only holds on an idle server. Qwen thinking goes to a separate `reasoning_content`
+  field and DID still fit ~524-token output caps (0 empty contexts), but wastes decode time.
+  Fix applied: killed the running port attempt (cancel_requested flag, honored at batch boundaries),
+  deleted all port_attempt rows for search_settings 7 (scheduler only recreates from FAILED/none —
+  SUCCESS/CANCELED units never re-run), repointed FUTURE row to model_configuration 29 (the
+  "(secondary)" display name, provider 3 `simple-llm-secondary` whose custom_config carries
+  `extra_body {"chat_template_kwargs": {"enable_thinking": false}}`; verified live: content
+  non-empty, reasoning None). NOTE: litellm FLATTENS extra_body into the request body — testing
+  llama.cpp with a literal `extra_body` wrapper field silently does nothing. REMAINING RISK: user
+  2a644c1a owns 4× 453-chunk 186k-token docx; their summary prefill is 147s best-idle vs 180s —
+  needs a raised CONTEXTUAL_RAG_LLM_TIMEOUT and/or a clamped summary prompt in the fork.
+- Model-server KV reuse (learned 2026-11-02): the llama.cpp 0.7.0+ fork at 8011 keeps a 16 GB
+  RAM-side pool of past KV prefills; a new call matching a similar prefill copies RAM→VRAM
+  instead of recomputing (eviction FIFO). Serial indexing (MAX_CONTEXTUAL_RAG_WORKERS=1, set in
+  the compose override alongside CONTEXTUAL_RAG_LLM_TIMEOUT=900) maximizes hits: one full-doc
+  prefill per doc (the summary call), then chunk-context calls ride the cached doc prefix.
+  Note ≤21.5k-token docs embed the FULL doc in every chunk prompt (biggest reuse win); >21.5k
+  docs use the ~500-token summary as doc_info, so their chunk calls are cheap regardless.
+  Whether a 186k-token doc's KV block fits the 16 GB pool at all is model-arch dependent —
+  watch per-doc chunk-call cadence (flat ~4-5s = misses, ~1-2s after the first call = hits).
+  Also deployed 2026-11-02: indexing_pipeline guards add_document_summaries + the fallback
+  summary in add_chunk_summaries (degrade to empty enrichment instead of failing the batch),
+  fallback retries 2× with 5s sleep (FALLBACK_DOC_SUMMARY_RETRIES / _RETRY_SLEEP_S).
+  CONTEXTUAL_RAG_FULL_DOC_INCLUSION env-ized in context_budgets.py ('num/den' format, default
+  256/3125) and set to 1/4 (65,536 @ 262k window) in the override: the 23k-60k docs get
+  full-doc chunk contexts (Q4 KV pool makes repeats ~free), 186k docs stay on summary-based
+  contexts (needle-in-haystack genericity). api_server/sandbox-proxy still run the PREVIOUS
+  image build (inert change) — recreate all three on the next backend rollout per checklist.
+- Port stall-loop fix (2026-11-03 night): the port enriches ONE doc per page with no heartbeat
+  during enrichment (port_copy.py:109-111, "kept under the stall threshold") — at ~19 tok/s
+  decode a 453-chunk doc = ~75 min silent vs the hardcoded 30-min stall watchdog → every
+  attempt of the 186k-docx unit was stall-killed, cursor never advanced (5 same-cursor
+  failures → auto-pause/backoff). Fix: PORT_STALL_THRESHOLD_SECONDS env-ized on
+  _PORT_STALL_THRESHOLD_SECONDS (tasks.py, default 1800), set 7200 on background. Gotcha:
+  raising the threshold means the sweep won't reap an ABANDONED IN_PROGRESS row for 2h —
+  terminalize it manually (UPDATE ... status='FAILED') and delete the unit's failed rows to
+  reset the same-cursor streak before expecting the scheduler to re-enqueue. With KV hits
+  (~97% cached tokens observed via the fork's /metrics) decode is the sole bottleneck:
+  ~8-13s per chunk context, ~48 min for a 290-chunk unit.
 - Telegram channel crawls and URL identity (2026-11-01): the SearXNG fork transparently serves
   bare `t.me/<channel>` crawls from the `t.me/s/<channel>` web preview, so `RenderedPage.final_url`
   carries the `/s/` URL. `open_url` matches fetched content back to the requested URL — a crawled

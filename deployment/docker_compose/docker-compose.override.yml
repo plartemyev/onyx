@@ -148,7 +148,7 @@ services:
       # pins reasoning-model temperature to 1 (stock Onyx semantics); the
       # DR_TEMPERATURE_* envs stay available in code for non-reasoning models.
       # 25 -> 50 retrieved chunks fed to the LLM per search
-      - MAX_CHUNKS_FED_TO_CHAT=50
+      - MAX_CHUNKS_FED_TO_CHAT=10
       # Tool-calling reimplementation evaluation: dump full request history,
       # accumulated reasoning/answer and tool calls to onyx_debug.log per step.
       # Read at import time — applies on the next api_server restart; turn off
@@ -241,7 +241,7 @@ services:
       # engine's ~34 tok/s prefill: 900s lets even the ~25.6k-token
       # document-selection prompt complete (~12.5 min) instead of timing
       # out into fallbacks. Bounded from above by CHAT_TURN_BUDGET_SECONDS.
-      - SECONDARY_LLM_FLOW_TIMEOUT_S=900
+      - SECONDARY_LLM_FLOW_TIMEOUT_S=600
       # open_url saves fetched pages into the searchable copy only when the
       # text reaches this many chars (default 6000); smaller pages stay
       # chat-context-only.
@@ -269,10 +269,23 @@ services:
     pull_policy: never
     environment:
       - LLM_SOCKET_READ_TIMEOUT=300
+      # Contextual RAG enrichment (indexing): serialize LLM calls so every chunk
+      # context is generated (no silent queue-timeout drops) and give full-doc
+      # summary prefills headroom on the CPU model server.
+      - MAX_CONTEXTUAL_RAG_WORKERS=1
+      - CONTEXTUAL_RAG_LLM_TIMEOUT=900
+      # Serial enrichment of a 453-chunk doc (~15 min summary + ~60 min chunk
+      # calls) runs before the first page write — keep the stall watchdog off
+      # its back.
+      - PORT_STALL_THRESHOLD_SECONDS=7200
+      # Docs at or below 25% of the model window get full-document chunk
+      # contexts (KV-pool reuse makes the per-chunk cost a RAM->VRAM copy);
+      # larger docs keep summary-based contexts.
+      - CONTEXTUAL_RAG_FULL_DOC_INCLUSION=1/4
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
       - MAX_LLM_CYCLES=22
       # DR temperature experiment dropped (see api_server block).
-      - MAX_CHUNKS_FED_TO_CHAT=50
+      - MAX_CHUNKS_FED_TO_CHAT=10
       - CODE_INTERPRETER_SESSIONS_ENABLED=true
       - CODE_INTERPRETER_SESSION_TTL_SECONDS=1800
       - CODE_INTERPRETER_DEFAULT_TIMEOUT_MS=180000
@@ -312,7 +325,7 @@ services:
       - WEB_CONNECTOR_IGNORED_CLASSES=sidebar,footer,vector-menu-content,vector-menu-content-list,vector-dropdown-content,vector-dropdown-label-text,vector-search-box,mw-jump-link,interlanguage-link,catlinks,printfooter,navbox,mw-editsection,material-icons
       # Secondary-flow timeout and open_url index floor (see api_server
       # above); scheduled Craft runs exercise the same flows and tools.
-      - SECONDARY_LLM_FLOW_TIMEOUT_S=900
+      - SECONDARY_LLM_FLOW_TIMEOUT_S=600
       - OPEN_URL_INDEX_MIN_CHARS=20000
       # Same EE-without-license combo as api_server above: workers resolve
       # the tier too (tier_gate, EE beat tasks, usage reporting).

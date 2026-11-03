@@ -21,6 +21,11 @@ Design rules, in the order they apply:
 4. **Stubbed pages point at searchable copies.** Saved pages carry the
    session's internal search scope (via the assistant message's file
    descriptors), so the model retrieves details instead of re-fetching.
+5. **The response waits for the searchable copy.** `open_url` holds its
+   answer (bounded by `OPEN_URL_INDEX_WAIT_SECONDS`, 2s polls) until the
+   freshly saved pages reach a terminal indexing state; the pointer note
+   only promises `internal_search` once the file is really searchable
+   (`IndexedPageRef.search_ready`, stamped from the final status).
 
 ## Main sequence: fetch, index, answer, search later
 
@@ -57,16 +62,27 @@ OPEN -> IDX: index_crawled_pages(sections)
 IDX -> IDX: skip incognito, skip < 6k chars,\ndedup by normalized link_url
 IDX -> DB: save markdown blob + UserFile(PROCESSING, link_url)
 DB -> CEL: PROCESS_SINGLE_USER_FILE
-IDX --> OPEN: [IndexedPageRef(url, user_file_id, name)]
-OPEN -> OPEN: llm JSON: indexed pages inline\n4k-char excerpt + "indexed_as" name
+IDX -> IDX: hold: poll user_file statuses until\nterminal (budget OPEN_URL_INDEX_WAIT_SECONDS)
+IDX -> IDX: stamp refs search_ready =\n(final status == COMPLETED)
+IDX --> OPEN: [IndexedPageRef(url, user_file_id, name,\nsearch_ready)]
+OPEN -> OPEN: llm JSON: indexed pages inline\n4k-char excerpt + pointer note:
+note right of OPEN
+  search_ready=true:
+  "[... use internal_search for details ...]"
+  search_ready=false (hold timed out or
+  indexing failed):
+  "[... still indexing; internal_search
+  will find it shortly ...]"
+end note
 OPEN --> LOOP: ToolResponse(indexed_files, bytes/tokens, doc_stats)
+LOOP -> LOOP: _extend_search_scope_with_indexed_files:\nchat-scope += this turn's user_file_ids\n(in-turn internal_search sees them now)
 LOOP -> LOOP: indexed_file_notes[tool_call_id] =\n"search instead of refetch"
 LOOP -> HIST: construct(cycle budget, digest cache, notes)
 HIST -> HIST: newest exchanges stay raw\n(request fits -> no compaction)
 LOOP -> LLM: cycle 1 request (excerpts raw)
 LLM --> LOOP: answer + citations
 LOOP -> CB: ToolCallInfo(indexed_files)
-CB -> DB: assistant_message.files +=\n{id, type: plain_text, user_file_id}
+CB -> DB: assistant_message.files +=\n{id, type: plain_text, user_file_id}\n(dedup by user_file_id within the batch)
 CEL -> DB: load blob, chunk, embed
 CEL -> OS: index chunks (document_id = user_file_id)
 
@@ -78,6 +94,11 @@ note right of CB
   reads files JSONB of the session's
   messages; user_file_id entries scope
   internal search to this chat
+end note
+note over CB, LOOP
+  the in-turn scope extension already added
+  these ids during turn 1, so searches work
+  before the JSONB save lands too
 end note
 CB -> OS: internal_search (session-scoped)
 OS --> CB: hits from the saved full text\n(behind the 4k excerpt)
@@ -133,10 +154,11 @@ stop
 | Piece | Location |
 | --- | --- |
 | Cycle budget + ledger, compaction, history fit | `backend/onyx/chat/llm_loop.py` |
+| Mid-turn search-scope extension (`_extend_search_scope_with_indexed_files`) | `backend/onyx/chat/llm_loop.py` |
 | Digest cache/store, lazy tier-2 upgrade | `backend/onyx/chat/tool_response_digest.py` |
-| Crawled-page indexing | `backend/onyx/tools/tool_implementations/open_url/doc_indexing.py` |
-| Excerpt + `indexed_as` in the LLM JSON | `backend/onyx/tools/tool_implementations/open_url/open_url_tool.py` |
-| Assistant-message file descriptors | `backend/onyx/chat/save_chat.py` (step 9) |
+| Crawled-page indexing + hold-until-searchable | `backend/onyx/tools/tool_implementations/open_url/doc_indexing.py` (`_wait_until_searchable`) |
+| Excerpt, pointer note gating, `indexed_as` | `backend/onyx/tools/tool_implementations/open_url/open_url_tool.py` (`_inline_content_for_section`) |
+| Assistant-message file descriptors (batch dedup) | `backend/onyx/chat/save_chat.py` (step 9) |
 | Ratios and caps | `backend/onyx/llm/context_budgets.py`, `backend/onyx/configs/app_configs.py` |
 
 ## Live values (this deployment)
@@ -147,6 +169,10 @@ stop
 | `MAX_LLM_CYCLES` | 12 (22 for scheduled runs) |
 | Fetch caps | 180,000 chars/URL, 540,000/batch |
 | Index threshold / inline excerpt | 6,000 / 4,000 chars |
+| Hold-until-searchable budget | `OPEN_URL_INDEX_WAIT_SECONDS` 90 (2s polls; 0 disables) |
+| `MAX_CHUNKS_FED_TO_CHAT` | 10 (bounds the selection prompt and the search feed; at 512-tok chunks 50 blew the 9B-era selection prefill past every budget) |
+| `SECONDARY_LLM_FLOW_TIMEOUT_S` | 600 (secondary flows run on the GPU pair; thinking off via provider `extra_body`) |
+| `TOOL_EXECUTION_TIMEOUT_SECONDS` | 1200 — the search tool's whole batch must fit inside this |
 | Digest stub cap / summary output | 2,400 chars / 11/1250 of window (~2,259 tok) |
 | Summary input cap | 400,000 chars (head+tail kept) |
 | Cross-turn digest store | 1,024 entries, in-process |
