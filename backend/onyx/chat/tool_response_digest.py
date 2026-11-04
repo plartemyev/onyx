@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Callable
 
+from onyx.configs.chat_configs import dr_is_thinking_model, dr_step_generation_budget
 from onyx.configs.model_configs import (
     GEN_AI_TOOL_RESPONSE_DIGEST_MAX_CHARS,
     GEN_AI_TOOL_RESPONSE_DIGESTS,
@@ -36,8 +37,11 @@ from onyx.configs.model_configs import (
     GEN_AI_TOOL_RESPONSE_SUMMARIZATION_MAX_INPUT_CHARS,
     GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS,
 )
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.llm.context_budgets import TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT, scale
+from onyx.llm.factory import get_secondary_llm
 from onyx.llm.interfaces import LLM
+from onyx.llm.model_capabilities import model_is_reasoning_model
 from onyx.llm.models import ChatCompletionMessage, ReasoningEffort, UserMessage
 from onyx.prompts.chat_prompts import (
     TOOL_CALL_RESPONSE_COMPACTED_DIGEST,
@@ -189,6 +193,23 @@ def _summarize_once(text: str, llm: LLM) -> str:
     """
     text = _cap_summary_input(text)
     messages = _summary_messages(text)
+    # max_tokens counts native reasoning tokens: on a thinking model the
+    # cap must include the thinking reserve on top of the answer budget,
+    # or the whole cap burns inside the think trace and the summary comes
+    # back empty (observed live: finish_reason=length with empty content,
+    # llama.cpp ignoring reasoning_effort=OFF). Same scheme as the DR
+    # steps; thinking-off engines never touch the reserve. The name
+    # override matters here: on the chat-model fallback path the thinking
+    # primary is a custom gguf the capability registry cannot classify.
+    answer_budget = scale(llm.config.max_input_tokens, _SUMMARY_MAX_TOKENS_FRACTION)
+    is_thinking_model = dr_is_thinking_model(
+        llm.config.model_name,
+        model_is_reasoning_model(
+            llm.config.model_name,
+            llm.config.model_provider,
+            api_base=llm.config.api_base,
+        ),
+    )
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool-digest")
     try:
         with llm_generation_span(
@@ -199,8 +220,8 @@ def _summarize_once(text: str, llm: LLM) -> str:
             future = executor.submit(
                 llm.invoke,
                 messages,
-                max_tokens=scale(
-                    llm.config.max_input_tokens, _SUMMARY_MAX_TOKENS_FRACTION
+                max_tokens=dr_step_generation_budget(
+                    answer_budget, is_thinking_model, llm.config.max_input_tokens
                 ),
                 temperature=0.0,
                 reasoning_effort=ReasoningEffort.OFF,
@@ -337,6 +358,31 @@ def _run_digest_upgrade(
             _INFLIGHT_DIGEST_UPGRADES.discard(tool_call_id)
 
 
+def _resolve_upgrade_llm(fallback_llm: LLM) -> LLM:
+    """The engine a tier-2 upgrade should run on: the secondary model when
+    the deployment designates one, else the passed chat model.
+
+    Upgrades are auxiliary background work: on the primary engine they
+    contend with the chat/DR loop for its slot (observed: upgrades queue
+    behind whole DR cycles and time out into the deterministic fallback),
+    and a thinking primary burns the output cap inside its think trace —
+    summaries come back empty. A designated secondary carries the
+    deployment's no-thinking tuning and serves exactly this kind of
+    auxiliary flow.
+    """
+    try:
+        with get_session_with_current_tenant() as db_session:
+            secondary = get_secondary_llm(db_session)
+    except Exception:
+        logger.warning(
+            "Tool response digest: secondary model lookup failed; the "
+            "upgrade will run on the chat model",
+            exc_info=True,
+        )
+        return fallback_llm
+    return secondary or fallback_llm
+
+
 def _schedule_digest_upgrade(
     tool_call_id: str,
     text: str,
@@ -365,9 +411,13 @@ def _schedule_digest_upgrade(
             )
             return
         _INFLIGHT_DIGEST_UPGRADES.add(tool_call_id)
+    # Resolve the upgrade engine here, in the caller's thread, so the
+    # secondary-model lookup sees the request's tenant context; the
+    # background thread only calls the engine.
+    upgrade_llm = _resolve_upgrade_llm(llm)
     threading.Thread(
         target=_run_digest_upgrade,
-        args=(tool_call_id, text, cache, llm),
+        args=(tool_call_id, text, cache, upgrade_llm),
         name=f"digest-upgrade-{tool_call_id[:8]}",
         daemon=True,
     ).start()

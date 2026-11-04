@@ -122,9 +122,13 @@ services:
       # (serial same-origin traffic, small local model, one GPU server).
       - DR_MAX_PARALLEL_SUBAGENTS=1
       # Fallback for thinking-capable local models the capability registry
-      # cannot classify. Primary source is the engine itself: Ollama's
-      # /api/show reports per-model capabilities (cached in-process).
-      # - DR_THINKING_MODEL_OVERRIDES=ornith-1.5:9b
+      # cannot classify (custom gguf via openai_compatible has no
+      # capability API): the 35B is a thinking model (run-1/run-2
+      # evidence). With this, the DR tool-call steps and the tier-2
+      # digest calls carry the thinking reserve on the first attempt
+      # instead of discovering it via retries — engine-reported
+      # capability stays the primary source for engines that have one.
+      - DR_THINKING_MODEL_OVERRIDES=/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
       # Keep the stream buffer replayable across disconnects for the whole run (48h)
       - CHAT_STREAM_BUFFER_TTL_S=172800
       # Slow inference: allow long gaps between streamed chunks
@@ -138,11 +142,19 @@ services:
       # numbers) instead of re-running identical calls — the failure mode
       # that turned the 2026-09-30 Prachuap session into a 40-minute turn.
       # Falls back to the tier-1 digest on timeout/error.
+      # Tier-2 digest upgrades for compaction stubs (deterministic tier 1
+      # is immediate; the LLM upgrade replaces it in the background). The
+      # upgrade runs on the secondary model when one is designated (see
+      # tool_response_digest._resolve_upgrade_llm), so it neither races
+      # the chat/DR loop for the primary's slot nor produces thinking-mode
+      # empty summaries; the primary is only the fallback engine.
       - GEN_AI_TOOL_RESPONSE_SUMMARIZATION=true
-      # 520s: big page fetches (tens of KB) need far more prompt-processing
-      # time on the local model than the 30s default allows. On timeout the
-      # digest call is abandoned and the deterministic tier-1 digest is used.
-      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=520
+      # 1800s: double headroom over this deployment's worst realistic
+      # upgrade — queue behind at most one DR cycle (~10.5 min observed on
+      # the primary fallback path) plus loaded prefill and a decode that
+      # may carry the thinking reserve. On timeout the upgrade is
+      # abandoned and the deterministic tier-1 digest stays in place.
+      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=1800
       # DR per-phase temperature experiment dropped: with engine-reported
       # thinking capability, ornith counts as a reasoning model and multi_llm
       # pins reasoning-model temperature to 1 (stock Onyx semantics); the
@@ -242,6 +254,15 @@ services:
       # document-selection prompt complete (~12.5 min) instead of timing
       # out into fallbacks. Bounded from above by CHAT_TURN_BUDGET_SECONDS.
       - SECONDARY_LLM_FLOW_TIMEOUT_S=600
+      # Output cap for secondary-flow invokes. The code default (256) was
+      # sized to truncate a thinking-mode model into graceful fallbacks;
+      # this deployment's secondary runs thinking-off via the provider's
+      # chat_template_kwargs, so the cap only needs to bound runaways.
+      # 1024 gives the verbose flows (query expansion, memory update)
+      # real headroom instead of mid-sentence truncation. Tier-2 digest
+      # upgrades are not governed by this cap: they carry their own
+      # window-scaled summary budget (see tool_response_digest).
+      - SECONDARY_LLM_MAX_OUTPUT_TOKENS=1024
       # open_url saves fetched pages into the searchable copy only when the
       # text reaches this many chars (default 6000); smaller pages stay
       # chat-context-only.
@@ -284,10 +305,14 @@ services:
       - CONTEXTUAL_RAG_FULL_DOC_INCLUSION=1/4
       # Craft/scheduled chat runs in workers use the same loop + retrieval caps
       - MAX_LLM_CYCLES=22
+      # Thinking-model override (see api_server): scheduled runs hit the
+      # same DR steps and digest calls.
+      - DR_THINKING_MODEL_OVERRIDES=/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
       # Tier-2 digest upgrades for compaction stubs (see api_server): deep
-      # research also runs here via scheduled Craft runs.
+      # research also runs here via scheduled Craft runs. Same secondary
+      # routing and double-headroom timeout as api_server.
       - GEN_AI_TOOL_RESPONSE_SUMMARIZATION=true
-      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=520
+      - GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS=1800
       # DR temperature experiment dropped (see api_server block).
       - MAX_CHUNKS_FED_TO_CHAT=10
       - CODE_INTERPRETER_SESSIONS_ENABLED=true
@@ -330,6 +355,7 @@ services:
       # Secondary-flow timeout and open_url index floor (see api_server
       # above); scheduled Craft runs exercise the same flows and tools.
       - SECONDARY_LLM_FLOW_TIMEOUT_S=600
+      - SECONDARY_LLM_MAX_OUTPUT_TOKENS=1024
       - OPEN_URL_INDEX_MIN_CHARS=20000
       # Same EE-without-license combo as api_server above: workers resolve
       # the tier too (tier_gate, EE beat tasks, usage reporting).

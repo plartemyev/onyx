@@ -13,7 +13,11 @@ from onyx.chat.tool_response_digest import (
     extractive_digest,
     stub_message_for,
 )
-from onyx.llm.context_budgets import TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT, scale
+from onyx.llm.context_budgets import (
+    DR_THINKING_RESERVE_BUDGET,
+    TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT,
+    scale,
+)
 
 
 def _search_docs_payload(num_results: int, snippet_chars: int = 500) -> str:
@@ -155,6 +159,9 @@ def test_summary_used_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         tool_response_digest, "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", True
     )
+    monkeypatch.setattr(
+        tool_response_digest, "model_is_reasoning_model", lambda *_args, **_kwargs: False
+    )
     llm = _mock_llm(summary="Pantip threads about mangrove fires; 87k-member group.")
     text = _search_docs_payload(num_results=8)
     digest = compute_tool_response_digest(text, llm=llm)
@@ -165,6 +172,112 @@ def test_summary_used_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     _, kwargs = llm.invoke.call_args
     assert kwargs["temperature"] == 0.0
     assert kwargs["max_tokens"] == scale(50_000, TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT)
+
+
+def test_summary_max_tokens_includes_thinking_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a thinking model max_tokens counts native reasoning too, so the
+    digest call carries the thinking reserve on top of the answer budget —
+    without it the whole cap burns inside the think trace and the summary
+    comes back empty (observed live 2026-11-04: finish_reason=length with
+    empty content, llama.cpp ignoring reasoning_effort=OFF)."""
+    monkeypatch.setattr(
+        tool_response_digest, "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", True
+    )
+    monkeypatch.setattr(
+        tool_response_digest, "model_is_reasoning_model", lambda *_args, **_kwargs: True
+    )
+    llm = _mock_llm(summary="Pantip threads about mangrove fires; 87k-member group.")
+    digest = compute_tool_response_digest(_search_docs_payload(num_results=8), llm=llm)
+    assert digest == "Pantip threads about mangrove fires; 87k-member group."
+    _, kwargs = llm.invoke.call_args
+    assert kwargs["max_tokens"] == scale(
+        50_000, TOOL_RESPONSE_DIGEST_SUMMARY_OUTPUT
+    ) + scale(50_000, DR_THINKING_RESERVE_BUDGET)
+
+
+def test_upgrade_routes_to_secondary_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tier-2 upgrades run on the deployment's designated secondary model —
+    they are auxiliary background work and must not contend with the chat
+    or DR loop for the primary engine's slot."""
+    monkeypatch.setattr(
+        tool_response_digest, "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", True
+    )
+    primary = _mock_llm(summary="primary summary")
+    secondary = _mock_llm(summary="secondary summary")
+
+    class _FakeSession:
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        tool_response_digest,
+        "get_session_with_current_tenant",
+        lambda *_args, **_kwargs: _FakeSession(),
+    )
+    monkeypatch.setattr(
+        tool_response_digest,
+        "get_secondary_llm",
+        lambda _db_session: secondary,
+    )
+    captured: list[object] = []
+    monkeypatch.setattr(
+        tool_response_digest,
+        "_run_digest_upgrade",
+        lambda _tool_call_id, _text, _cache, llm: captured.append(llm),
+    )
+    cache: dict[str, str] = {}
+    tool_response_digest._schedule_digest_upgrade(
+        "tc_1", _search_docs_payload(num_results=8), cache, primary
+    )
+    time.sleep(0.05)  # let the upgrade thread run
+    assert captured == [secondary]
+    with tool_response_digest._DIGEST_STATE_LOCK:
+        tool_response_digest._INFLIGHT_DIGEST_UPGRADES.discard("tc_1")
+
+
+def test_upgrade_falls_back_to_chat_model_without_secondary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tool_response_digest, "GEN_AI_TOOL_RESPONSE_SUMMARIZATION", True
+    )
+    primary = _mock_llm(summary="primary summary")
+
+    class _FakeSession:
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        tool_response_digest,
+        "get_session_with_current_tenant",
+        lambda *_args, **_kwargs: _FakeSession(),
+    )
+    monkeypatch.setattr(
+        tool_response_digest,
+        "get_secondary_llm",
+        lambda _db_session: None,
+    )
+    captured: list[object] = []
+    monkeypatch.setattr(
+        tool_response_digest,
+        "_run_digest_upgrade",
+        lambda _tool_call_id, _text, _cache, llm: captured.append(llm),
+    )
+    tool_response_digest._schedule_digest_upgrade(
+        "tc_1", _search_docs_payload(num_results=8), {}, primary
+    )
+    time.sleep(0.05)
+    assert captured == [primary]
+    with tool_response_digest._DIGEST_STATE_LOCK:
+        tool_response_digest._INFLIGHT_DIGEST_UPGRADES.discard("tc_1")
 
 
 def test_summary_disabled_uses_extractive(monkeypatch: pytest.MonkeyPatch) -> None:

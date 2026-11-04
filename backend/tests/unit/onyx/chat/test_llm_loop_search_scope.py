@@ -1,7 +1,7 @@
 """Unit tests for the in-turn search scope extension (llm_loop)."""
 
+from onyx.chat.llm_loop import extend_search_scope_with_indexed_files
 from onyx.context.search.models import PersonaSearchInfo
-from onyx.chat.llm_loop import _extend_search_scope_with_indexed_files
 from onyx.tools.models import IndexedPageRef
 from onyx.tools.tool_implementations.search.search_tool import SearchTool
 
@@ -31,7 +31,7 @@ def _ref(user_file_id: str) -> IndexedPageRef:
 def test_extends_chat_scoped_tool_scope() -> None:
     tool = _bare_search_tool(chat_scoped=True, attached=["uf-1"])
 
-    _extend_search_scope_with_indexed_files([tool], [_ref("uf-2"), _ref("uf-3")])
+    extend_search_scope_with_indexed_files([tool], [_ref("uf-2"), _ref("uf-3")])
 
     assert sorted(tool.persona_search_info.attached_document_ids) == [
         "uf-1",
@@ -43,7 +43,7 @@ def test_extends_chat_scoped_tool_scope() -> None:
 def test_dedupes_known_ids() -> None:
     tool = _bare_search_tool(chat_scoped=True, attached=["uf-1"])
 
-    _extend_search_scope_with_indexed_files([tool], [_ref("uf-1")])
+    extend_search_scope_with_indexed_files([tool], [_ref("uf-1")])
 
     assert tool.persona_search_info.attached_document_ids == ["uf-1"]
 
@@ -53,6 +53,6 @@ def test_ignores_unscoped_search_tool() -> None:
     scope narrowed by chat turn artifacts."""
     tool = _bare_search_tool(chat_scoped=False, attached=[])
 
-    _extend_search_scope_with_indexed_files([tool], [_ref("uf-1")])
+    extend_search_scope_with_indexed_files([tool], [_ref("uf-1")])
 
     assert tool.persona_search_info.attached_document_ids == []

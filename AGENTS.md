@@ -262,10 +262,17 @@ This file provides guidance to AI agents when working with code in this reposito
   (run 1 failed with reasoning-only output at finish_reason=stop; run 2
   with the fix wrote both reports + a cited final answer). Regression
   test: `backend/tests/unit/onyx/deep_research/test_dr_compaction_wiring.py`;
-  runbook docs in `docs/TOKEN_PRESSURE_FLOW.md`. Known follow-ups: tier-2
-  digest upgrades race the DR loop on the primary engine (deterministic
-  fallback is safe; route to the secondary model later), citation markers
-  can be lost when a report compacts (ledger idea in the doc).
+  runbook docs in `docs/TOKEN_PRESSURE_FLOW.md`. Follow-up hardening
+  (2026-11-04, later deploy): tier-2 digest upgrades route to the
+  SECONDARY model (`_resolve_upgrade_llm`; no-thinking provider tuning
+  applies) with the chat model as fallback, the digest call's output cap
+  includes the thinking reserve on thinking models (run 2's upgrades
+  burned the answer-only cap inside the think trace → empty summaries),
+  per-attempt wall clock 1800s (`GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS`,
+  double headroom over queue+prefill+decode here), and
+  `SECONDARY_LLM_MAX_OUTPUT_TOKENS=1024` (256 was the thinking-truncation
+  guard; thinking is off on the secondary). Remaining follow-up: citation
+  markers can be lost when a report compacts (ledger idea in the doc).
 - Telegram channel crawls and URL identity (2026-11-01): the SearXNG fork transparently serves
   bare `t.me/<channel>` crawls from the `t.me/s/<channel>` web preview, so `RenderedPage.final_url`
   carries the `/s/` URL. `open_url` matches fetched content back to the requested URL — a crawled

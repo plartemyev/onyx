@@ -191,10 +191,20 @@ generation budget; run 2 wrote both intermediate reports and a cited
 final answer without triggering it. Regression test:
 `backend/tests/unit/onyx/deep_research/test_dr_compaction_wiring.py`.
 
+Tier-2 digest upgrades (2026-11-04, after run 2's upgrade failures):
+- Upgrades run on the deployment's designated secondary model when one
+  exists (`_resolve_upgrade_llm`), falling back to the chat model. The
+  secondary carries the no-thinking tuning, and the upgrade stops
+  contending with the DR loop for the primary's slot.
+- The digest call's output budget includes the thinking reserve on
+  thinking models (same `dr_step_generation_budget` scheme as the DR
+  steps): run 2's upgrades burned the old answer-only cap inside the
+  think trace and returned empty summaries.
+- Wall clock per upgrade attempt: 1800s (double headroom over the worst
+  realistic queue + prefill + decode on this deployment); on timeout the
+  deterministic tier-1 digest stays in place.
+
 Known limitations:
-- Tier-2 digest upgrades run on the primary engine and race the DR loop
-  for it; under load they time out into the deterministic fallback (by
-  design). Routing them to the secondary model is the follow-up.
 - A compacted sub-agent report can lose its citation markers, so the
   final report may under-cite documents that stayed in
   `final_documents`. The citation ledger idea (marker -> doc + one-line
@@ -212,8 +222,10 @@ Known limitations:
 | Hold-until-searchable budget | `OPEN_URL_INDEX_WAIT_SECONDS` 90 (2s polls; 0 disables) |
 | `MAX_CHUNKS_FED_TO_CHAT` | 10 (bounds the selection prompt and the search feed; at 512-tok chunks 50 blew the 9B-era selection prefill past every budget) |
 | `SECONDARY_LLM_FLOW_TIMEOUT_S` | 600 (secondary flows run on the GPU pair; thinking off via provider `extra_body`) |
+| `SECONDARY_LLM_MAX_OUTPUT_TOKENS` | 1024 (code default 256 was the thinking-truncation guard; thinking is off on the secondary, so the cap only bounds runaways) |
 | `TOOL_EXECUTION_TIMEOUT_SECONDS` | 1200 — the search tool's whole batch must fit inside this |
-| Digest stub cap / summary output | 2,400 chars / 11/1250 of window (~2,259 tok) |
+| Digest stub cap / summary output | 2,400 chars / 11/1250 of window (~2,259 tok) + thinking reserve on thinking models |
+| Summary upgrade engine / timeout | secondary model when designated (else chat model) / 1800s per attempt |
 | Summary input cap | 400,000 chars (head+tail kept) |
 | Cross-turn digest store | 1,024 entries, in-process |
 | In-flight digest upgrades | max 4 |
