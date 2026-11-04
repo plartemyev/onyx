@@ -271,7 +271,18 @@ This file provides guidance to AI agents when working with code in this reposito
   per-attempt wall clock 1800s (`GEN_AI_TOOL_RESPONSE_SUMMARIZATION_TIMEOUT_SECONDS`,
   double headroom over queue+prefill+decode here), and
   `SECONDARY_LLM_MAX_OUTPUT_TOKENS=1024` (256 was the thinking-truncation
-  guard; thinking is off on the secondary). Remaining follow-up: citation
+  guard; thinking is off on the secondary). Second deploy iteration
+  (same day): `DR_THINKING_MODEL_OVERRIDES=/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`
+  — the registry cannot classify the custom gguf, so the override drives
+  the thinking reserve for digest calls and DR tool-call steps (first
+  attempt instead of discover-by-retry). Topology correction: the
+  SECONDARY flow now designates the 35B via provider
+  `simple-llm-secondary` (carries the `enable_thinking: false`
+  extra_body), and BOTH providers point at
+  `http://172.29.153.35:8011` — the 9B engine at 8013 referenced in the
+  2026-11-02/03 notes below is retired, so upgrades still queue on the
+  shared 8011 server (the win is no-thinking output + provider policy,
+  not a separate slot). Remaining follow-up: citation
   markers can be lost when a report compacts (ledger idea in the doc).
 - Telegram channel crawls and URL identity (2026-11-01): the SearXNG fork transparently serves
   bare `t.me/<channel>` crawls from the `t.me/s/<channel>` web preview, so `RenderedPage.final_url`

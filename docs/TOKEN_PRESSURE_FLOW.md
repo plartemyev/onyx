@@ -194,15 +194,20 @@ final answer without triggering it. Regression test:
 Tier-2 digest upgrades (2026-11-04, after run 2's upgrade failures):
 - Upgrades run on the deployment's designated secondary model when one
   exists (`_resolve_upgrade_llm`), falling back to the chat model. The
-  secondary carries the no-thinking tuning, and the upgrade stops
-  contending with the DR loop for the primary's slot.
+  secondary carries the no-thinking tuning (`enable_thinking: false`
+  via the provider's `extra_body`), and the upgrade stops contending
+  with the DR loop's requests. Note the deployment since consolidated
+  both providers onto the 8011 server: the secondary designation is the
+  35B via `simple-llm-secondary` (no-thinking), not the retired 9B.
 - The digest call's output budget includes the thinking reserve on
   thinking models (same `dr_step_generation_budget` scheme as the DR
   steps): run 2's upgrades burned the old answer-only cap inside the
-  think trace and returned empty summaries.
+  think trace and returned empty summaries. `DR_THINKING_MODEL_OVERRIDES`
+  classifies the custom gguf the capability registry cannot.
 - Wall clock per upgrade attempt: 1800s (double headroom over the worst
   realistic queue + prefill + decode on this deployment); on timeout the
-  deterministic tier-1 digest stays in place.
+  deterministic tier-1 digest stays in place. Live probe on the deployed
+  image: 508-char summary in ~52s against the 1800s budget.
 
 Known limitations:
 - A compacted sub-agent report can lose its citation markers, so the
@@ -226,6 +231,7 @@ Known limitations:
 | `TOOL_EXECUTION_TIMEOUT_SECONDS` | 1200 — the search tool's whole batch must fit inside this |
 | Digest stub cap / summary output | 2,400 chars / 11/1250 of window (~2,259 tok) + thinking reserve on thinking models |
 | Summary upgrade engine / timeout | secondary model when designated (else chat model) / 1800s per attempt |
+| `DR_THINKING_MODEL_OVERRIDES` | `/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` (the registry cannot classify the custom gguf; this drives the thinking reserve for digest calls and DR tool-call steps) |
 | Summary input cap | 400,000 chars (head+tail kept) |
 | Cross-turn digest store | 1,024 entries, in-process |
 | In-flight digest upgrades | max 4 |
