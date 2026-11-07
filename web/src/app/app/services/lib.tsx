@@ -486,15 +486,22 @@ export function processRawChatHistory(
       retrievalType = RetrievalType.None;
     }
 
+    // An interrupted run (writer died before finalizing the row) must not
+    // render as a normal assistant answer: route it through the error UI,
+    // which shows the placeholder text next to a regenerate button.
+    const isInterrupted = messageInfo.status === "interrupted";
+
     const message: Message = {
       // for existing messages, use the message_id as the nodeId
       // all that matters is that the nodeId is unique for a given chat session
       nodeId: messageInfo.message_id,
       messageId: messageInfo.message_id,
       message: messageInfo.message,
-      type: messageInfo.error
-        ? "error"
-        : (messageInfo.message_type as "user" | "assistant"),
+      type:
+        messageInfo.error || isInterrupted
+          ? "error"
+          : (messageInfo.message_type as "user" | "assistant"),
+      isRetryable: isInterrupted ? true : undefined,
       files: messageInfo.files,
       alternateAgentID:
         messageInfo.alternate_assistant_id !== null

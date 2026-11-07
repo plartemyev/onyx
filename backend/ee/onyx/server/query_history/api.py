@@ -25,6 +25,8 @@ from onyx.auth.permissions import require_permission
 from onyx.auth.users import get_display_email
 from onyx.background.celery.versioned_apps.client import app as client_app
 from onyx.background.task_utils import construct_query_history_report_name
+from onyx.cache.factory import get_cache_backend
+from onyx.chat.chat_processing_checker import get_processing_run_id
 from onyx.chat.chat_utils import create_chat_history_chain
 from onyx.configs.constants import (
     PUBLIC_API_TAGS,
@@ -50,10 +52,13 @@ from onyx.file_store.file_store import get_default_file_store
 from onyx.server.documents.models import PaginatedReturn
 from onyx.server.query_and_chat.models import ChatSessionDetails, ChatSessionsResponse
 from onyx.server.settings.store import load_settings
+from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import parallel_yield
 from shared_configs.contextvars import get_current_tenant_id
 
 router = APIRouter()
+
+logger = setup_logger()
 
 ONYX_ANONYMIZED_EMAIL = "anonymous@anonymous.invalid"
 
@@ -137,6 +142,14 @@ def snapshot_from_chat_session(
 
     flow_type = SessionType.SLACK if chat_session.onyxbot_flow else SessionType.CHAT
 
+    # Marks placeholder rows of the in-flight run as PROCESSING instead of
+    # the misleading terminated-response text.
+    try:
+        live_run_id = get_processing_run_id(chat_session.id, get_cache_backend())
+    except Exception:
+        logger.exception("Failed to read processing fence for chat session")
+        live_run_id = None
+
     return ChatSessionSnapshot(
         id=chat_session.id,
         user_email=get_display_email(
@@ -144,7 +157,7 @@ def snapshot_from_chat_session(
         ),
         name=chat_session.description,
         messages=[
-            MessageSnapshot.build(message)
+            MessageSnapshot.build(message, live_run_id=live_run_id)
             for message in messages
             if message.message_type != MessageType.SYSTEM
         ],

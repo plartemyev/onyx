@@ -5920,6 +5920,10 @@
         "header": {
           "title": "Details der Chat-Sitzung"
         },
+        "status": {
+          "interrupted": "Die Antwort wurde vor Abschluss unterbrochen und es wurde keine Antwort gespeichert. Der Benutzer kann sie neu generieren.",
+          "processing": "Die Generierung läuft auf dem Server noch. Die Antwort erscheint hier, sobald der Lauf beendet ist."
+        },
         "referenceDocuments": {
           "title": "Referenzdokumente"
         },

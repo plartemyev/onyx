@@ -307,7 +307,9 @@ const ChatUI = React.memo(
 
           {/* Error banner when last message is user message or error type.
               Skip for multi-model per-panel errors — those are shown in
-              their own panel, not as a global banner. */}
+              their own panel, not as a global banner. For reloaded sessions
+              the store error is empty; the node's own text (placeholder or
+              saved error detail) is the honest fallback. */}
           {(((error !== null || loadError !== null) &&
             messages[messages.length - 1]?.type === "user") ||
             (messages[messages.length - 1]?.type === "error" &&
@@ -315,7 +317,12 @@ const ChatUI = React.memo(
             <div className={cn("p-4 w-full self-center", msgWidth)}>
               <ErrorBanner
                 resubmit={onResubmit}
-                error={error || loadError || ""}
+                error={
+                  error ||
+                  loadError ||
+                  messages[messages.length - 1]?.message ||
+                  ""
+                }
                 errorCode={
                   messages[messages.length - 1]?.errorCode || undefined
                 }

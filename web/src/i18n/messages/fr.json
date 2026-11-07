@@ -5922,6 +5922,10 @@
         "header": {
           "title": "Détails de la session de chat"
         },
+        "status": {
+          "interrupted": "La réponse a été interrompue avant son achèvement et aucune réponse n'a été enregistrée. L'utilisateur peut la régénérer.",
+          "processing": "La génération est toujours en cours sur le serveur. La réponse apparaîtra ici une fois l'exécution terminée."
+        },
         "referenceDocuments": {
           "title": "Documents de référence"
         },

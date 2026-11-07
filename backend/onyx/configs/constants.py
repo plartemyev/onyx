@@ -399,6 +399,28 @@ class ChatMessageSimpleType(str, Enum):
     FILE_TEXT = "file_text"
 
 
+class ChatMessageStatus(str, Enum):
+    """Derived lifecycle state of an assistant message, computed at read time.
+
+    A reserved-but-never-finalized row keeps the placeholder text from
+    ``reserve_message_id`` in the DB; whether that row is still being written
+    to (fence alive, run id matches) or was abandoned (crash/restart) is only
+    knowable next to the processing fence, so the status is derived when the
+    message is served, not stored.
+    """
+
+    COMPLETED = "completed"
+    # Fence alive and this message belongs to the in-flight run. Transient:
+    # flips to COMPLETED or FAILED when the run ends, or to INTERRUPTED once
+    # the fence expires.
+    PROCESSING = "processing"
+    # Placeholder text with no live run: the writer died before finalizing
+    # the row (server restart, crash) — the answer never landed.
+    INTERRUPTED = "interrupted"
+    # The run ended in an error; the error column carries the detail.
+    FAILED = "failed"
+
+
 class TokenRateLimitScope(str, Enum):
     USER = "user"
     USER_GROUP = "user_group"

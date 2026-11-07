@@ -5920,6 +5920,10 @@
         "header": {
           "title": "Detalhes da sessão de chat"
         },
+        "status": {
+          "interrupted": "A resposta foi interrompida antes de ser concluída e nenhuma resposta foi salva. O usuário pode regenerá-la.",
+          "processing": "A geração ainda está em andamento no servidor. A resposta aparecerá aqui quando a execução terminar."
+        },
         "referenceDocuments": {
           "title": "Documentos de referência"
         },

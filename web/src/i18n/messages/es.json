@@ -5920,6 +5920,10 @@
         "header": {
           "title": "Detalles de la sesión de chat"
         },
+        "status": {
+          "interrupted": "La respuesta se interrumpió antes de completarse y no se guardó ninguna respuesta. El usuario puede regenerarla.",
+          "processing": "La generación sigue en curso en el servidor. La respuesta aparecerá aquí cuando termine la ejecución."
+        },
         "referenceDocuments": {
           "title": "Documentos de referencia"
         },

@@ -5918,6 +5918,10 @@
         "header": {
           "title": "聊天会话详情"
         },
+        "status": {
+          "interrupted": "响应在完成前被中断，未保存任何答案。用户可以重新生成。",
+          "processing": "生成仍在服务器上进行。运行完成后，答案将显示在这里。"
+        },
         "referenceDocuments": {
           "title": "参考文档"
         },

@@ -259,7 +259,18 @@ export interface BackendMessage {
   model_display_name: string | null;
   // Non-null when the model errored during generation
   error: string | null;
+  // Assistant messages only. Derived by the backend next to the processing
+  // fence: "completed" / "failed" are terminal, "processing" means the run is
+  // live and the row is still a placeholder, "interrupted" means the writer
+  // died before finalizing it.
+  status?: ChatMessageStatus | null;
 }
+
+export type ChatMessageStatus =
+  | "completed"
+  | "processing"
+  | "interrupted"
+  | "failed";
 
 export interface MessageResponseIDInfo {
   type: "message_id_info";

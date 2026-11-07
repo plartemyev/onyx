@@ -6,7 +6,13 @@ from pydantic import BaseModel
 from ee.onyx.background.task_name_builders import QUERY_HISTORY_TASK_NAME_PREFIX
 from onyx.auth.users import get_display_email
 from onyx.background.task_utils import extract_task_id_from_query_history_report_name
-from onyx.configs.constants import MessageType, QAFeedbackType, SessionType
+from onyx.configs.constants import (
+    ChatMessageStatus,
+    MessageType,
+    QAFeedbackType,
+    SessionType,
+)
+from onyx.db.chat import derive_chat_message_status
 from onyx.db.enums import TaskStatus
 from onyx.db.models import ChatMessage, ChatSession, FileRecord, TaskQueueState
 
@@ -27,9 +33,16 @@ class MessageSnapshot(BaseModel):
     feedback_type: QAFeedbackType | None
     feedback_text: str | None
     time_created: datetime
+    # Assistant messages only: COMPLETED / PROCESSING / INTERRUPTED / FAILED,
+    # derived next to the processing fence (see onyx.db.chat.derive_chat_message_status).
+    status: ChatMessageStatus | None = None
 
     @classmethod
-    def build(cls, message: ChatMessage) -> "MessageSnapshot":
+    def build(
+        cls,
+        message: ChatMessage,
+        live_run_id: int | None = None,
+    ) -> "MessageSnapshot":
         latest_messages_feedback_obj = (
             message.chat_message_feedbacks[-1]
             if len(message.chat_message_feedbacks) > 0
@@ -64,6 +77,7 @@ class MessageSnapshot(BaseModel):
             feedback_type=feedback_type,
             feedback_text=feedback_text,
             time_created=message.time_sent,
+            status=derive_chat_message_status(message, live_run_id),
         )
 
 

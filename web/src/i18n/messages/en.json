@@ -5948,6 +5948,10 @@
         "header": {
           "title": "Chat Session Details"
         },
+        "status": {
+          "interrupted": "Response was interrupted before completion and no answer was saved. The user can regenerate it.",
+          "processing": "Generation is still in progress on the server. The answer appears here once the run finishes."
+        },
         "referenceDocuments": {
           "title": "Reference Documents"
         },

@@ -5,7 +5,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, model_validator
 
-from onyx.configs.constants import DocumentSource, MessageType, SessionType
+from onyx.configs.constants import (
+    ChatMessageStatus,
+    DocumentSource,
+    MessageType,
+    SessionType,
+)
 from onyx.context.search.models import BaseFilters, SavedSearchDoc, SearchDoc, Tag
 from onyx.db.enums import ChatSessionSharedStatus
 from onyx.db.models import ChatSession
@@ -240,6 +245,11 @@ class ChatMessageDetail(BaseModel):
     model_display_name: str | None = None
     # Absent on messages written before this was captured.
     request_params: dict[str, Any] | None = None
+    # Assistant messages only. Derived at read time next to the processing
+    # fence: COMPLETED / FAILED are terminal; PROCESSING means the run is
+    # live and this row is still a placeholder; INTERRUPTED means the writer
+    # died before finalizing it.
+    status: ChatMessageStatus | None = None
 
     def model_dump(  # ty: ignore[invalid-method-override]
         self, *args: list, **kwargs: dict[str, Any]

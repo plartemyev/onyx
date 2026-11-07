@@ -26,7 +26,13 @@ function MessageDisplay({ message }: { message: MessageSnapshot }) {
           ? t("detail.user.label")
           : t("detail.ai.label")}
       </p>
-      <Text as="p">{message.message}</Text>
+      {message.status === "processing" ? (
+        <Text as="p">{t("detail.status.processing")}</Text>
+      ) : message.status === "interrupted" ? (
+        <Text as="p">{t("detail.status.interrupted")}</Text>
+      ) : (
+        <Text as="p">{message.message}</Text>
+      )}
       {message.documents.length > 0 && (
         <div className="flex flex-col gap-y-2 mt-2">
           <p className="font-bold text-xs">

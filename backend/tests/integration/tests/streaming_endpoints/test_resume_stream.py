@@ -168,3 +168,40 @@ def test_get_chat_session_exposes_current_run(admin_user: DATestUser) -> None:
     assert send_done.wait(timeout=120)
     final_message = _wait_for_completed_assistant_message(test_chat_session, admin_user)
     assert final_message != TERMINATED_RESPONSE_MESSAGE
+
+
+def _assistant_statuses(chat_session_id: UUID, user: DATestUser) -> list[str | None]:
+    detail = _get_session_detail(chat_session_id, user)
+    return [
+        message.get("status")
+        for message in detail["messages"]
+        if message["message_type"] == "assistant"
+    ]
+
+
+def test_get_chat_session_reports_message_status(admin_user: DATestUser) -> None:
+    """The reserved placeholder row is machine-readable while in flight: its
+    status reads "processing", then "completed" once the run finalizes. A
+    placeholder that outlives its fence (dead writer) reads "interrupted" —
+    covered by the unit suite, which can freeze the fence."""
+    LLMProviderManager.create(user_performing_action=admin_user)
+    test_chat_session = ChatSessionManager.create(user_performing_action=admin_user)
+
+    send_done = _send_in_background(test_chat_session, admin_user, _SLOW_PROMPT)
+    current_run = _wait_for_current_run(test_chat_session.id, admin_user, send_done)
+    assert current_run is not None, "run never became visible as in-flight"
+
+    statuses = _assistant_statuses(test_chat_session.id, admin_user)
+    if statuses != ["processing"]:
+        # Only a run that already finished may have flipped the status; if
+        # the send is still live the placeholder must read "processing".
+        assert send_done.wait(timeout=5), (
+            f"in-flight placeholder must report processing, got: {statuses}"
+        )
+
+    assert send_done.wait(timeout=120)
+    _wait_for_completed_assistant_message(test_chat_session, admin_user)
+    statuses = _assistant_statuses(test_chat_session.id, admin_user)
+    assert statuses == ["completed"], (
+        f"finalized message must report completed, got: {statuses}"
+    )

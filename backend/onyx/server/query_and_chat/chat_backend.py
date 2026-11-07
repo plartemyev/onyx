@@ -427,10 +427,23 @@ def get_chat_session(
         prefetch_message_details=True,
     )
 
+    current_run: CurrentRunInfo | None = None
+    live_run_id: int | None = None
+    try:
+        live_run_id = get_processing_run_id(session_id, get_cache_backend())
+        if live_run_id is not None:
+            current_run = CurrentRunInfo(run_id=live_run_id)
+    except Exception:
+        logger.exception(
+            "An error occurred while checking if the chat session is processing"
+        )
+
     # Convert messages to ChatMessageDetail format
     chat_message_details = []
     for msg in session_messages:
-        detail = translate_db_message_to_chat_message_detail(msg)
+        detail = translate_db_message_to_chat_message_detail(
+            msg, live_run_id=live_run_id
+        )
         # Sessions saved before generated files were attached to messages
         # keep their artifacts only inside tool call responses; recover them
         # so the UI can list and serve downloads.
@@ -443,16 +456,6 @@ def get_chat_session(
                 msg.tool_calls, db_session
             )
         chat_message_details.append(detail)
-
-    current_run: CurrentRunInfo | None = None
-    try:
-        run_id = get_processing_run_id(session_id, get_cache_backend())
-        if run_id is not None:
-            current_run = CurrentRunInfo(run_id=run_id)
-    except Exception:
-        logger.exception(
-            "An error occurred while checking if the chat session is processing"
-        )
 
     # Every assistant message might have a set of tool calls associated with it, these need to be replayed back for the frontend
     # Each list is the set of tool calls for the given assistant message.

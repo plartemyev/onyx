@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.sql.expression import ColumnElement
 
 from onyx.configs.chat_configs import HARD_DELETE_CHATS
-from onyx.configs.constants import MessageType
+from onyx.configs.constants import ChatMessageStatus, MessageType
 from onyx.context.search.models import InferenceSection, SavedSearchDoc
 from onyx.context.search.models import SearchDoc as ServerSearchDoc
 from onyx.db.enums import IncognitoRecordMode, record_mode_persists_content
@@ -33,6 +33,47 @@ from onyx.utils.logger import setup_logger
 from onyx.utils.postgres_sanitization import sanitize_string
 
 logger = setup_logger()
+
+
+# Text stamped on every reserved assistant message row. It is overwritten on
+# completion (save_chat_turn) or error (_save_errored_message); a row still
+# carrying it is either mid-run or was abandoned by a dead writer — see
+# derive_chat_message_status for how the two are told apart.
+TERMINATED_RESPONSE_PLACEHOLDER_MESSAGE = (
+    "Response was terminated prior to completion, try regenerating."
+)
+
+
+def derive_chat_message_status(
+    chat_message: ChatMessage,
+    live_run_id: int | None,
+) -> ChatMessageStatus | None:
+    """Lifecycle status of a message row, next to the processing fence.
+
+    Only assistant messages carry a lifecycle; everything else returns None.
+    ``live_run_id`` is the fence's in-flight run id (the reserved assistant
+    message id for single-model runs, the user message id for multi-model
+    runs) or None when the session is idle.
+
+    Ordering matters: FAILED beats PROCESSING (an error written just before
+    the fence clears must not read as in-flight), and PROCESSING beats
+    INTERRUPTED (a finalized row that still matches a briefly-alive fence
+    reads COMPLETED, not PROCESSING, because its text is no longer the
+    placeholder).
+    """
+    if chat_message.message_type != MessageType.ASSISTANT:
+        return None
+    if chat_message.error is not None:
+        return ChatMessageStatus.FAILED
+    if (
+        live_run_id is not None
+        and chat_message.message == TERMINATED_RESPONSE_PLACEHOLDER_MESSAGE
+        and live_run_id in (chat_message.id, chat_message.parent_message_id or -1)
+    ):
+        return ChatMessageStatus.PROCESSING
+    if chat_message.message == TERMINATED_RESPONSE_PLACEHOLDER_MESSAGE:
+        return ChatMessageStatus.INTERRUPTED
+    return ChatMessageStatus.COMPLETED
 
 
 # Note: search/streaming packet helpers moved to streaming_utils.py
@@ -683,7 +724,7 @@ def reserve_message_id(
         chat_session_id=chat_session_id,
         parent_message_id=parent_message,
         latest_child_message_id=None,
-        message="Response was terminated prior to completion, try regenerating.",
+        message=TERMINATED_RESPONSE_PLACEHOLDER_MESSAGE,
         token_count=15,
         message_type=message_type,
         model_display_name=model_display_name,
@@ -725,7 +766,7 @@ def reserve_multi_model_message_ids(
             chat_session_id=chat_session_id,
             parent_message_id=parent_message_id,
             latest_child_message_id=None,
-            message="Response was terminated prior to completion, try regenerating.",
+            message=TERMINATED_RESPONSE_PLACEHOLDER_MESSAGE,
             token_count=15,  # placeholder; updated on completion by llm_loop_completion_handle
             message_type=MessageType.ASSISTANT,
             model_display_name=display_name,
@@ -968,6 +1009,7 @@ def translate_db_search_doc_to_saved_search_doc(
 def translate_db_message_to_chat_message_detail(
     chat_message: ChatMessage,
     remove_doc_content: bool = False,
+    live_run_id: int | None = None,
 ) -> ChatMessageDetail:
     # Get current feedback if any
     current_feedback = None
@@ -1017,6 +1059,7 @@ def translate_db_message_to_chat_message_detail(
         processing_duration_seconds=chat_message.processing_duration_seconds,
         preferred_response_id=chat_message.preferred_response_id,
         model_display_name=chat_message.model_display_name,
+        status=derive_chat_message_status(chat_message, live_run_id),
     )
 
     return chat_msg_detail

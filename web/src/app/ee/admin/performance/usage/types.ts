@@ -14,6 +14,11 @@ export interface MessageSnapshot {
   feedback_type: Feedback | null;
   feedback_text: string | null;
   time_created: string;
+  // Assistant messages only. Derived by the backend next to the processing
+  // fence: "processing" = run still live (row is a placeholder),
+  // "interrupted" = writer died before finalizing, "failed" = run ended in
+  // an error, "completed" = normal.
+  status?: "completed" | "processing" | "interrupted" | "failed" | null;
 }
 
 export interface ChatSessionSnapshot {
