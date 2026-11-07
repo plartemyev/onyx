@@ -10224,6 +10224,15 @@
         "stepsButton": {
           "label": "{count, plural, one {# paso} other {# pasos}}"
         },
+        "retry": {
+          "status": "Reintento automático",
+          "notice": "Un paso falló ({reason}). Reintentando automáticamente — intento {attempt}. No se perdió trabajo.",
+          "reason": {
+            "transportError": "se interrumpió la conexión con el modelo",
+            "cycleTimeout": "el paso superó su presupuesto de tiempo",
+            "emptyFinalAnswer": "el modelo terminó sin respuesta"
+          }
+        },
         "stoppedStep": {
           "header": "Detenido"
         },

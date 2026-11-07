@@ -10252,6 +10252,15 @@
         "stepsButton": {
           "label": "{count, plural, one {# step} other {# steps}}"
         },
+        "retry": {
+          "status": "Automatic retry",
+          "notice": "A step failed ({reason}). Automatically retrying — attempt {attempt}. No work was lost.",
+          "reason": {
+            "transportError": "connection to the model was interrupted",
+            "cycleTimeout": "the step exceeded its time budget",
+            "emptyFinalAnswer": "the model finished without an answer"
+          }
+        },
         "stoppedStep": {
           "header": "Stopped"
         },

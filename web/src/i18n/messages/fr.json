@@ -10226,6 +10226,15 @@
         "stepsButton": {
           "label": "{count, plural, one {# étape} other {# étapes}}"
         },
+        "retry": {
+          "status": "Nouvelle tentative automatique",
+          "notice": "Une étape a échoué ({reason}). Nouvelle tentative automatique — tentative {attempt}. Aucun travail n'a été perdu.",
+          "reason": {
+            "transportError": "la connexion au modèle a été interrompue",
+            "cycleTimeout": "l'étape a dépassé son budget de temps",
+            "emptyFinalAnswer": "le modèle a terminé sans réponse"
+          }
+        },
         "stoppedStep": {
           "header": "Arrêté"
         },

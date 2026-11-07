@@ -10222,6 +10222,15 @@
         "stepsButton": {
           "label": "{count, plural, one {#단계} other {#단계}}"
         },
+        "retry": {
+          "status": "자동 재시도",
+          "notice": "단계가 실패했습니다({reason}). 자동으로 재시도하는 중 — 시도 {attempt}. 작업은 손실되지 않았습니다.",
+          "reason": {
+            "transportError": "모델 연결이 중단되었습니다",
+            "cycleTimeout": "단계가 시간 예산을 초과했습니다",
+            "emptyFinalAnswer": "모델이 답변 없이 종료되었습니다"
+          }
+        },
         "stoppedStep": {
           "header": "중지됨"
         },

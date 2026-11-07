@@ -10222,6 +10222,15 @@
         "stepsButton": {
           "label": "{count, plural, one {# 个步骤} other {# 个步骤}}"
         },
+        "retry": {
+          "status": "自动重试",
+          "notice": "某个步骤失败（{reason}）。正在自动重试 — 第 {attempt} 次尝试。已完成的工作不会丢失。",
+          "reason": {
+            "transportError": "与模型的连接中断",
+            "cycleTimeout": "该步骤超出了时间预算",
+            "emptyFinalAnswer": "模型未给出答案就结束了"
+          }
+        },
         "stoppedStep": {
           "header": "已停止"
         },

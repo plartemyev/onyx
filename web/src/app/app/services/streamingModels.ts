@@ -50,6 +50,9 @@ export enum PacketType {
   MEMORY_TOOL_DELTA = "memory_tool_delta",
   MEMORY_TOOL_NO_ACCESS = "memory_tool_no_access",
 
+  // Automatic recovery notice (ephemeral, not replayed from history)
+  CYCLE_RETRY_NOTICE = "cycle_retry_notice",
+
   // Reasoning packets
   REASONING_START = "reasoning_start",
   REASONING_DELTA = "reasoning_delta",
@@ -446,6 +449,16 @@ export interface ChatHeartbeat extends BaseObj {
 
 export type ChatHeartbeatObj = ChatHeartbeat;
 
+// Automatic recovery notice: a cycle failed recoverably and the loop is
+// retrying it. Ephemeral — not replayed from history.
+export interface CycleRetryNotice extends BaseObj {
+  type: "cycle_retry_notice";
+  reason: "transport_error" | "cycle_timeout" | "empty_final_answer";
+  attempt: number;
+}
+
+export type CycleRetryNoticeObj = CycleRetryNotice;
+
 export type SectionEndObj = SectionEnd;
 
 export type TopLevelBranchingObj = TopLevelBranching;
@@ -558,6 +571,7 @@ export type ObjTypes =
   | ReasoningObj
   | StopObj
   | ChatHeartbeatObj
+  | CycleRetryNoticeObj
   | SectionEndObj
   | TopLevelBranchingObj
   | CitationObj
@@ -644,6 +658,11 @@ export interface FileReaderToolPacket {
 export interface MemoryToolPacket {
   placement: Placement;
   obj: MemoryToolObj;
+}
+
+export interface CycleRetryNoticePacket {
+  placement: Placement;
+  obj: CycleRetryNoticeObj;
 }
 
 export interface ReasoningPacket {

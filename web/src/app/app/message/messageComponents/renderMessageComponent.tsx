@@ -30,6 +30,7 @@ import { FetchToolRenderer } from "./timeline/renderers/fetch/FetchToolRenderer"
 import { DownloadToolRenderer } from "./timeline/renderers/download/DownloadToolRenderer";
 import { AnalyzeImageRenderer } from "./timeline/renderers/analyze/AnalyzeImageRenderer";
 import { MemoryToolRenderer } from "./timeline/renderers/memory/MemoryToolRenderer";
+import { CycleRetryRenderer } from "./timeline/renderers/retry/CycleRetryRenderer";
 import { DeepResearchPlanRenderer } from "./timeline/renderers/deepresearch/DeepResearchPlanRenderer";
 import { ResearchAgentRenderer } from "./timeline/renderers/deepresearch/ResearchAgentRenderer";
 import { WebSearchToolRenderer } from "./timeline/renderers/search/WebSearchToolRenderer";
@@ -102,6 +103,10 @@ function isMemoryToolPacket(packet: Packet) {
     packet.obj.type === PacketType.MEMORY_TOOL_START ||
     packet.obj.type === PacketType.MEMORY_TOOL_NO_ACCESS
   );
+}
+
+function isCycleRetryPacket(packet: Packet) {
+  return packet.obj.type === PacketType.CYCLE_RETRY_NOTICE;
 }
 
 function isReasoningPacket(packet: Packet): packet is ReasoningPacket {
@@ -185,6 +190,9 @@ export function findRenderer(
   }
   if (groupedPackets.packets.some((packet) => isMemoryToolPacket(packet))) {
     return MemoryToolRenderer;
+  }
+  if (groupedPackets.packets.some((packet) => isCycleRetryPacket(packet))) {
+    return CycleRetryRenderer;
   }
   if (groupedPackets.packets.some((packet) => isReasoningPacket(packet))) {
     return ReasoningRenderer;

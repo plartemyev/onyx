@@ -10224,6 +10224,15 @@
         "stepsButton": {
           "label": "{count, plural, one {# ステップ} other {# ステップ}}"
         },
+        "retry": {
+          "status": "自動リトライ",
+          "notice": "ステップが失敗しました（{reason}）。自動でリトライしています — 試行 {attempt}。作業は失われていません。",
+          "reason": {
+            "transportError": "モデルとの接続が切断されました",
+            "cycleTimeout": "ステップが時間予算を超過しました",
+            "emptyFinalAnswer": "モデルが回答なしで終了しました"
+          }
+        },
         "stoppedStep": {
           "header": "停止しました"
         },

@@ -10222,6 +10222,15 @@
         "stepsButton": {
           "label": "{count, plural, one {خطوة واحدة} other {# خطوات}}"
         },
+        "retry": {
+          "status": "إعادة محاولة تلقائية",
+          "notice": "فشلت خطوة ({reason}). تجري إعادة المحاولة تلقائيًا — المحاولة {attempt}. لم يُفقد أي عمل.",
+          "reason": {
+            "transportError": "انقطع الاتصال بالنموذج",
+            "cycleTimeout": "تجاوزت الخطوة ميزانية الوقت المخصصة لها",
+            "emptyFinalAnswer": "انتهى النموذج دون إجابة"
+          }
+        },
         "stoppedStep": {
           "header": "توقف"
         },

@@ -10224,6 +10224,15 @@
         "stepsButton": {
           "label": "{count, plural, one {# Schritt} other {# Schritte}}"
         },
+        "retry": {
+          "status": "Automatischer Wiederholungsversuch",
+          "notice": "Ein Schritt ist fehlgeschlagen ({reason}). Wird automatisch wiederholt — Versuch {attempt}. Es ging keine Arbeit verloren.",
+          "reason": {
+            "transportError": "die Verbindung zum Modell wurde unterbrochen",
+            "cycleTimeout": "der Schritt hat sein Zeitbudget überschritten",
+            "emptyFinalAnswer": "das Modell endete ohne Antwort"
+          }
+        },
         "stoppedStep": {
           "header": "Gestoppt"
         },

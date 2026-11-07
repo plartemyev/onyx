@@ -490,6 +490,12 @@ export function processRawChatHistory(
     // render as a normal assistant answer: route it through the error UI,
     // which shows the placeholder text next to a regenerate button.
     const isInterrupted = messageInfo.status === "interrupted";
+    // A FAILED run keeps its partial work (tool calls, reasoning, partial
+    // answer with an inline error note) — render the full timeline and let
+    // the note carry the failure. Only a bare error with no replayable
+    // content collapses to the error banner.
+    const hasReplayableContent = (packetsForMessage || []).length > 0;
+    const isBareError = Boolean(messageInfo.error) && !hasReplayableContent;
 
     const message: Message = {
       // for existing messages, use the message_id as the nodeId
@@ -498,7 +504,7 @@ export function processRawChatHistory(
       messageId: messageInfo.message_id,
       message: messageInfo.message,
       type:
-        messageInfo.error || isInterrupted
+        isBareError || isInterrupted
           ? "error"
           : (messageInfo.message_type as "user" | "assistant"),
       isRetryable: isInterrupted ? true : undefined,
