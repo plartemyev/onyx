@@ -34,6 +34,18 @@ if MAX_LLM_CYCLES > _MAX_LLM_CYCLES_WARN_THRESHOLD:
 # budget below so at least one forced answer cycle is reachable.
 CHAT_TURN_BUDGET_SECONDS: int = int(os.environ.get("CHAT_TURN_BUDGET_SECONDS") or 3600)
 
+# Wall-clock budget for ONE chat LLM cycle's stream (prefill + decode). The
+# turn budget above only gates cycle STARTS, so without this a single cycle
+# may decode for hours — observed 2026-11-06: a thinking model burned ~3.5h of
+# pure reasoning (114k tokens, no answer, no tool call) because the loop had
+# handed it the full output allowance (~172k tokens at ~20 tok/s). On expiry
+# the stream is force-closed (the model server stops generating) and the loop
+# forces the final-answer cycle, so the turn still delivers what it has.
+# Sizing: the longest PRODUCTIVE cycle observed on the reference hardware
+# (single-slot CPU inference) is ~10 min, so 1800s is ~3x headroom; a cycle
+# cut by this budget is by definition not converging. 0 disables the bound.
+LLM_CYCLE_TIMEOUT_SECONDS: int = int(os.environ.get("LLM_CYCLE_TIMEOUT_SECONDS") or 0)
+
 # Wall-clock budget for one tool call (applied to the batch of parallel tool
 # calls). Must sit ABOVE the code-interpreter executor's per-execution timeout
 # (CODE_INTERPRETER_DEFAULT_TIMEOUT_MS) so the executor's structured

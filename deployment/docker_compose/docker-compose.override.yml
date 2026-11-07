@@ -186,6 +186,14 @@ services:
       # crawl when downloads/tool calls stall. 2x the batch budget so a turn
       # can still hold two slow batches plus local inference time.
       - CHAT_TURN_BUDGET_SECONDS=3600
+      # Single-cycle wall clock: the turn budget only gates cycle STARTS, so
+      # without this one thinking-model cycle may decode for hours (observed
+      # 2026-11-06: ~3.5h of pure reasoning, no answer, 114k tokens — the turn
+      # then failed empty at 4h21m). On expiry the stream is force-closed and
+      # the next cycle is forced to answer, keeping all streamed content.
+      # Sizing: the longest productive cycle observed on this hardware is
+      # ~10 min; 1800s = 3x headroom.
+      - LLM_CYCLE_TIMEOUT_SECONDS=1800
       # Deep Research wall clocks, retuned for the paced search/crawl chains
       # (tools run sequentially inside research agents). The overall budget is
       # deliberately generous (48h): slow is acceptable, undelivered reports
@@ -326,6 +334,8 @@ services:
       - TOOL_EXECUTION_TIMEOUT_SECONDS=1200
       # Whole-turn wall clock (see api_server above).
       - CHAT_TURN_BUDGET_SECONDS=8200
+      # Single-cycle wall clock (see api_server above), for scheduled runs.
+      - LLM_CYCLE_TIMEOUT_SECONDS=1800
       # Deep Research wall clocks (see api_server above) for scheduled runs.
       - DR_FORCE_REPORT_S=172800
       - DR_RESEARCH_AGENT_TIMEOUT_S=2700

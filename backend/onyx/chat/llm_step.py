@@ -20,7 +20,7 @@ from onyx.configs.app_configs import (
 from onyx.configs.constants import MessageType
 from onyx.context.search.models import SearchDoc
 from onyx.file_store.models import ChatFileType
-from onyx.llm.exceptions import LLMStreamCancelled
+from onyx.llm.exceptions import LLMCycleTimeoutError, LLMStreamCancelled
 from onyx.llm.interfaces import (
     LLM,
     LanguageModelInput,
@@ -1573,6 +1573,7 @@ def run_llm_step_pkt_generator(
     timeout_override: int | None = None,
     temperature: float | None = None,
     should_abort: Callable[[], bool] | None = None,
+    cycle_timeout_s: float | None = None,
 ) -> Generator[Packet, None, tuple[LlmStepResult, bool]]:
     """Run an LLM step and stream the response as packets.
     NOTE: DO NOT TOUCH THIS FUNCTION BEFORE ASKING YUHONG, this is very finicky and
@@ -1819,19 +1820,27 @@ def run_llm_step_pkt_generator(
             temperature=temperature,
         )
         last_abort_check_time = time.monotonic()
+        cycle_deadline = (
+            last_abort_check_time + cycle_timeout_s
+            if cycle_timeout_s is not None and cycle_timeout_s > 0
+            else None
+        )
         try:
             for packet in stream_iter:
-                # Stop button: bail out of the stream promptly instead of
-                # pulling the provider's remaining generation. Throttled so a
-                # fast provider does not turn this into a per-chunk cache hit.
-                if should_abort is not None:
+                # Stop button / cycle budget: bail out of the stream promptly
+                # instead of pulling the provider's remaining generation.
+                # Throttled so a fast provider does not turn this into a
+                # per-chunk cache hit.
+                if should_abort is not None or cycle_deadline is not None:
                     now = time.monotonic()
                     if now - last_abort_check_time >= _ABORT_CHECK_INTERVAL_S:
                         last_abort_check_time = now
-                        if should_abort():
+                        if should_abort is not None and should_abort():
                             raise LLMStreamCancelled(
                                 "LLM stream cancelled by user stop signal"
                             )
+                        if cycle_deadline is not None and now >= cycle_deadline:
+                            raise LLMCycleTimeoutError(timeout_s=cycle_timeout_s or 0.0)
                 # On the first chunk, not at stream end: a mid-step stop persists
                 # from another thread and needs this step's params already there.
                 if stream_chunk_count == 0 and state_container:
@@ -2153,6 +2162,7 @@ def run_llm_step(
     temperature: float | None = None,
     should_abort: Callable[[], bool] | None = None,
     retry_on_truncated_tool_call: bool = False,
+    cycle_timeout_s: float | None = None,
 ) -> tuple[LlmStepResult, bool]:
     """Wrapper around run_llm_step_pkt_generator that consumes packets and emits them.
 
@@ -2182,6 +2192,7 @@ def run_llm_step(
             timeout_override=timeout_override,
             temperature=temperature,
             should_abort=should_abort,
+            cycle_timeout_s=cycle_timeout_s,
         )
 
     step_generator = _start_generator()

@@ -46,7 +46,11 @@ from onyx.chat.stop_signal_checker import should_abort_from_connected
 from onyx.chat.token_budget import resolve_chat_token_budget
 from onyx.chat.tool_response_digest import stub_message_for
 from onyx.configs.app_configs import INTEGRATION_TESTS_MODE
-from onyx.configs.chat_configs import CHAT_TURN_BUDGET_SECONDS, MAX_LLM_CYCLES
+from onyx.configs.chat_configs import (
+    CHAT_TURN_BUDGET_SECONDS,
+    LLM_CYCLE_TIMEOUT_SECONDS,
+    MAX_LLM_CYCLES,
+)
 from onyx.configs.constants import DocumentSource, MessageType
 from onyx.context.search.models import SearchDoc, SearchDocsResponse
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
@@ -54,7 +58,7 @@ from onyx.db.memory import UserMemoryContext, add_memory, update_memory_at_index
 from onyx.db.models import Persona
 from onyx.file_store.models import ChatFileType
 from onyx.llm.constants import LlmProviderNames
-from onyx.llm.exceptions import ClassifiedLLMError
+from onyx.llm.exceptions import ClassifiedLLMError, LLMCycleTimeoutError
 from onyx.llm.interfaces import LLM, LLMUserIdentity, ToolChoiceOptions
 from onyx.llm.model_capabilities import is_true_openai_model
 from onyx.llm.models import ReasoningEffort
@@ -1611,6 +1615,10 @@ def run_llm_loop(
         retry_after_empty_step = False
         intent_only_retries = 0
         retry_after_intent_only = False
+        # Set when a cycle's LLM stream exceeded LLM_CYCLE_TIMEOUT_SECONDS and
+        # was force-closed: the NEXT cycle is forced to answer with what the
+        # turn already has (all streamed content so far is kept).
+        cycle_timeout_hit = False
         for llm_cycle_count in range(MAX_LLM_CYCLES):
             if check_is_connected is not None and not check_is_connected():
                 logger.info(
@@ -1628,7 +1636,15 @@ def run_llm_loop(
                     "Turn time budget of %ds exceeded; forcing final answer",
                     CHAT_TURN_BUDGET_SECONDS,
                 )
-            forced_final_answer = out_of_cycles or ran_image_gen or out_of_time
+            if cycle_timeout_hit and not out_of_cycles:
+                logger.warning(
+                    "Previous cycle exceeded the %ds LLM cycle budget; "
+                    "forcing final answer",
+                    LLM_CYCLE_TIMEOUT_SECONDS,
+                )
+            forced_final_answer = (
+                out_of_cycles or ran_image_gen or out_of_time or cycle_timeout_hit
+            )
             if forced_tool_id:
                 # Needs to be just the single one because the "required" currently doesn't have a specified tool, just a binary
                 final_tools = [tool for tool in tools if tool.id == forced_tool_id]
@@ -1889,7 +1905,23 @@ def run_llm_loop(
                     # check_is_connected answers "keep going?" — invert it to
                     # the "stop requested?" polarity llm_step expects.
                     should_abort=should_abort_from_connected(check_is_connected),
+                    cycle_timeout_s=(
+                        float(LLM_CYCLE_TIMEOUT_SECONDS)
+                        if LLM_CYCLE_TIMEOUT_SECONDS > 0
+                        else None
+                    ),
                 )
+            except LLMCycleTimeoutError:
+                # The cycle's stream was force-closed at the wall-clock bound
+                # (typically a thinking model deep in an unbounded reasoning
+                # trace). Keep everything streamed so far and force the model
+                # to answer on the next cycle. A timeout on an already-forced
+                # final cycle has no further recourse — re-raise so the turn
+                # ends with an honest error and the partial answer.
+                if forced_final_answer:
+                    raise
+                cycle_timeout_hit = True
+                continue
             except Exception as e:
                 # The model server tokenizes the prompt itself and can reject
                 # it as over context even when Onyx's budget said it fits.
