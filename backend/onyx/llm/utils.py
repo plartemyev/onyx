@@ -79,6 +79,32 @@ def is_context_overflow_exception(e: Exception) -> bool:
     return _has_context_overflow_marker(str(core_exception))
 
 
+def is_retryable_transport_exception(e: Exception) -> bool:
+    """Whether a failed LLM call is a transient transport/serving fault.
+
+    Same set the pre-first-chunk retry in ``LLM.stream`` uses: connection
+    drops, timeouts, and 5xx from the serving layer. A retry re-runs the
+    request; nothing about the prompt or configuration is at fault.
+    """
+    from litellm.exceptions import APIConnectionError as LiteLLMAPIConnectionError
+    from litellm.exceptions import InternalServerError as LiteLLMInternalServerError
+    from litellm.exceptions import (
+        ServiceUnavailableError as LiteLLMServiceUnavailableError,
+    )
+    from litellm.exceptions import Timeout as LiteLLMTimeout
+
+    from onyx.llm.multi_llm import LLMTimeoutError
+
+    return isinstance(
+        e,
+        LLMTimeoutError
+        | LiteLLMTimeout
+        | LiteLLMAPIConnectionError
+        | LiteLLMServiceUnavailableError
+        | LiteLLMInternalServerError,
+    )
+
+
 # Ollama's serving layer (llama-server) parses tool calls out of the model's
 # generated text. When generation stops before the tool call's JSON arguments
 # are complete — typically because the output budget was consumed by reasoning

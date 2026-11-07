@@ -16,6 +16,7 @@ class StreamingType(Enum):
     TOP_LEVEL_BRANCHING = "top_level_branching"
     ERROR = "error"
     CHAT_HEARTBEAT = "chat_heartbeat"
+    CYCLE_RETRY_NOTICE = "cycle_retry_notice"
 
     MESSAGE_START = "message_start"
     MESSAGE_DELTA = "message_delta"
@@ -103,6 +104,21 @@ class PacketException(BaseObj):
 # Payload-less keepalive so idle proxies don't kill an otherwise-silent stream
 class ChatHeartbeat(BaseObj):
     type: Literal["chat_heartbeat"] = StreamingType.CHAT_HEARTBEAT.value
+
+
+class CycleRetryNotice(BaseObj):
+    """Automatic recovery notice: a cycle failed recoverably and the loop is
+    retrying it. Ephemeral (no DB replay counterpart): it describes a live
+    event, not persisted state — the retry's outcome lives in the message.
+
+    ``reason`` is a stable machine string the UI maps to a localized label:
+    transport_error | cycle_timeout | empty_final_answer.
+    """
+
+    type: Literal["cycle_retry_notice"] = StreamingType.CYCLE_RETRY_NOTICE.value
+
+    reason: str
+    attempt: int = 1
 
 
 ################################################
@@ -541,6 +557,7 @@ PacketObj = Union[
     TopLevelBranching,
     PacketException,
     ChatHeartbeat,
+    CycleRetryNotice,
     # Agent Response Packets
     AgentResponseStart,
     AgentResponseDelta,

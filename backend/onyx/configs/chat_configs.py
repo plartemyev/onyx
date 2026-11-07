@@ -46,6 +46,13 @@ CHAT_TURN_BUDGET_SECONDS: int = int(os.environ.get("CHAT_TURN_BUDGET_SECONDS") o
 # cut by this budget is by definition not converging. 0 disables the bound.
 LLM_CYCLE_TIMEOUT_SECONDS: int = int(os.environ.get("LLM_CYCLE_TIMEOUT_SECONDS") or 0)
 
+# Automatic recovery attempts for a chat turn, shared by the retry paths:
+# a mid-stream transport drop re-runs the same cycle, and an empty or timed-out
+# forced-final cycle is retried with an explicit answer-now nudge. The loop's
+# cycle range is extended by this many bonus iterations so a retry never steals
+# a slot from normal cycles. 0 disables automatic retries.
+LLM_CYCLE_RETRY_MAX: int = int(os.environ.get("LLM_CYCLE_RETRY_MAX") or 1)
+
 # Wall-clock budget for one tool call (applied to the batch of parallel tool
 # calls). Must sit ABOVE the code-interpreter executor's per-execution timeout
 # (CODE_INTERPRETER_DEFAULT_TIMEOUT_MS) so the executor's structured

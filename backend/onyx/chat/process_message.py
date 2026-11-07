@@ -1596,41 +1596,34 @@ def _run_models(
             merged_queue.put((model_idx, _MODEL_DONE))
 
     def _save_errored_message(model_idx: int, context: _PersistContext) -> None:
-        """Save an error message to a reserved ChatMessage that failed during execution."""
+        """Save a failed run's reserved ChatMessage, keeping the turn's work.
+
+        Delegates to ``save_failed_turn``: partial answer, reasoning, tool
+        calls with results, documents and citations are preserved so the
+        timeline shows the work and the next turn's prompt replays it.
+        """
         try:
-            with get_session_with_current_tenant() as save_db_session:
-                msg = save_db_session.get(
-                    ChatMessage, setup.reserved_messages[model_idx].id
-                )
-                if msg is not None:
-                    mode = setup.incognito_record_mode
-                    if not record_mode_persists_content(mode):
-                        # Provider errors can echo prompt fragments, so the
-                        # durable row gets a generic marker. The live stream
-                        # still carries the real error to the user.
-                        error_text = "The model encountered an error."
-                    else:
-                        info = model_error_info[model_idx]
-                        detail = (
-                            info.message
-                            if info is not None
-                            else "model encountered an error during generation."
-                        )
-                        error_text = "Error from %s: %s" % (
-                            setup.model_display_names[model_idx],
-                            detail,
-                        )
-                    msg.message = error_text
-                    msg.error = error_text
-                    # The reservation's placeholder count must not survive:
-                    # rows carry the real output count, zero when none emitted.
-                    partial_answer = state_containers[model_idx].get_answer_tokens()
-                    msg.token_count = (
-                        len(get_tokenizer(None, None).encode(partial_answer))
-                        if partial_answer
-                        else 0
-                    )
-                    save_db_session.commit()
+            info = model_error_info[model_idx]
+            detail = (
+                info.message
+                if info is not None
+                else "model encountered an error during generation."
+            )
+            error_text = "Error from %s: %s" % (
+                setup.model_display_names[model_idx],
+                detail,
+            )
+            if not record_mode_persists_content(setup.incognito_record_mode):
+                # Provider errors can echo prompt fragments, so the durable
+                # row gets a generic marker. The live stream still carries
+                # the real error to the user.
+                error_text = "The model encountered an error."
+            save_failed_turn(
+                assistant_message_id=setup.reserved_messages[model_idx].id,
+                container=state_containers[model_idx],
+                error_text=error_text,
+                keeps_content=record_mode_persists_content(setup.incognito_record_mode),
+            )
         except Exception:
             logger.exception(
                 "%s error save failed for model %d (%s)",
@@ -2163,6 +2156,72 @@ def handle_multi_model_stream(
         custom_tool_additional_headers=custom_tool_additional_headers,
         mcp_headers=mcp_headers,
     )
+
+
+def save_failed_turn(
+    assistant_message_id: int,
+    container: ChatStateContainer,
+    error_text: str,
+    keeps_content: bool,
+) -> None:
+    """Persist a FAILED run's reserved message, keeping the turn's work.
+
+    Writes the partial answer (with an honest failure note the next turn's
+    prompt will replay), reasoning, tool calls with results, documents and
+    citations via the normal ``save_chat_turn`` path — so the timeline shows
+    what was done and a follow-up message continues from it. Falls back to
+    the minimal error-only row when there is nothing to keep or content must
+    not be persisted (incognito).
+    """
+    with get_session_with_current_tenant() as save_db_session:
+        msg = save_db_session.get(ChatMessage, assistant_message_id)
+        if msg is None:
+            return
+
+        has_partial_work = bool(
+            container.get_answer_tokens()
+            or container.get_reasoning_tokens()
+            or container.get_tool_calls()
+        )
+        if keeps_content and has_partial_work:
+            partial_answer = container.get_answer_tokens() or ""
+            message_text = (f"{partial_answer}\n\n" if partial_answer else "") + (
+                "---\n**The turn failed before it could finish.** "
+                f"{error_text}\n"
+                "The work above is preserved — reply to continue "
+                "from where it stopped."
+            )
+            save_chat_turn(
+                message_text=message_text,
+                reasoning_tokens=container.get_reasoning_tokens(),
+                request_params=container.get_request_params(),
+                citation_to_doc=container.get_citation_to_doc(),
+                tool_calls=container.get_tool_calls(),
+                all_search_docs=container.get_all_search_docs(),
+                db_session=save_db_session,
+                assistant_message=msg,
+                is_clarification=container.get_is_clarification(),
+                emitted_citations=container.get_emitted_citations(),
+                pre_answer_processing_time=(container.get_pre_answer_processing_time()),
+                persist_content=True,
+            )
+            # save_chat_turn committed on this session's object; re-fetch and
+            # stamp the machine-readable error marker.
+            msg = save_db_session.get(ChatMessage, assistant_message_id)
+            if msg is not None:
+                msg.error = error_text
+                save_db_session.commit()
+            return
+
+        msg.message = error_text
+        msg.error = error_text
+        partial_answer = container.get_answer_tokens()
+        msg.token_count = (
+            len(get_tokenizer(None, None).encode(partial_answer))
+            if partial_answer
+            else 0
+        )
+        save_db_session.commit()
 
 
 def llm_loop_completion_handle(

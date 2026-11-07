@@ -48,6 +48,7 @@ from onyx.chat.tool_response_digest import stub_message_for
 from onyx.configs.app_configs import INTEGRATION_TESTS_MODE
 from onyx.configs.chat_configs import (
     CHAT_TURN_BUDGET_SECONDS,
+    LLM_CYCLE_RETRY_MAX,
     LLM_CYCLE_TIMEOUT_SECONDS,
     MAX_LLM_CYCLES,
 )
@@ -62,7 +63,11 @@ from onyx.llm.exceptions import ClassifiedLLMError, LLMCycleTimeoutError
 from onyx.llm.interfaces import LLM, LLMUserIdentity, ToolChoiceOptions
 from onyx.llm.model_capabilities import is_true_openai_model
 from onyx.llm.models import ReasoningEffort
-from onyx.llm.utils import is_context_overflow_exception, model_supports_image_input
+from onyx.llm.utils import (
+    is_context_overflow_exception,
+    is_retryable_transport_exception,
+    model_supports_image_input,
+)
 from onyx.prompts.chat_prompts import (
     IMAGE_GEN_REMINDER,
     NON_VISION_IMAGE_MARKER,
@@ -73,6 +78,7 @@ from onyx.prompts.prompt_utils import substitute_user_placeholders
 from onyx.server.query_and_chat.placement import Placement
 from onyx.server.query_and_chat.streaming_models import (
     AgentResponseFinal,
+    CycleRetryNotice,
     OverallStop,
     Packet,
     ToolCallDebug,
@@ -168,6 +174,31 @@ class ContextWindowExceededError(ClassifiedLLMError):
         self.available_tokens = available_tokens
 
 
+class _StreamStateSnapshot:
+    """Mutable stream state a retry must roll back.
+
+    ``run_llm_step`` writes answer/reasoning/request params into the state
+    container incrementally; a failed attempt leaves partials there. Tool
+    calls are only appended after successful execution, and search docs only
+    by tools, so those need no rollback.
+    """
+
+    __slots__ = ("answer_tokens", "reasoning_tokens", "request_params")
+
+    def __init__(self, container: ChatStateContainer) -> None:
+        self.answer_tokens = container.get_answer_tokens()
+        self.reasoning_tokens = container.get_reasoning_tokens()
+        self.request_params = container.get_request_params()
+
+
+def _restore_stream_state(
+    container: ChatStateContainer, snapshot: _StreamStateSnapshot
+) -> None:
+    container.set_answer_tokens(snapshot.answer_tokens)
+    container.set_reasoning_tokens(snapshot.reasoning_tokens)
+    container.set_request_params(snapshot.request_params)
+
+
 class EmptyLLMResponseError(ClassifiedLLMError):
     """Raised when the streamed LLM response completes without a usable answer."""
 
@@ -229,6 +260,20 @@ EMPTY_STEP_CONTINUATION_PROMPT = (
     "or a final answer. Continue the task: call the next tool you were "
     "about to call, or write the final answer to the user if the work is "
     "done."
+)
+
+# Nudge for a retry of the FORCED final-answer cycle that came back empty
+# (reasoning only, or a tool call the harness had to drop). Without it the
+# retry tends to repeat the failure — observed 2026-11-06: a thinking model
+# burned its whole final cycle on reasoning, emitted a tool call, and the
+# turn failed empty after 4h21m of work.
+FINAL_ANSWER_CONTINUATION_PROMPT = (
+    "Your previous final answer attempt produced no answer text: it ended "
+    "after reasoning, or tried to call a tool. You MUST now write the final "
+    "answer as plain text for the user. Do not call any tools and do not "
+    "plan further. Use the work already in this conversation to deliver the "
+    "result; if it is incomplete, summarize honestly what was done and what "
+    "remains."
 )
 
 # A cycle whose whole answer is a bare announcement of the next action
@@ -1615,19 +1660,26 @@ def run_llm_loop(
         retry_after_empty_step = False
         intent_only_retries = 0
         retry_after_intent_only = False
+        # Automatic recovery budget (LLM_CYCLE_RETRY_MAX): consumed by any of
+        # the retry paths below, one consumption per attempt, shared per turn.
+        cycle_retry_budget = LLM_CYCLE_RETRY_MAX
+        retry_after_final_nudge = False
         # Set when a cycle's LLM stream exceeded LLM_CYCLE_TIMEOUT_SECONDS and
         # was force-closed: the NEXT cycle is forced to answer with what the
         # turn already has (all streamed content so far is kept).
         cycle_timeout_hit = False
-        for llm_cycle_count in range(MAX_LLM_CYCLES):
+        for llm_cycle_count in range(MAX_LLM_CYCLES + LLM_CYCLE_RETRY_MAX):
             if check_is_connected is not None and not check_is_connected():
                 logger.info(
                     "Stop signal detected before LLM cycle %d; ending the turn",
                     llm_cycle_count,
                 )
                 return
-            # Handling tool calls based on cycle count and past cycle conditions
-            out_of_cycles = llm_cycle_count == MAX_LLM_CYCLES - 1
+            # Handling tool calls based on cycle count and past cycle conditions.
+            # Bonus iterations beyond MAX_LLM_CYCLES exist only for automatic
+            # retries — every index at or past the original last one is a
+            # forced-final-answer cycle.
+            out_of_cycles = llm_cycle_count >= MAX_LLM_CYCLES - 1
             out_of_time = (
                 time.monotonic() - turn_started_monotonic >= CHAT_TURN_BUDGET_SECONDS
             )
@@ -1792,6 +1844,15 @@ def run_llm_loop(
                     if reminder_message_text
                     else continuation_prompt
                 )
+            if retry_after_final_nudge:
+                # Retry of a failed final-answer cycle: the model just proved
+                # it would rather reason or call tools than answer, so the
+                # nudge is explicit and imperative.
+                reminder_message_text = (
+                    f"{FINAL_ANSWER_CONTINUATION_PROMPT}\n\n{reminder_message_text}"
+                    if reminder_message_text
+                    else FINAL_ANSWER_CONTINUATION_PROMPT
+                )
 
             if llm_cycle_count == 0 and workspace_state_note:
                 reminder_message_text = (
@@ -1882,6 +1943,7 @@ def run_llm_loop(
             # This measures how long the user waits before the answer starts streaming
             pre_answer_processing_time = time.monotonic() - loop_start_time
 
+            stream_state_before_step = _StreamStateSnapshot(state_container)
             try:
                 llm_step_result, has_reasoned = run_llm_step(
                     emitter=emitter,
@@ -1914,14 +1976,55 @@ def run_llm_loop(
             except LLMCycleTimeoutError:
                 # The cycle's stream was force-closed at the wall-clock bound
                 # (typically a thinking model deep in an unbounded reasoning
-                # trace). Keep everything streamed so far and force the model
-                # to answer on the next cycle. A timeout on an already-forced
-                # final cycle has no further recourse — re-raise so the turn
-                # ends with an honest error and the partial answer.
-                if forced_final_answer:
-                    raise
-                cycle_timeout_hit = True
-                continue
+                # trace). On a normal cycle, keep everything streamed so far
+                # and force the model to answer on the next cycle. On the
+                # forced-final cycle: salvage a partial answer if one exists,
+                # else spend the retry budget on one nudged attempt before
+                # surfacing the honest error.
+                if not forced_final_answer:
+                    cycle_timeout_hit = True
+                    continue
+                partial_answer = state_container.get_answer_tokens()
+                if partial_answer:
+                    logger.warning(
+                        "Forced-final cycle hit the %ds stream budget with a "
+                        "partial answer (%d chars); salvaging it as the final "
+                        "answer",
+                        LLM_CYCLE_TIMEOUT_SECONDS,
+                        len(partial_answer),
+                    )
+                    _restore_stream_state(state_container, stream_state_before_step)
+                    state_container.set_answer_tokens(partial_answer)
+                    llm_step_result = LlmStepResult(
+                        reasoning=state_container.get_reasoning_tokens(),
+                        answer=partial_answer,
+                        tool_calls=[],
+                        finish_reason="length",
+                    )
+                    has_reasoned = False
+                    break
+                if cycle_retry_budget > 0:
+                    cycle_retry_budget -= 1
+                    _restore_stream_state(state_container, stream_state_before_step)
+                    retry_after_final_nudge = True
+                    emitter.emit(
+                        Packet(
+                            placement=Placement(
+                                turn_index=llm_cycle_count + reasoning_cycles
+                            ),
+                            obj=CycleRetryNotice(
+                                reason="cycle_timeout",
+                                attempt=LLM_CYCLE_RETRY_MAX - cycle_retry_budget,
+                            ),
+                        )
+                    )
+                    logger.warning(
+                        "Forced-final cycle hit the %ds stream budget with no "
+                        "answer; retrying with an answer-now nudge",
+                        LLM_CYCLE_TIMEOUT_SECONDS,
+                    )
+                    continue
+                raise
             except Exception as e:
                 # The model server tokenizes the prompt itself and can reject
                 # it as over context even when Onyx's budget said it fits.
@@ -1949,9 +2052,40 @@ def run_llm_loop(
                         ),
                     )
                     continue
+                # Mid-stream transport faults (connection reset, read timeout,
+                # 5xx) reach here only after output had started flowing — the
+                # pre-first-chunk retry inside LLM.stream handled the rest.
+                # One automatic re-run of the same cycle recovers the turn
+                # instead of discarding possibly hours of tool work.
+                if cycle_retry_budget > 0 and is_retryable_transport_exception(e):
+                    cycle_retry_budget -= 1
+                    _restore_stream_state(state_container, stream_state_before_step)
+                    retry_after_final_nudge = False
+                    emitter.emit(
+                        Packet(
+                            placement=Placement(
+                                turn_index=llm_cycle_count + reasoning_cycles
+                            ),
+                            obj=CycleRetryNotice(
+                                reason="transport_error",
+                                attempt=LLM_CYCLE_RETRY_MAX - cycle_retry_budget,
+                            ),
+                        )
+                    )
+                    logger.warning(
+                        "Cycle %d failed mid-stream with a transient transport "
+                        "error (%s); re-running the cycle (%d retry left)",
+                        llm_cycle_count,
+                        e,
+                        cycle_retry_budget,
+                    )
+                    continue
                 raise
             if has_reasoned:
                 reasoning_cycles += 1
+            # The step produced a usable result — a pending final-answer
+            # nudge has done its job and must not leak into later cycles.
+            retry_after_final_nudge = False
 
             # Fallback extraction for LLMs that don't support tool calling natively or are lower quality
             # and might incorrectly output tool calls in other channels.
@@ -1979,11 +2113,36 @@ def run_llm_loop(
 
             # A cycle with neither an answer nor tool calls: nudge once and
             # retry instead of failing a turn that may have run for many
-            # minutes. On the forced final cycle (no next cycle exists) or
-            # once the nudge itself comes back empty, break to the
-            # empty-response error below.
+            # minutes. On the forced final cycle the empty-step nudge is not
+            # enough — the model just demonstrated it ends in reasoning or
+            # tool calls — so the retry carries the imperative answer-now
+            # nudge and only fails after that budget is spent too.
             if not llm_step_result.answer and not llm_step_result.tool_calls:
-                if forced_final_answer or empty_step_retries >= EMPTY_STEP_MAX_RETRIES:
+                if forced_final_answer:
+                    if cycle_retry_budget > 0:
+                        cycle_retry_budget -= 1
+                        retry_after_final_nudge = True
+                        emitter.emit(
+                            Packet(
+                                placement=Placement(
+                                    turn_index=llm_cycle_count + reasoning_cycles
+                                ),
+                                obj=CycleRetryNotice(
+                                    reason="empty_final_answer",
+                                    attempt=LLM_CYCLE_RETRY_MAX - cycle_retry_budget,
+                                ),
+                            )
+                        )
+                        logger.warning(
+                            "Forced-final cycle %d returned no answer "
+                            "(reasoning_chars=%d); retrying with an answer-now "
+                            "nudge",
+                            llm_cycle_count,
+                            len(llm_step_result.reasoning or ""),
+                        )
+                        continue
+                    break
+                if empty_step_retries >= EMPTY_STEP_MAX_RETRIES:
                     break
                 empty_step_retries += 1
                 retry_after_empty_step = True
