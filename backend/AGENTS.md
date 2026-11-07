@@ -159,6 +159,18 @@ verification is necessary) over any other type of test.
 
 Tests are parallelized at a directory level.
 
+NOTE (probed 2026-11-07): the integration suite CANNOT bootstrap against this production deployment —
+it self-registers its admin user via `POST /auth/register`, which the invite-only workspace answers
+with 403. It needs a test-mode deployment (open registration / `INTEGRATION_TESTS_MODE`). When one is
+available from this host, the suite also needs the services' host-published endpoints:
+`POSTGRES_HOST=127.0.0.1 POSTGRES_PASSWORD=<db> REDIS_HOST=127.0.0.1 REDIS_PORT=16379
+REDIS_PASSWORD=<cache> USER_AUTH_SECRET=<api_server> OPENSEARCH_HOST=127.0.0.1
+OPENSEARCH_REST_API_PORT=<https-published-port> S3_ENDPOINT_URL=http://127.0.0.1:19000
+MODEL_SERVER_HOST=127.0.0.1 MODEL_SERVER_PORT=<published 9000>`. OpenSearch listens HTTPS-only inside
+the compose network and is not published at all — a socat sidecar on `onyx_default`
+(`docker run --network onyx_default -p 127.0.0.1:<p>:9200 alpine/socat tcp-listen:9200,fork,reuseaddr
+tcp-connect:opensearch:9200`) bridges it; same trick works for the model servers.
+
 When writing integration tests, make sure to check the root `conftest.py` for useful fixtures + the `backend/tests/integration/common_utils` directory for utilities. Prefer (if one exists), calling the appropriate Manager
 class in the utils over directly calling the APIs with a library like `requests`. Prefer using fixtures rather than
 calling the utilities directly (e.g. do NOT create admin users with
